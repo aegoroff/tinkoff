@@ -15,4 +15,4 @@ futures-util = {version = "0.3.28"}
 rust_decimal = "1.29.1"
 prettytable-rs = "0.10.0"
 iso_currency = "0.4.3"
-itertools = "0.10.5"
+itertools = "0.11.0"

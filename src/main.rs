@@ -29,16 +29,14 @@ async fn main() -> TIResult<()> {
     let mut profit = Money::zero(iso_currency::Currency::RUB);
     let mut current_assets = Money::zero(iso_currency::Currency::RUB);
     let mut pf = Portfolio::new();
-    for p in portfolio.positions.iter() {
-        let currency = if let Some(currency) = iso_currency::Currency::from_code(
+    for p in &portfolio.positions {
+        let Some(currency) = iso_currency::Currency::from_code(
             &p.current_price
                 .as_ref()
                 .unwrap()
                 .currency
                 .to_ascii_uppercase(),
-        ) {
-            currency
-        } else {
+        ) else {
             continue;
         };
 
@@ -64,37 +62,33 @@ async fn main() -> TIResult<()> {
 
         let mut fees = Money::zero(currency);
         let mut dividents = Money::zero(currency);
-        for op in executed_ops.iter() {
+        for op in &executed_ops {
             let op_type = op.operation_type();
-            let payment = if let Some(money) = to_money(op.payment.as_ref()) {
-                money
-            } else {
+            let Some(payment) = to_money(op.payment.as_ref()) else {
                 continue;
             };
             match op_type {
-                tinkoff_invest_api::tcs::OperationType::BondTax => dividents.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::Tax => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::DividendTax => {
-                    dividents.value += payment.value
+                tinkoff_invest_api::tcs::OperationType::DividendTax
+                | tinkoff_invest_api::tcs::OperationType::BondTax
+                | tinkoff_invest_api::tcs::OperationType::Coupon
+                | tinkoff_invest_api::tcs::OperationType::Dividend => {
+                    dividents.value += payment.value;
                 }
-                tinkoff_invest_api::tcs::OperationType::ServiceFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::BenefitTax => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::MarginFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::BrokerFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::SuccessFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::TrackMfee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::TrackPfee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::CashFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::OutFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::OutStampDuty => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::OutputPenalty => {
-                    fees.value += payment.value
+                tinkoff_invest_api::tcs::OperationType::ServiceFee
+                | tinkoff_invest_api::tcs::OperationType::BenefitTax
+                | tinkoff_invest_api::tcs::OperationType::MarginFee
+                | tinkoff_invest_api::tcs::OperationType::BrokerFee
+                | tinkoff_invest_api::tcs::OperationType::SuccessFee
+                | tinkoff_invest_api::tcs::OperationType::TrackMfee
+                | tinkoff_invest_api::tcs::OperationType::TrackPfee
+                | tinkoff_invest_api::tcs::OperationType::CashFee
+                | tinkoff_invest_api::tcs::OperationType::OutFee
+                | tinkoff_invest_api::tcs::OperationType::OutStampDuty
+                | tinkoff_invest_api::tcs::OperationType::AdviceFee
+                | tinkoff_invest_api::tcs::OperationType::Tax
+                | tinkoff_invest_api::tcs::OperationType::OutputPenalty => {
+                    fees.value += payment.value;
                 }
-                tinkoff_invest_api::tcs::OperationType::AdviceFee => fees.value += payment.value,
-                tinkoff_invest_api::tcs::OperationType::Dividend => {
-                    dividents.value += payment.value
-                }
-                tinkoff_invest_api::tcs::OperationType::Coupon => dividents.value += payment.value,
                 _ => {}
             }
         }
@@ -102,8 +96,8 @@ async fn main() -> TIResult<()> {
         current_assets.value += current_value.value;
         profit.value += expected_yield.value;
         let mut paper = Paper {
-            name: "".to_string(),
-            ticker: "".to_string(),
+            name: String::new(),
+            ticker: String::new(),
             figi: p.figi.clone(),
             expected_yield,
             average_buy_price,
@@ -146,8 +140,8 @@ async fn main() -> TIResult<()> {
     pf.bonds.printstd();
     pf.shares.printstd();
     pf.currencies.printstd();
-    println!("\nProfit: {}", profit);
-    println!("Portfolio size: {}", current_assets);
+    println!("\nProfit: {profit}");
+    println!("Portfolio size: {current_assets}");
 
     //println!("Response {:#?}", accounts);
     //println!("Portfolio {:#?}", portfolio);
