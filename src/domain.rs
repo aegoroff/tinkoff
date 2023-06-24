@@ -94,7 +94,7 @@ impl Asset {
 impl Asset {
     pub fn printstd(&self) {
         print!("\n{}:\n\n", self.name);
-        for p in self.papers.iter() {
+        for p in &self.papers {
             p.printstd();
             println!();
             println!();

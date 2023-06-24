@@ -9,6 +9,7 @@ use tinkoff_invest_api::{
     TIResult, TinkoffInvestService,
 };
 
+#[derive(Default)]
 pub struct Account {
     pub id: String,
     pub positions: Vec<PortfolioPosition>,
@@ -110,12 +111,11 @@ impl TinkoffClient {
 
         let accounts = users.get_accounts(GetAccountsRequest {}).await?;
 
-        let account = accounts
+        let Some(account) = accounts
             .get_ref()
             .accounts
             .iter()
-            .find(|a| a.r#type() == account)
-            .unwrap();
+            .find(|a| a.r#type() == account) else { return Ok(Account::default()); };
 
         let portfolio = operations
             .get_portfolio(PortfolioRequest {
