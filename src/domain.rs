@@ -4,9 +4,21 @@ use iso_currency::Currency;
 use prettytable::{cell, format, row, Cell, Row, Table};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Money {
     pub value: Decimal,
     pub currency: Currency,
+}
+
+pub struct Income {
+    currency: Currency,
+    income: Decimal,
+    percent: Decimal,
+}
+
+trait NumberRange {
+    fn is_negative(&self) -> bool;
+    fn is_zero(&self) -> bool;
 }
 
 pub struct Paper {
@@ -55,9 +67,53 @@ impl Money {
     }
 }
 
+impl Income {
+    pub fn new(current: Money, balance: Money) -> Self {
+        let income = current.value - balance.value;
+        let percent = (income / balance.value) * Decimal::from_i16(100).unwrap_or_default();
+        Self {
+            currency: current.currency,
+            percent,
+            income,
+        }
+    }
+}
+
 impl Display for Money {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} {}", self.value.round_dp(2), self.currency.symbol())
+    }
+}
+
+impl NumberRange for Money {
+    fn is_negative(&self) -> bool {
+        self.value.is_sign_negative()
+    }
+
+    fn is_zero(&self) -> bool {
+        self.value.is_zero()
+    }
+}
+
+impl Display for Income {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} ({}%)",
+            self.income.round_dp(2),
+            self.currency.symbol(),
+            self.percent.round_dp(2)
+        )
+    }
+}
+
+impl NumberRange for Income {
+    fn is_negative(&self) -> bool {
+        self.income.is_sign_negative()
+    }
+
+    fn is_zero(&self) -> bool {
+        self.income.is_zero()
     }
 }
 
@@ -131,22 +187,23 @@ impl Paper {
         table.add_row(row!["Current position price", self.current_value]);
         table.add_empty_row();
 
-        let expected_yield = Self::colored_cell(&self.expected_yield);
+        let income = Income::new(self.current_value, self.balance_value);
+        let expected_yield = Self::colored_cell(income);
         table.add_row(Row::new(vec![cell!("Income"), expected_yield]));
 
-        let dividents_and_coupons = Self::colored_cell(&self.dividents_and_coupons);
+        let dividents_and_coupons = Self::colored_cell(self.dividents_and_coupons);
         table.add_row(Row::new(vec![cell!("Dividends"), dividents_and_coupons]));
 
-        let taxes_and_fees = Self::colored_cell(&self.taxes_and_fees);
+        let taxes_and_fees = Self::colored_cell(self.taxes_and_fees);
         table.add_row(Row::new(vec![cell!("Taxes and fees"), taxes_and_fees]));
 
         table.printstd();
     }
 
-    fn colored_cell(value: &Money) -> Cell {
-        if value.value.is_sign_negative() {
+    fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
+        if value.is_negative() {
             cell!(Fr->value)
-        } else if value.value.is_zero() {
+        } else if value.is_zero() {
             cell!(value)
         } else {
             cell!(Fg->value)
