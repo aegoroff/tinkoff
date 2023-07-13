@@ -193,6 +193,16 @@ impl Asset {
             })
     }
 
+    pub fn dividents(&self) -> Money {
+        let currency = self.papers[0].current_value.currency;
+        self.papers
+            .iter()
+            .fold(Money::zero(currency), |mut acc, p| {
+                acc.add(&p.dividents_and_coupons);
+                acc
+            })
+    }
+
     pub fn printstd(&self) {
         let name = style(&self.name).with(Color::Blue).bold();
 
@@ -203,14 +213,23 @@ impl Asset {
             println!();
         }
 
-        let income = ux::colored_cell(self.income());
+        let balance_income = self.income();
+        let dividents = self.dividents();
+        let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
+        total_income.add(&balance_income);
+
+        let balance_income = ux::colored_cell(balance_income);
+        let total_income = ux::colored_cell(total_income);
+
         let mut table = Table::new();
         table.set_format(ux::new_table_format());
 
         let title = format!("{} totals:", self.name);
         table.set_titles(row![bFyH2 => title, ""]);
-        table.add_row(Row::new(vec![cell!("Income"), income]));
-        table.add_row(row!["Instruments count", r->self.papers.len()]);
+        table.add_row(Row::new(vec![cell!("Balance income"), balance_income]));
+        table.add_row(row!["Dividents or coupons", Fg->dividents]);
+        table.add_row(Row::new(vec![cell!("Total income"), total_income]));
+        table.add_row(row!["Instruments count", self.papers.len()]);
         table.printstd();
     }
 }
