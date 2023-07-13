@@ -208,7 +208,7 @@ impl Asset {
         table.set_format(ux::new_table_format());
 
         let title = format!("{} totals:", self.name);
-        table.set_titles(row![bFrH2 => title, ""]);
+        table.set_titles(row![bFyH2 => title, ""]);
         table.add_row(Row::new(vec![cell!("Income"), income]));
         table.add_row(row!["Instruments count", r->self.papers.len()]);
         table.printstd();

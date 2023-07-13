@@ -157,6 +157,7 @@ async fn main() -> TIResult<()> {
     println!();
     println!();
     table.printstd();
+    println!();
 
     Ok(())
 }
