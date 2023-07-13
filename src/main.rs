@@ -1,7 +1,7 @@
 use std::env;
 
 use prettytable::{cell, row, Row, Table};
-use tinff::{
+use tinkoff::{
     client::TinkoffClient,
     domain::{Money, Paper, Portfolio},
     to_decimal, to_money, ux,
