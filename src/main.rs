@@ -1,9 +1,10 @@
 use std::env;
 
+use prettytable::{cell, row, Row, Table};
 use tinff::{
     client::TinkoffClient,
     domain::{Money, Paper, Portfolio},
-    to_decimal, to_money,
+    to_decimal, to_money, ux,
 };
 use tinkoff_invest_api::{tcs::AccountType, TIResult};
 
@@ -26,8 +27,6 @@ async fn main() -> TIResult<()> {
     let currencies = currencies?;
     let portfolio = portfolio?;
 
-    let mut profit = Money::zero(iso_currency::Currency::RUB);
-    let mut current_assets = Money::zero(iso_currency::Currency::RUB);
     let mut pf = Portfolio::new();
     for p in &portfolio.positions {
         let Some(currency) = iso_currency::Currency::from_code(
@@ -93,8 +92,6 @@ async fn main() -> TIResult<()> {
             }
         }
 
-        current_assets.value += current_value.value;
-        profit.value += expected_yield.value;
         let mut paper = Paper {
             name: String::new(),
             ticker: String::new(),
@@ -140,10 +137,26 @@ async fn main() -> TIResult<()> {
     pf.bonds.printstd();
     pf.shares.printstd();
     pf.currencies.printstd();
-    println!("\nProfit: {profit}");
-    println!("Portfolio size: {current_assets}");
 
-    //println!("Response {:#?}", accounts);
-    //println!("Portfolio {:#?}", portfolio);
+    let mut income = pf.bonds.income();
+    income.add(&pf.shares.income());
+    income.add(&pf.currencies.income());
+
+    let mut assets = pf.bonds.current();
+    assets.add(&pf.shares.current());
+    assets.add(&pf.currencies.current());
+
+    let income = ux::colored_cell(income);
+    let mut table = Table::new();
+    table.set_format(ux::new_table_format());
+
+    table.set_titles(row![bFrH2 => "Portfolio totals:", ""]);
+    table.add_row(Row::new(vec![cell!("Income"), income]));
+    table.add_row(row!["Portfolio size", assets]);
+
+    println!();
+    println!();
+    table.printstd();
+
     Ok(())
 }

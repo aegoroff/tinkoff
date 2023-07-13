@@ -62,11 +62,16 @@ impl Money {
     pub fn from_value(value: Decimal, currency: Currency) -> Self {
         Self { value, currency }
     }
+
     pub fn zero(currency: Currency) -> Self {
         Self {
             value: Decimal::from_i64(0).unwrap(),
             currency,
         }
+    }
+
+    pub fn add(&mut self, other: &Money) {
+        self.value += other.value;
     }
 }
 
@@ -167,13 +172,23 @@ impl Asset {
         self.papers.push(paper);
     }
 
-    pub fn total_income(&self) -> Income {
+    pub fn income(&self) -> Income {
         let currency = self.papers[0].current_value.currency;
         self.papers
             .iter()
             .fold(Income::zero(currency), |mut acc, p| {
                 let income = Income::new(p.current_value, p.balance_value);
                 acc.add(&income);
+                acc
+            })
+    }
+
+    pub fn current(&self) -> Money {
+        let currency = self.papers[0].current_value.currency;
+        self.papers
+            .iter()
+            .fold(Money::zero(currency), |mut acc, p| {
+                acc.add(&p.current_value);
                 acc
             })
     }
@@ -188,12 +203,11 @@ impl Asset {
             println!();
         }
 
-        let income = self.total_income();
-        let income = ux::colored_cell(income);
+        let income = ux::colored_cell(self.income());
         let mut table = Table::new();
         table.set_format(ux::new_table_format());
 
-        let title = format!("{} total:", self.name);
+        let title = format!("{} totals:", self.name);
         table.set_titles(row![bFrH2 => title, ""]);
         table.add_row(Row::new(vec![cell!("Income"), income]));
         table.add_row(row!["Instruments count", r->self.papers.len()]);
