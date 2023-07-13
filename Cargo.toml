@@ -22,3 +22,8 @@ prettytable-rs = "0.10.0"
 iso_currency = "0.4.3"
 itertools = "0.11.0"
 crossterm = "0.26.1"
+
+[profile.release]
+lto = true
+strip = true
+panic = 'abort'
