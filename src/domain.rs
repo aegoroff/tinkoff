@@ -1,8 +1,11 @@
 use std::fmt::Display;
 
+use crossterm::style::{style, Color, Stylize};
 use iso_currency::Currency;
-use prettytable::{cell, format, row, Cell, Row, Table};
+use prettytable::{cell, row, Row, Table};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
+
+use crate::ux;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Money {
@@ -12,11 +15,11 @@ pub struct Money {
 
 pub struct Income {
     currency: Currency,
-    income: Decimal,
-    percent: Decimal,
+    current: Decimal,
+    balance: Decimal,
 }
 
-trait NumberRange {
+pub trait NumberRange {
     fn is_negative(&self) -> bool;
     fn is_zero(&self) -> bool;
 }
@@ -69,13 +72,28 @@ impl Money {
 
 impl Income {
     pub fn new(current: Money, balance: Money) -> Self {
-        let income = current.value - balance.value;
-        let percent = (income / balance.value) * Decimal::from_i16(100).unwrap_or_default();
         Self {
             currency: current.currency,
-            percent,
-            income,
+            current: current.value,
+            balance: balance.value,
         }
+    }
+
+    pub fn zero(currency: Currency) -> Self {
+        Self {
+            currency,
+            current: Decimal::default(),
+            balance: Decimal::default(),
+        }
+    }
+
+    pub fn add(&mut self, other: &Income) {
+        self.current += other.current;
+        self.balance += other.balance;
+    }
+
+    fn income(&self) -> Decimal {
+        self.current - self.balance
     }
 }
 
@@ -97,23 +115,26 @@ impl NumberRange for Money {
 
 impl Display for Income {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let income = self.income();
+        let percent = (income / self.balance) * Decimal::from_i16(100).unwrap_or_default();
+
         write!(
             f,
             "{} {} ({}%)",
-            self.income.round_dp(2),
+            income.round_dp(2),
             self.currency.symbol(),
-            self.percent.round_dp(2)
+            percent.round_dp(2)
         )
     }
 }
 
 impl NumberRange for Income {
     fn is_negative(&self) -> bool {
-        self.income.is_sign_negative()
+        self.income().is_sign_negative()
     }
 
     fn is_zero(&self) -> bool {
-        self.income.is_zero()
+        self.income().is_zero()
     }
 }
 
@@ -145,34 +166,45 @@ impl Asset {
     pub fn add_paper(&mut self, paper: Paper) {
         self.papers.push(paper);
     }
-}
 
-impl Asset {
+    pub fn total_income(&self) -> Income {
+        let currency = self.papers[0].current_value.currency;
+        self.papers
+            .iter()
+            .fold(Income::zero(currency), |mut acc, p| {
+                let income = Income::new(p.current_value, p.balance_value);
+                acc.add(&income);
+                acc
+            })
+    }
+
     pub fn printstd(&self) {
-        print!("\n{}:\n\n", self.name);
+        let name = style(&self.name).with(Color::Blue).bold();
+
+        print!("\n {}:\n\n", name);
         for p in &self.papers {
             p.printstd();
             println!();
             println!();
         }
+
+        let income = self.total_income();
+        let income = ux::colored_cell(income);
+        let mut table = Table::new();
+        table.set_format(ux::new_table_format());
+
+        let title = format!("{} total:", self.name);
+        table.set_titles(row![bFrH2 => title, ""]);
+        table.add_row(Row::new(vec![cell!("Income"), income]));
+        table.add_row(row!["Instruments count", r->self.papers.len()]);
+        table.printstd();
     }
 }
 
 impl Paper {
     pub fn printstd(&self) {
         let mut table = Table::new();
-
-        let format = format::FormatBuilder::new()
-            .column_separator(' ')
-            .borders(' ')
-            .separators(
-                &[format::LinePosition::Title],
-                format::LineSeparator::new('-', ' ', ' ', ' '),
-            )
-            .indent(1)
-            .padding(0, 0)
-            .build();
-        table.set_format(format);
+        table.set_format(ux::new_table_format());
 
         let currency = self.balance_value.currency.code().to_owned();
         let title = format!(
@@ -188,25 +220,15 @@ impl Paper {
         table.add_empty_row();
 
         let income = Income::new(self.current_value, self.balance_value);
-        let expected_yield = Self::colored_cell(income);
+        let expected_yield = ux::colored_cell(income);
         table.add_row(Row::new(vec![cell!("Income"), expected_yield]));
 
-        let dividents_and_coupons = Self::colored_cell(self.dividents_and_coupons);
+        let dividents_and_coupons = ux::colored_cell(self.dividents_and_coupons);
         table.add_row(Row::new(vec![cell!("Dividends"), dividents_and_coupons]));
 
-        let taxes_and_fees = Self::colored_cell(self.taxes_and_fees);
+        let taxes_and_fees = ux::colored_cell(self.taxes_and_fees);
         table.add_row(Row::new(vec![cell!("Taxes and fees"), taxes_and_fees]));
 
         table.printstd();
-    }
-
-    fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
-        if value.is_negative() {
-            cell!(Fr->value)
-        } else if value.is_zero() {
-            cell!(value)
-        } else {
-            cell!(Fg->value)
-        }
     }
 }
