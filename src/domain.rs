@@ -227,8 +227,8 @@ impl Asset {
         let title = format!("{} totals:", self.name);
         table.set_titles(row![bFyH2 => title, ""]);
         table.add_row(Row::new(vec![cell!("Balance income"), balance_income]));
-        table.add_row(row!["Dividents or coupons", Fg->dividents]);
         table.add_row(Row::new(vec![cell!("Total income"), total_income]));
+        table.add_row(row!["Dividents or coupons", Fg->dividents]);
         table.add_row(row!["Instruments count", self.papers.len()]);
         table.printstd();
     }

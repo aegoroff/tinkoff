@@ -3,7 +3,7 @@ use std::env;
 use prettytable::{cell, row, Row, Table};
 use tinkoff::{
     client::TinkoffClient,
-    domain::{Money, Paper, Portfolio},
+    domain::{Income, Money, Paper, Portfolio},
     to_decimal, to_money, ux,
 };
 use tinkoff_invest_api::{tcs::AccountType, TIResult};
@@ -142,16 +142,25 @@ async fn main() -> TIResult<()> {
     income.add(&pf.shares.income());
     income.add(&pf.currencies.income());
 
+    let mut dividents = pf.bonds.dividents();
+    dividents.add(&pf.shares.dividents());
+
+    let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
+    total_income.add(&income);
+
     let mut assets = pf.bonds.current();
     assets.add(&pf.shares.current());
     assets.add(&pf.currencies.current());
 
     let income = ux::colored_cell(income);
+    let total_income = ux::colored_cell(total_income);
     let mut table = Table::new();
     table.set_format(ux::new_table_format());
 
     table.set_titles(row![bFrH2 => "Portfolio totals:", ""]);
-    table.add_row(Row::new(vec![cell!("Income"), income]));
+    table.add_row(Row::new(vec![cell!("Balance income"), income]));
+    table.add_row(Row::new(vec![cell!("Total income"), total_income]));
+    table.add_row(row!["Dividents and coupons", Fg->dividents]);
     table.add_row(row!["Portfolio size", assets]);
 
     println!();
