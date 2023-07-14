@@ -19,6 +19,17 @@ pub struct TinkoffClient {
     service: TinkoffInvestService,
 }
 
+macro_rules! collect {
+    ($response:ident, $t:tt) => {{
+        $response
+            .into_inner()
+            .instruments
+            .into_iter()
+            .map(|x| (x.figi.clone(), x))
+            .collect::<HashMap<String, $t>>()
+    }};
+}
+
 impl TinkoffClient {
     pub fn new(token: String) -> Self {
         Self {
@@ -34,12 +45,7 @@ impl TinkoffClient {
                 instrument_status: InstrumentStatus::All as i32,
             })
             .await?;
-        let bonds = bonds
-            .into_inner()
-            .instruments
-            .into_iter()
-            .map(|x| (x.figi.clone(), x))
-            .collect::<HashMap<String, Bond>>();
+        let bonds = collect!(bonds, Bond);
         Ok(bonds)
     }
 
@@ -51,12 +57,7 @@ impl TinkoffClient {
                 instrument_status: InstrumentStatus::All as i32,
             })
             .await?;
-        let shares = shares
-            .into_inner()
-            .instruments
-            .into_iter()
-            .map(|x| (x.figi.clone(), x))
-            .collect::<HashMap<String, Share>>();
+        let shares = collect!(shares, Share);
         Ok(shares)
     }
 
@@ -68,12 +69,7 @@ impl TinkoffClient {
                 instrument_status: InstrumentStatus::All as i32,
             })
             .await?;
-        let etfs = etfs
-            .into_inner()
-            .instruments
-            .into_iter()
-            .map(|x| (x.figi.clone(), x))
-            .collect::<HashMap<String, Etf>>();
+        let etfs = collect!(etfs, Etf);
         Ok(etfs)
     }
 
@@ -85,13 +81,7 @@ impl TinkoffClient {
                 instrument_status: InstrumentStatus::All as i32,
             })
             .await?;
-        let currencies = currencies
-            .into_inner()
-            .instruments
-            .into_iter()
-            .map(|x| (x.figi.clone(), x))
-            .collect::<HashMap<String, Currency>>();
-
+        let currencies = collect!(currencies, Currency);
         Ok(currencies)
     }
 
