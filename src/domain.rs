@@ -173,40 +173,40 @@ impl Asset {
     }
 
     pub fn income(&self) -> Income {
-        let currency = self.papers[0].current_value.currency;
-        self.papers
-            .iter()
-            .fold(Income::zero(currency), |mut acc, p| {
-                let income = Income::new(p.current_value, p.balance_value);
-                acc.add(&income);
-                acc
-            })
+        self.fold(Income::zero, |mut acc, p| {
+            let income = Income::new(p.current_value, p.balance_value);
+            acc.add(&income);
+            acc
+        })
     }
 
     pub fn current(&self) -> Money {
-        let currency = self.papers[0].current_value.currency;
-        self.papers
-            .iter()
-            .fold(Money::zero(currency), |mut acc, p| {
-                acc.add(&p.current_value);
-                acc
-            })
+        self.fold(Money::zero, |mut acc, p| {
+            acc.add(&p.current_value);
+            acc
+        })
     }
 
     pub fn dividents(&self) -> Money {
+        self.fold(Money::zero, |mut acc, p| {
+            acc.add(&p.dividents_and_coupons);
+            acc
+        })
+    }
+
+    fn fold<B, IF, F>(&self, mut init: IF, f: F) -> B
+    where
+        IF: FnMut(Currency) -> B,
+        F: FnMut(B, &Paper) -> B,
+    {
         let currency = self.papers[0].current_value.currency;
-        self.papers
-            .iter()
-            .fold(Money::zero(currency), |mut acc, p| {
-                acc.add(&p.dividents_and_coupons);
-                acc
-            })
+        self.papers.iter().fold(init(currency), f)
     }
 
     pub fn printstd(&self) {
         let name = style(&self.name).with(Color::Blue).bold();
 
-        print!("\n {}:\n\n", name);
+        print!("\n {name}:\n\n");
         for p in &self.papers {
             p.printstd();
             println!();
