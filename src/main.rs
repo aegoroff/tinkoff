@@ -2,7 +2,7 @@ use std::env;
 
 use prettytable::{cell, row, Row, Table};
 use tinkoff::{
-    client::TinkoffClient,
+    client::{to_direction, MoneyDirection, TinkoffClient},
     domain::{Income, Money, Paper, Portfolio},
     progress::{Progress, Progresser},
     to_decimal, to_money, ux,
@@ -69,29 +69,14 @@ async fn main() -> TIResult<()> {
             let Some(payment) = to_money(op.payment.as_ref()) else {
                 continue;
             };
-            match op_type {
-                tinkoff_invest_api::tcs::OperationType::DividendTax
-                | tinkoff_invest_api::tcs::OperationType::BondTax
-                | tinkoff_invest_api::tcs::OperationType::Coupon
-                | tinkoff_invest_api::tcs::OperationType::Dividend => {
+            match to_direction(op_type) {
+                MoneyDirection::Income => {
                     dividents.value += payment.value;
                 }
-                tinkoff_invest_api::tcs::OperationType::ServiceFee
-                | tinkoff_invest_api::tcs::OperationType::BenefitTax
-                | tinkoff_invest_api::tcs::OperationType::MarginFee
-                | tinkoff_invest_api::tcs::OperationType::BrokerFee
-                | tinkoff_invest_api::tcs::OperationType::SuccessFee
-                | tinkoff_invest_api::tcs::OperationType::TrackMfee
-                | tinkoff_invest_api::tcs::OperationType::TrackPfee
-                | tinkoff_invest_api::tcs::OperationType::CashFee
-                | tinkoff_invest_api::tcs::OperationType::OutFee
-                | tinkoff_invest_api::tcs::OperationType::OutStampDuty
-                | tinkoff_invest_api::tcs::OperationType::AdviceFee
-                | tinkoff_invest_api::tcs::OperationType::Tax
-                | tinkoff_invest_api::tcs::OperationType::OutputPenalty => {
+                MoneyDirection::Withdraw => {
                     fees.value += payment.value;
                 }
-                _ => {}
+                MoneyDirection::Unspecified => {}
             }
         }
 

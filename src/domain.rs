@@ -3,7 +3,8 @@ use std::fmt::Display;
 use crossterm::style::{style, Color, Stylize};
 use iso_currency::Currency;
 use prettytable::{cell, row, Row, Table};
-use rust_decimal::{prelude::FromPrimitive, Decimal};
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 
 use crate::ux;
 
@@ -65,7 +66,7 @@ impl Money {
 
     pub fn zero(currency: Currency) -> Self {
         Self {
-            value: Decimal::from_i64(0).unwrap(),
+            value: Decimal::default(),
             currency,
         }
     }
@@ -121,7 +122,7 @@ impl NumberRange for Money {
 impl Display for Income {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let income = self.income();
-        let percent = (income / self.balance) * Decimal::from_i16(100).unwrap_or_default();
+        let percent = (income / self.balance) * dec!(100);
 
         write!(
             f,

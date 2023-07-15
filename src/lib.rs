@@ -1,5 +1,5 @@
 use domain::Money;
-use rust_decimal::{prelude::FromPrimitive, Decimal};
+use rust_decimal::Decimal;
 use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
 
 pub mod client;
@@ -16,7 +16,7 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
         };
         Decimal::from_str_exact(&s).unwrap()
     } else {
-        Decimal::from_i64(0).unwrap()
+        Decimal::default()
     }
 }
 

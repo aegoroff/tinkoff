@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use tinkoff_invest_api::{
     tcs::{
         portfolio_request::CurrencyRequest, AccountType, Bond, Currency, Etf, GetAccountsRequest,
-        InstrumentStatus, InstrumentsRequest, Operation, OperationState, OperationsRequest,
-        PortfolioPosition, PortfolioRequest, Share,
+        InstrumentStatus, InstrumentsRequest, Operation, OperationState, OperationType,
+        OperationsRequest, PortfolioPosition, PortfolioRequest, Share,
     },
     TIResult, TinkoffInvestService,
 };
@@ -17,6 +17,40 @@ pub struct Account {
 
 pub struct TinkoffClient {
     service: TinkoffInvestService,
+}
+
+pub enum MoneyDirection {
+    Income,
+    Withdraw,
+    Unspecified,
+}
+
+pub fn to_direction(op: OperationType) -> MoneyDirection {
+    match op {
+        tinkoff_invest_api::tcs::OperationType::DividendTax
+        | tinkoff_invest_api::tcs::OperationType::DividendTaxProgressive
+        | tinkoff_invest_api::tcs::OperationType::BondTax
+        | tinkoff_invest_api::tcs::OperationType::BondTaxProgressive
+        | tinkoff_invest_api::tcs::OperationType::Coupon
+        | tinkoff_invest_api::tcs::OperationType::BenefitTax
+        | tinkoff_invest_api::tcs::OperationType::Overnight
+        | tinkoff_invest_api::tcs::OperationType::BondRepaymentFull
+        | tinkoff_invest_api::tcs::OperationType::BondRepayment
+        | tinkoff_invest_api::tcs::OperationType::Dividend => MoneyDirection::Income,
+        tinkoff_invest_api::tcs::OperationType::ServiceFee
+        | tinkoff_invest_api::tcs::OperationType::MarginFee
+        | tinkoff_invest_api::tcs::OperationType::BrokerFee
+        | tinkoff_invest_api::tcs::OperationType::SuccessFee
+        | tinkoff_invest_api::tcs::OperationType::TrackMfee
+        | tinkoff_invest_api::tcs::OperationType::TrackPfee
+        | tinkoff_invest_api::tcs::OperationType::CashFee
+        | tinkoff_invest_api::tcs::OperationType::OutFee
+        | tinkoff_invest_api::tcs::OperationType::OutStampDuty
+        | tinkoff_invest_api::tcs::OperationType::AdviceFee
+        | tinkoff_invest_api::tcs::OperationType::Tax
+        | tinkoff_invest_api::tcs::OperationType::OutputPenalty => MoneyDirection::Withdraw,
+        _ => MoneyDirection::Unspecified,
+    }
 }
 
 macro_rules! collect {
