@@ -4,6 +4,7 @@ use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
 
 pub mod client;
 pub mod domain;
+pub mod progress;
 pub mod ux;
 
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {

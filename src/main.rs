@@ -4,6 +4,7 @@ use prettytable::{cell, row, Row, Table};
 use tinkoff::{
     client::TinkoffClient,
     domain::{Income, Money, Paper, Portfolio},
+    progress::{Progress, Progresser},
     to_decimal, to_money, ux,
 };
 use tinkoff_invest_api::{tcs::AccountType, TIResult};
@@ -28,6 +29,8 @@ async fn main() -> TIResult<()> {
     let portfolio = portfolio?;
 
     let mut pf = Portfolio::new();
+    let mut progresser = Progresser::new(portfolio.positions.len() as u64);
+    let mut progress = 1u64;
     for p in &portfolio.positions {
         let Some(currency) = iso_currency::Currency::from_code(
             &p.current_price
@@ -133,7 +136,10 @@ async fn main() -> TIResult<()> {
             }
             _ => {}
         };
+        progresser.progress(progress);
+        progress += 1;
     }
+    progresser.finish("  Completed");
     pf.bonds.printstd();
     pf.shares.printstd();
     pf.currencies.printstd();
