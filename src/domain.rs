@@ -8,6 +8,8 @@ use rust_decimal_macros::dec;
 
 use crate::ux;
 
+const HUNDRED: Decimal = dec!(100);
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Money {
     pub value: Decimal,
@@ -125,7 +127,7 @@ impl Display for Income {
         let percent = if self.balance.is_zero() {
             Decimal::default()
         } else {
-            (income / self.balance) * dec!(100)
+            (income / self.balance) * HUNDRED
         };
 
         write!(
