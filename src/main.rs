@@ -125,6 +125,7 @@ async fn main() -> TIResult<()> {
         progress += 1;
     }
     progresser.finish("  Completed");
+    pf.etfs.printstd();
     pf.bonds.printstd();
     pf.shares.printstd();
     pf.currencies.printstd();

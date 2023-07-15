@@ -122,7 +122,11 @@ impl NumberRange for Money {
 impl Display for Income {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let income = self.income();
-        let percent = (income / self.balance) * dec!(100);
+        let percent = if self.balance.is_zero() {
+            Decimal::default()
+        } else {
+            (income / self.balance) * dec!(100)
+        };
 
         write!(
             f,
@@ -148,7 +152,7 @@ impl Portfolio {
     pub fn new() -> Self {
         Self {
             bonds: Asset::new("Bonds".to_owned()),
-            shares: Asset::new("Stocks".to_owned()),
+            shares: Asset::new("Shares".to_owned()),
             etfs: Asset::new("Etfs".to_owned()),
             currencies: Asset::new("Currencies".to_owned()),
         }
@@ -200,7 +204,11 @@ impl Asset {
         IF: FnMut(Currency) -> B,
         F: FnMut(B, &Paper) -> B,
     {
-        let currency = self.papers[0].current_value.currency;
+        let currency = if !self.papers.is_empty() {
+            self.papers[0].current_value.currency
+        } else {
+            iso_currency::Currency::RUB
+        };
         self.papers.iter().fold(init(currency), f)
     }
 

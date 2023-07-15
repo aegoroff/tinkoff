@@ -33,9 +33,9 @@ pub fn to_direction(op: OperationType) -> MoneyDirection {
         | tinkoff_invest_api::tcs::OperationType::BondTaxProgressive
         | tinkoff_invest_api::tcs::OperationType::Coupon
         | tinkoff_invest_api::tcs::OperationType::BenefitTax
+        | tinkoff_invest_api::tcs::OperationType::BenefitTaxProgressive
         | tinkoff_invest_api::tcs::OperationType::Overnight
-        | tinkoff_invest_api::tcs::OperationType::BondRepaymentFull
-        | tinkoff_invest_api::tcs::OperationType::BondRepayment
+        | tinkoff_invest_api::tcs::OperationType::Tax
         | tinkoff_invest_api::tcs::OperationType::Dividend => MoneyDirection::Income,
         tinkoff_invest_api::tcs::OperationType::ServiceFee
         | tinkoff_invest_api::tcs::OperationType::MarginFee
@@ -47,7 +47,6 @@ pub fn to_direction(op: OperationType) -> MoneyDirection {
         | tinkoff_invest_api::tcs::OperationType::OutFee
         | tinkoff_invest_api::tcs::OperationType::OutStampDuty
         | tinkoff_invest_api::tcs::OperationType::AdviceFee
-        | tinkoff_invest_api::tcs::OperationType::Tax
         | tinkoff_invest_api::tcs::OperationType::OutputPenalty => MoneyDirection::Withdraw,
         _ => MoneyDirection::Unspecified,
     }
