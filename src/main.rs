@@ -2,7 +2,7 @@ use std::env;
 
 use prettytable::{cell, row, Row, Table};
 use tinkoff::{
-    client::{to_direction, MoneyDirection, TinkoffClient},
+    client::{to_influence, OperationInfluence, TinkoffClient},
     domain::{Income, Money, Paper, Portfolio},
     progress::{Progress, Progresser},
     to_decimal, to_money, ux,
@@ -69,14 +69,14 @@ async fn main() -> TIResult<()> {
             let Some(payment) = to_money(op.payment.as_ref()) else {
                 continue;
             };
-            match to_direction(op_type) {
-                MoneyDirection::Income => {
+            match to_influence(op_type) {
+                OperationInfluence::PureIncome => {
                     dividents.value += payment.value;
                 }
-                MoneyDirection::Withdraw => {
+                OperationInfluence::Fees => {
                     fees.value += payment.value;
                 }
-                MoneyDirection::Unspecified => {}
+                OperationInfluence::Unspecified => {}
             }
         }
 

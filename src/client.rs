@@ -19,13 +19,17 @@ pub struct TinkoffClient {
     service: TinkoffInvestService,
 }
 
-pub enum MoneyDirection {
-    Income,
-    Withdraw,
+pub enum OperationInfluence {
+    /// Anything that affects to dividents or coupons value.<br/>
+    /// Including negative values like divident tax etc. to calculate pure income<br/>
+    /// without taxes.
+    PureIncome,
+    /// Comissions and other losses
+    Fees,
     Unspecified,
 }
 
-pub fn to_direction(op: OperationType) -> MoneyDirection {
+pub fn to_influence(op: OperationType) -> OperationInfluence {
     match op {
         tinkoff_invest_api::tcs::OperationType::DividendTax
         | tinkoff_invest_api::tcs::OperationType::DividendTaxProgressive
@@ -36,7 +40,7 @@ pub fn to_direction(op: OperationType) -> MoneyDirection {
         | tinkoff_invest_api::tcs::OperationType::BenefitTaxProgressive
         | tinkoff_invest_api::tcs::OperationType::Overnight
         | tinkoff_invest_api::tcs::OperationType::Tax
-        | tinkoff_invest_api::tcs::OperationType::Dividend => MoneyDirection::Income,
+        | tinkoff_invest_api::tcs::OperationType::Dividend => OperationInfluence::PureIncome,
         tinkoff_invest_api::tcs::OperationType::ServiceFee
         | tinkoff_invest_api::tcs::OperationType::MarginFee
         | tinkoff_invest_api::tcs::OperationType::BrokerFee
@@ -47,8 +51,8 @@ pub fn to_direction(op: OperationType) -> MoneyDirection {
         | tinkoff_invest_api::tcs::OperationType::OutFee
         | tinkoff_invest_api::tcs::OperationType::OutStampDuty
         | tinkoff_invest_api::tcs::OperationType::AdviceFee
-        | tinkoff_invest_api::tcs::OperationType::OutputPenalty => MoneyDirection::Withdraw,
-        _ => MoneyDirection::Unspecified,
+        | tinkoff_invest_api::tcs::OperationType::OutputPenalty => OperationInfluence::Fees,
+        _ => OperationInfluence::Unspecified,
     }
 }
 
