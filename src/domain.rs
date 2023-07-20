@@ -6,7 +6,7 @@ use prettytable::{cell, row, Row, Table};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
-use crate::ux;
+use crate::ux::{self, format_decimal};
 
 const HUNDRED: Decimal = dec!(100);
 
@@ -107,7 +107,12 @@ impl Income {
 
 impl Display for Money {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {}", self.value.round_dp(2), self.currency.symbol())
+        write!(
+            f,
+            "{} {}",
+            format_decimal(self.value)?,
+            self.currency.symbol()
+        )
     }
 }
 
@@ -133,7 +138,7 @@ impl Display for Income {
         write!(
             f,
             "{} {} ({}%)",
-            income.round_dp(2),
+            format_decimal(income)?,
             self.currency.symbol(),
             percent.round_dp(2)
         )

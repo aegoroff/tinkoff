@@ -24,6 +24,7 @@ iso_currency = "0.4.3"
 itertools = "0.11.0"
 crossterm = "0.26.1"
 indicatif = "0.17.5"
+num-format = "0.4.4"
 
 [profile.release]
 lto = true
