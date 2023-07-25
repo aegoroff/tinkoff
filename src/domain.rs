@@ -198,7 +198,7 @@ impl Asset {
             acc
         })
     }
-    
+
     pub fn balance(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
             acc.add(&p.balance_value);
@@ -275,8 +275,8 @@ impl Paper {
         table.add_row(row!["Average buy price", self.average_buy_price]);
         table.add_row(row!["Last instrument price", self.current_instrument_price]);
         table.add_row(row!["Current items count", self.quantity.round_dp(2)]);
-        table.add_row(row!["Expenses", self.balance_value]);
-        table.add_row(row!["Current position price", self.current_value]);
+        table.add_row(row!["Balance value", self.balance_value]);
+        table.add_row(row!["Current value", self.current_value]);
         table.add_empty_row();
 
         let income = Income::new(self.current_value, self.balance_value);
