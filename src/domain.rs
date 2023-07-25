@@ -292,3 +292,47 @@ impl Paper {
         table.printstd();
     }
 }
+
+impl Portfolio {
+    pub fn printstd(&self) {
+        self.etfs.printstd();
+        self.bonds.printstd();
+        self.shares.printstd();
+        self.currencies.printstd();
+
+        let mut income = self.bonds.income();
+        income.add(&self.shares.income());
+        income.add(&self.currencies.income());
+
+        let mut balance = self.bonds.balance();
+        balance.add(&self.shares.balance());
+        balance.add(&self.currencies.balance());
+
+        let mut dividents = self.bonds.dividents();
+        dividents.add(&self.shares.dividents());
+
+        let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
+        total_income.add(&income);
+
+        let mut current = self.bonds.current();
+        current.add(&self.shares.current());
+        current.add(&self.currencies.current());
+
+        let income = ux::colored_cell(income);
+        let total_income = ux::colored_cell(total_income);
+        let mut table = Table::new();
+        table.set_format(ux::new_table_format());
+
+        table.set_titles(row![bFrH2 => "Portfolio totals:", ""]);
+        table.add_row(Row::new(vec![cell!("Balance income"), income]));
+        table.add_row(Row::new(vec![cell!("Total income"), total_income]));
+        table.add_row(row!["Dividents and coupons", Fg->dividents]);
+        table.add_row(row!["Balance value", balance]);
+        table.add_row(row!["Current value", current]);
+
+        println!();
+        println!();
+        table.printstd();
+        println!();
+    }
+}

@@ -1,11 +1,10 @@
 use std::env;
 
-use prettytable::{cell, row, Row, Table};
 use tinkoff::{
     client::{to_influence, OperationInfluence, TinkoffClient},
-    domain::{Income, Money, Paper, Portfolio},
+    domain::{Money, Paper, Portfolio},
     progress::{Progress, Progresser},
-    to_decimal, to_money, ux,
+    to_decimal, to_money,
 };
 use tinkoff_invest_api::{tcs::AccountType, TIResult};
 
@@ -125,45 +124,7 @@ async fn main() -> TIResult<()> {
         progress += 1;
     }
     progresser.finish("");
-    pf.etfs.printstd();
-    pf.bonds.printstd();
-    pf.shares.printstd();
-    pf.currencies.printstd();
-
-    let mut income = pf.bonds.income();
-    income.add(&pf.shares.income());
-    income.add(&pf.currencies.income());
-
-    let mut balance = pf.bonds.balance();
-    balance.add(&pf.shares.balance());
-    balance.add(&pf.currencies.balance());
-
-    let mut dividents = pf.bonds.dividents();
-    dividents.add(&pf.shares.dividents());
-
-    let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
-    total_income.add(&income);
-
-    let mut current = pf.bonds.current();
-    current.add(&pf.shares.current());
-    current.add(&pf.currencies.current());
-
-    let income = ux::colored_cell(income);
-    let total_income = ux::colored_cell(total_income);
-    let mut table = Table::new();
-    table.set_format(ux::new_table_format());
-
-    table.set_titles(row![bFrH2 => "Portfolio totals:", ""]);
-    table.add_row(Row::new(vec![cell!("Balance income"), income]));
-    table.add_row(Row::new(vec![cell!("Total income"), total_income]));
-    table.add_row(row!["Dividents and coupons", Fg->dividents]);
-    table.add_row(row!["Balance value", balance]);
-    table.add_row(row!["Current value", current]);
-
-    println!();
-    println!();
-    table.printstd();
-    println!();
+    pf.printstd();
 
     Ok(())
 }
