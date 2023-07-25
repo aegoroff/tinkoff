@@ -10,8 +10,8 @@ use tinkoff_invest_api::{
 };
 
 #[derive(Default)]
-pub struct Account {
-    pub id: String,
+pub struct Portfolio {
+    pub account_id: String,
     pub positions: Vec<PortfolioPosition>,
 }
 
@@ -122,7 +122,7 @@ impl TinkoffClient {
         Ok(currencies)
     }
 
-    pub async fn get_portfolio(&self, account: AccountType) -> TIResult<Account> {
+    pub async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
         let (channel, users_channel) =
             tokio::join!(self.service.create_channel(), self.service.create_channel());
         let channel = channel?;
@@ -142,7 +142,7 @@ impl TinkoffClient {
             .get_ref()
             .accounts
             .iter()
-            .find(|a| a.r#type() == account) else { return Ok(Account::default()); };
+            .find(|a| a.r#type() == account) else { return Ok(Portfolio::default()); };
 
         let portfolio = operations
             .get_portfolio(PortfolioRequest {
@@ -150,8 +150,8 @@ impl TinkoffClient {
                 currency: CurrencyRequest::Rub as i32,
             })
             .await?;
-        Ok(Account {
-            id: account.id.clone(),
+        Ok(Portfolio {
+            account_id: account.id.clone(),
             positions: portfolio.into_inner().positions,
         })
     }

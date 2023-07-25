@@ -59,7 +59,7 @@ async fn main() -> TIResult<()> {
         };
 
         let executed_ops = client
-            .get_operations(portfolio.id.clone(), p.figi.clone())
+            .get_operations(portfolio.account_id.clone(), p.figi.clone())
             .await?;
 
         let mut fees = Money::zero(currency);
