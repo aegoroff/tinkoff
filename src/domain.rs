@@ -198,6 +198,13 @@ impl Asset {
             acc
         })
     }
+    
+    pub fn balance(&self) -> Money {
+        self.fold(Money::zero, |mut acc, p| {
+            acc.add(&p.balance_value);
+            acc
+        })
+    }
 
     pub fn dividents(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
@@ -231,6 +238,8 @@ impl Asset {
 
         let balance_income = self.income();
         let dividents = self.dividents();
+        let balance_value = self.balance();
+        let current_value = self.current();
         let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
         total_income.add(&balance_income);
 
@@ -242,6 +251,8 @@ impl Asset {
 
         let title = format!("{} totals:", self.name);
         table.set_titles(row![bFyH2 => title, ""]);
+        table.add_row(row!["Balance value", balance_value]);
+        table.add_row(row!["Current value", current_value]);
         table.add_row(Row::new(vec![cell!("Balance income"), balance_income]));
         table.add_row(Row::new(vec![cell!("Total income"), total_income]));
         table.add_row(row!["Dividents or coupons", Fg->dividents]);
