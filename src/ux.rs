@@ -1,12 +1,8 @@
 use std::fmt::Error;
 
+use comfy_table::{presets, Cell, ContentArrangement, Table, TableComponent};
 use num_format::{Locale, ToFormattedString};
-use prettytable::{
-    cell,
-    format::{self, TableFormat},
-    Cell,
-};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 
 use crate::domain::NumberRange;
 
@@ -19,29 +15,40 @@ pub fn format_decimal(v: Decimal) -> Result<String, Error> {
 
     let mut fract = v.fract().round_dp(2);
     fract.set_sign_positive(true);
-    let fract : String = fract.to_string().chars().skip(1).collect();
+    let fract: String = fract.to_string().chars().skip(1).collect();
     Ok(format!("{integer}{fract}"))
 }
 
-pub fn new_table_format() -> TableFormat {
-    format::FormatBuilder::new()
-        .column_separator(' ')
-        .borders(' ')
-        .separators(
-            &[format::LinePosition::Title],
-            format::LineSeparator::new('-', ' ', ' ', ' '),
-        )
-        .indent(1)
-        .padding(0, 0)
-        .build()
+#[must_use]
+pub fn new_table() -> Table {
+    let mut table = Table::new();
+    table
+        .load_preset(presets::UTF8_FULL_CONDENSED)
+        .set_style(TableComponent::BottomBorder, ' ')
+        .set_style(TableComponent::BottomBorderIntersections, ' ')
+        .set_style(TableComponent::TopBorder, ' ')
+        .set_style(TableComponent::TopBorderIntersections, ' ')
+        .set_style(TableComponent::HeaderLines, '-')
+        .set_style(TableComponent::RightHeaderIntersection, ' ')
+        .set_style(TableComponent::LeftHeaderIntersection, ' ')
+        .set_style(TableComponent::MiddleHeaderIntersections, ' ')
+        .set_style(TableComponent::LeftBorder, ' ')
+        .set_style(TableComponent::RightBorder, ' ')
+        .set_style(TableComponent::TopRightCorner, ' ')
+        .set_style(TableComponent::TopLeftCorner, ' ')
+        .set_style(TableComponent::BottomLeftCorner, ' ')
+        .set_style(TableComponent::BottomRightCorner, ' ')
+        .set_style(TableComponent::VerticalLines, ' ')
+        .set_content_arrangement(ContentArrangement::Dynamic);
+    table
 }
 
 pub fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
     if value.is_negative() {
-        cell!(Fr->value)
+        Cell::new(value).fg(comfy_table::Color::Red)
     } else if value.is_zero() {
-        cell!(value)
+        Cell::new(value)
     } else {
-        cell!(Fg->value)
+        Cell::new(value).fg(comfy_table::Color::Green)
     }
 }

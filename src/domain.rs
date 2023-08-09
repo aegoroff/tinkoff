@@ -1,8 +1,8 @@
 use std::fmt::Display;
 
+use comfy_table::{Attribute, Cell};
 use crossterm::style::{style, Color, Stylize};
 use iso_currency::Currency;
-use prettytable::{cell, row, Row, Table};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
@@ -246,50 +246,79 @@ impl Asset {
         let balance_income = ux::colored_cell(balance_income);
         let total_income = ux::colored_cell(total_income);
 
-        let mut table = Table::new();
-        table.set_format(ux::new_table_format());
+        let mut table = ux::new_table();
 
         let title = format!("{} totals:", self.name);
-        table.set_titles(row![bFyH2 => title, ""]);
-        table.add_row(row!["Balance value", balance_value]);
-        table.add_row(row!["Current value", current_value]);
-        table.add_row(Row::new(vec![cell!("Balance income"), balance_income]));
-        table.add_row(Row::new(vec![cell!("Total income"), total_income]));
-        table.add_row(row!["Dividents or coupons", Fg->dividents]);
-        table.add_row(row!["Instruments count", self.papers.len()]);
-        table.printstd();
+        let title = Cell::new(title)
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::Yellow);
+        table.set_header(vec![title, Cell::new("")]);
+
+        table.add_row(vec![Cell::new("Balance value"), Cell::new(balance_value)]);
+        table.add_row(vec![Cell::new("Current value"), Cell::new(current_value)]);
+        table.add_row(vec![Cell::new("Balance income"), balance_income]);
+        table.add_row(vec![Cell::new("Total income"), total_income]);
+        table.add_row(vec![
+            Cell::new("Dividents or coupons"),
+            Cell::new(dividents).fg(comfy_table::Color::Green),
+        ]);
+        table.add_row(vec![
+            Cell::new("Instruments count"),
+            Cell::new(self.papers.len()),
+        ]);
+        print!("{table}");
+        println!();
     }
 }
 
 impl Paper {
     pub fn printstd(&self) {
-        let mut table = Table::new();
-        table.set_format(ux::new_table_format());
+        let mut table = ux::new_table();
 
         let currency = self.balance_value.currency.code().to_owned();
         let title = format!(
             "{} ({} | {} | {})",
             self.name, self.ticker, self.figi, currency
         );
-        table.set_titles(row![bFH2 => title]);
-        table.add_row(row!["Average buy price", self.average_buy_price]);
-        table.add_row(row!["Last instrument price", self.current_instrument_price]);
-        table.add_row(row!["Current items count", self.quantity.round_dp(2)]);
-        table.add_row(row!["Balance value", self.balance_value]);
-        table.add_row(row!["Current value", self.current_value]);
-        table.add_empty_row();
+
+        table.set_header(vec![
+            Cell::new(title).add_attribute(Attribute::Bold),
+            Cell::new(""),
+        ]);
+
+        table.add_row(vec![
+            Cell::new("Average buy price"),
+            Cell::new(self.average_buy_price),
+        ]);
+        table.add_row(vec![
+            Cell::new("Last instrument price"),
+            Cell::new(self.current_instrument_price),
+        ]);
+        table.add_row(vec![
+            Cell::new("Current items count"),
+            Cell::new(self.quantity.round_dp(2)),
+        ]);
+        table.add_row(vec![
+            Cell::new("Balance value"),
+            Cell::new(self.balance_value),
+        ]);
+        table.add_row(vec![
+            Cell::new("Current value"),
+            Cell::new(self.current_value),
+        ]);
+        table.add_row(vec!["", ""]);
 
         let income = Income::new(self.current_value, self.balance_value);
         let expected_yield = ux::colored_cell(income);
-        table.add_row(Row::new(vec![cell!("Income"), expected_yield]));
+        table.add_row(vec![Cell::new("Income"), expected_yield]);
 
         let dividents_and_coupons = ux::colored_cell(self.dividents_and_coupons);
-        table.add_row(Row::new(vec![cell!("Dividends"), dividents_and_coupons]));
+        table.add_row(vec![Cell::new("Dividends"), dividents_and_coupons]);
 
         let taxes_and_fees = ux::colored_cell(self.taxes_and_fees);
-        table.add_row(Row::new(vec![cell!("Taxes and fees"), taxes_and_fees]));
+        table.add_row(vec![Cell::new("Taxes and fees"), taxes_and_fees]);
 
-        table.printstd();
+        print!("{table}");
     }
 }
 
@@ -320,19 +349,23 @@ impl Portfolio {
 
         let income = ux::colored_cell(income);
         let total_income = ux::colored_cell(total_income);
-        let mut table = Table::new();
-        table.set_format(ux::new_table_format());
+        let mut table = ux::new_table();
 
-        table.set_titles(row![bFrH2 => "Portfolio totals:", ""]);
-        table.add_row(Row::new(vec![cell!("Balance income"), income]));
-        table.add_row(Row::new(vec![cell!("Total income"), total_income]));
-        table.add_row(row!["Dividents and coupons", Fg->dividents]);
-        table.add_row(row!["Balance value", balance]);
-        table.add_row(row!["Current value", current]);
+        let title = Cell::new("Portfolio totals:")
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::Red);
+        table.set_header(vec![title, Cell::new("")]);
+
+        table.add_row(vec![Cell::new("Balance income"), income]);
+        table.add_row(vec![Cell::new("Total income"), total_income]);
+        table.add_row(vec![
+            Cell::new("Dividents and coupons"),
+            Cell::new(dividents).fg(comfy_table::Color::Green),
+        ]);
+        table.add_row(vec![Cell::new("Balance value"), Cell::new(balance)]);
+        table.add_row(vec![Cell::new("Current value"), Cell::new(current)]);
 
         println!();
-        println!();
-        table.printstd();
-        println!();
+        println!("{table}");
     }
 }
