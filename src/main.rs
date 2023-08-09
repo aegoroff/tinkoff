@@ -124,7 +124,7 @@ async fn main() -> TIResult<()> {
         progress += 1;
     }
     progresser.finish("");
-    pf.printstd();
+    print!("{pf}");
 
     Ok(())
 }

@@ -225,15 +225,15 @@ impl Asset {
         };
         self.papers.iter().fold(init(currency), f)
     }
+}
 
-    pub fn printstd(&self) {
+impl Display for Asset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = style(&self.name).with(Color::Blue).bold();
 
-        print!("\n {name}:\n\n");
+        write!(f, "\n {name}:\n")?;
         for p in &self.papers {
-            p.printstd();
-            println!();
-            println!();
+            writeln!(f, "{p}")?;
         }
 
         let balance_income = self.income();
@@ -266,13 +266,12 @@ impl Asset {
             Cell::new("Instruments count"),
             Cell::new(self.papers.len()),
         ]);
-        print!("{table}");
-        println!();
+        write!(f, "{table}")
     }
 }
 
-impl Paper {
-    pub fn printstd(&self) {
+impl Display for Paper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut table = ux::new_table();
 
         let currency = self.balance_value.currency.code().to_owned();
@@ -318,16 +317,16 @@ impl Paper {
         let taxes_and_fees = ux::colored_cell(self.taxes_and_fees);
         table.add_row(vec![Cell::new("Taxes and fees"), taxes_and_fees]);
 
-        print!("{table}");
+        write!(f, "{table}")
     }
 }
 
-impl Portfolio {
-    pub fn printstd(&self) {
-        self.etfs.printstd();
-        self.bonds.printstd();
-        self.shares.printstd();
-        self.currencies.printstd();
+impl Display for Portfolio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}", self.etfs)?;
+        writeln!(f, "{}", self.bonds)?;
+        writeln!(f, "{}", self.shares)?;
+        writeln!(f, "{}", self.currencies)?;
 
         let mut income = self.bonds.income();
         income.add(&self.shares.income());
@@ -365,7 +364,7 @@ impl Portfolio {
         table.add_row(vec![Cell::new("Balance value"), Cell::new(balance)]);
         table.add_row(vec![Cell::new("Current value"), Cell::new(current)]);
 
-        println!();
-        println!("{table}");
+        writeln!(f)?;
+        writeln!(f, "{table}")
     }
 }
