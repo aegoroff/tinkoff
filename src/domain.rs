@@ -251,7 +251,7 @@ impl Asset {
         let title = format!("{} totals:", self.name);
         let title = Cell::new(title)
             .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::Yellow);
+            .fg(comfy_table::Color::DarkYellow);
         table.set_header(vec![title, Cell::new("")]);
 
         table.add_row(vec![Cell::new("Balance value"), Cell::new(balance_value)]);
@@ -260,7 +260,7 @@ impl Asset {
         table.add_row(vec![Cell::new("Total income"), total_income]);
         table.add_row(vec![
             Cell::new("Dividents or coupons"),
-            Cell::new(dividents).fg(comfy_table::Color::Green),
+            ux::colored_cell(dividents),
         ]);
         table.add_row(vec![
             Cell::new("Instruments count"),
@@ -353,14 +353,14 @@ impl Portfolio {
 
         let title = Cell::new("Portfolio totals:")
             .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::Red);
+            .fg(comfy_table::Color::DarkRed);
         table.set_header(vec![title, Cell::new("")]);
 
         table.add_row(vec![Cell::new("Balance income"), income]);
         table.add_row(vec![Cell::new("Total income"), total_income]);
         table.add_row(vec![
             Cell::new("Dividents and coupons"),
-            Cell::new(dividents).fg(comfy_table::Color::Green),
+            ux::colored_cell(dividents),
         ]);
         table.add_row(vec![Cell::new("Balance value"), Cell::new(balance)]);
         table.add_row(vec![Cell::new("Current value"), Cell::new(current)]);

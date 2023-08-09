@@ -45,10 +45,10 @@ pub fn new_table() -> Table {
 
 pub fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
     if value.is_negative() {
-        Cell::new(value).fg(comfy_table::Color::Red)
+        Cell::new(value).fg(comfy_table::Color::DarkRed)
     } else if value.is_zero() {
         Cell::new(value)
     } else {
-        Cell::new(value).fg(comfy_table::Color::Green)
+        Cell::new(value).fg(comfy_table::Color::DarkGreen)
     }
 }
