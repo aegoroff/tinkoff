@@ -16,6 +16,11 @@ pub struct Money {
     pub currency: Currency,
 }
 
+pub struct Instrument {
+    pub name: String,
+    pub ticker: String,
+}
+
 pub struct Income {
     currency: Currency,
     current: Decimal,

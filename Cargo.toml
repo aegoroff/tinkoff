@@ -25,6 +25,7 @@ crossterm = "0.27.0"
 indicatif = "0.17.5"
 num-format = "0.4.4"
 comfy-table = "7.0.1"
+clap = { version = "=4.3.21", features = ["std", "color", "cargo"] }
 
 [profile.release]
 lto = true
