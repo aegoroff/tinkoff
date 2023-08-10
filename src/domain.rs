@@ -273,7 +273,7 @@ impl Display for Asset {
             Cell::new("Instruments count"),
             Cell::new(self.papers.len()),
         ]);
-        asset_table.add_row(vec![Cell::new(format!("{table}"))]);
+        asset_table.add_row(vec![Cell::new(table)]);
         write!(f, "{asset_table}")
     }
 }

@@ -322,7 +322,7 @@ async fn asset(
         progress += 1;
     }
     progresser.finish();
-    print!("{asset}");
+    println!("{asset}");
 
     Ok(())
 }
