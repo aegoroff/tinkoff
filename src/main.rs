@@ -13,6 +13,22 @@ use tinkoff_invest_api::{tcs::AccountType, TIResult};
 #[macro_use]
 extern crate clap;
 
+macro_rules! instruments {
+    ($i:ident) => {{
+        $i.iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    Instrument {
+                        name: v.name.clone(),
+                        ticker: v.ticker.clone(),
+                    },
+                )
+            })
+            .collect::<HashMap<String, Instrument>>()
+    }};
+}
+
 #[tokio::main]
 async fn main() -> TIResult<()> {
     let cli = build_cli().get_matches();
@@ -157,81 +173,29 @@ async fn all(token: String) -> TIResult<()> {
 async fn bonds(token: String) -> TIResult<()> {
     let client = TinkoffClient::new(token);
     let bonds = client.get_all_bonds().await?;
-
-    let instruments: HashMap<String, Instrument> = bonds
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                Instrument {
-                    name: v.name.clone(),
-                    ticker: v.ticker.clone(),
-                },
-            )
-        })
-        .collect();
-
-    asset(client, "Bonds".to_owned(), "bond", instruments).await
+    let i = instruments!(bonds);
+    asset(client, "Bonds".to_owned(), "bond", i).await
 }
 
 async fn shares(token: String) -> TIResult<()> {
     let client = TinkoffClient::new(token);
     let shares = client.get_all_shares().await?;
-
-    let instruments: HashMap<String, Instrument> = shares
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                Instrument {
-                    name: v.name.clone(),
-                    ticker: v.ticker.clone(),
-                },
-            )
-        })
-        .collect();
-
-    asset(client, "Shares".to_owned(), "share", instruments).await
+    let i = instruments!(shares);
+    asset(client, "Shares".to_owned(), "share", i).await
 }
 
 async fn etfs(token: String) -> TIResult<()> {
     let client = TinkoffClient::new(token);
     let etfs = client.get_all_etfs().await?;
-
-    let instruments: HashMap<String, Instrument> = etfs
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                Instrument {
-                    name: v.name.clone(),
-                    ticker: v.ticker.clone(),
-                },
-            )
-        })
-        .collect();
-
-    asset(client, "Etfs".to_owned(), "etf", instruments).await
+    let i = instruments!(etfs);
+    asset(client, "Etfs".to_owned(), "etf", i).await
 }
 
 async fn currencies(token: String) -> TIResult<()> {
     let client = TinkoffClient::new(token);
     let currencies = client.get_all_currencies().await?;
-
-    let instruments: HashMap<String, Instrument> = currencies
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.clone(),
-                Instrument {
-                    name: v.name.clone(),
-                    ticker: v.ticker.clone(),
-                },
-            )
-        })
-        .collect();
-
-    asset(client, "Currencies".to_owned(), "currency", instruments).await
+    let i = instruments!(currencies);
+    asset(client, "Currencies".to_owned(), "currency", i).await
 }
 
 async fn asset(
