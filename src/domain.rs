@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
-use comfy_table::{Attribute, Cell};
-use crossterm::style::{style, Color, Stylize};
+use comfy_table::{Attribute, Cell, TableComponent};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -234,11 +233,14 @@ impl Asset {
 
 impl Display for Asset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = style(&self.name).with(Color::Blue).bold();
+        let mut asset_table = ux::new_table();
+        asset_table.set_header(vec![Cell::new(&self.name)
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkBlue)]);
+        asset_table.set_style(TableComponent::HeaderLines, ' ');
 
-        write!(f, "\n {name}:\n")?;
         for p in &self.papers {
-            writeln!(f, "{p}")?;
+            asset_table.add_row(vec![Cell::new(format!("{p}"))]);
         }
 
         let balance_income = self.income();
@@ -271,7 +273,8 @@ impl Display for Asset {
             Cell::new("Instruments count"),
             Cell::new(self.papers.len()),
         ]);
-        write!(f, "{table}")
+        asset_table.add_row(vec![Cell::new(format!("{table}"))]);
+        write!(f, "{asset_table}")
     }
 }
 
@@ -328,10 +331,10 @@ impl Display for Paper {
 
 impl Display for Portfolio {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.etfs)?;
-        writeln!(f, "{}", self.bonds)?;
-        writeln!(f, "{}", self.shares)?;
-        writeln!(f, "{}", self.currencies)?;
+        write!(f, "{}", self.etfs)?;
+        write!(f, "{}", self.bonds)?;
+        write!(f, "{}", self.shares)?;
+        write!(f, "{}", self.currencies)?;
 
         let mut income = self.bonds.income();
         income.add(&self.shares.income());
