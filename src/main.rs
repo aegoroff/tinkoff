@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env};
 
-use clap::{command, Command};
+use clap::{command, ArgAction, Command};
 use itertools::Itertools;
 use tinkoff::{
     client::{to_influence, OperationInfluence, TinkoffClient},
@@ -41,7 +41,7 @@ async fn main() -> TIResult<()> {
     };
 
     match cli.subcommand() {
-        Some(("a", _)) => all(token).await,
+        Some(("a", cmd)) => all(token, !cmd.get_flag("aggregate")).await,
         Some(("s", _)) => shares(token).await,
         Some(("b", _)) => bonds(token).await,
         Some(("e", _)) => etfs(token).await,
@@ -50,7 +50,7 @@ async fn main() -> TIResult<()> {
     }
 }
 
-async fn all(token: String) -> TIResult<()> {
+async fn all(token: String, verbose: bool) -> TIResult<()> {
     let client = TinkoffClient::new(token);
 
     let (bonds, shares, etfs, currencies, portfolio) = tokio::join!(
@@ -67,7 +67,7 @@ async fn all(token: String) -> TIResult<()> {
     let currencies = currencies?;
     let portfolio = portfolio?;
 
-    let mut pf = Portfolio::new();
+    let mut pf = Portfolio::new(verbose);
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
     let mut progress = 1u64;
     for p in &portfolio.positions {
@@ -215,7 +215,7 @@ async fn asset(
 
     let mut progresser = Progresser::new(positions.len() as u64);
     let mut progress = 1u64;
-    let mut asset = Asset::new(asset_name.to_owned());
+    let mut asset = Asset::new(asset_name.to_owned(), true);
     for p in &positions {
         let Some(currency) = iso_currency::Currency::from_code(
             &p.current_price
@@ -313,6 +313,12 @@ fn all_cmd() -> Command {
     Command::new("a")
         .aliases(["all"])
         .about("Get all portfolio")
+        .arg(
+            arg!(-a --aggregate)
+                .required(false)
+                .action(ArgAction::SetTrue)
+                .help("Output only aggregated information about assets"),
+        )
 }
 
 fn shares_cmd() -> Command {

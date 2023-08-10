@@ -59,6 +59,7 @@ pub struct Portfolio {
 pub struct Asset {
     name: String,
     papers: Vec<Paper>,
+    verbose: bool,
 }
 
 impl Money {
@@ -160,27 +161,28 @@ impl NumberRange for Income {
 }
 
 impl Portfolio {
-    pub fn new() -> Self {
+    pub fn new(verbose: bool) -> Self {
         Self {
-            bonds: Asset::new("Bonds".to_owned()),
-            shares: Asset::new("Shares".to_owned()),
-            etfs: Asset::new("Etfs".to_owned()),
-            currencies: Asset::new("Currencies".to_owned()),
+            bonds: Asset::new("Bonds".to_owned(), verbose),
+            shares: Asset::new("Shares".to_owned(), verbose),
+            etfs: Asset::new("Etfs".to_owned(), verbose),
+            currencies: Asset::new("Currencies".to_owned(), verbose),
         }
     }
 }
 
 impl Default for Portfolio {
     fn default() -> Self {
-        Self::new()
+        Self::new(true)
     }
 }
 
 impl Asset {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, verbose: bool) -> Self {
         Self {
             papers: vec![],
             name,
+            verbose,
         }
     }
 
@@ -239,8 +241,10 @@ impl Display for Asset {
             .fg(comfy_table::Color::DarkBlue)]);
         asset_table.set_style(TableComponent::HeaderLines, ' ');
 
-        for p in &self.papers {
-            asset_table.add_row(vec![Cell::new(format!("{p}"))]);
+        if self.verbose {
+            for p in &self.papers {
+                asset_table.add_row(vec![Cell::new(p)]);
+            }
         }
 
         let balance_income = self.income();
