@@ -1,4 +1,4 @@
-use std::fmt::Error;
+use std::{fmt::Error, process::Command};
 
 use comfy_table::{presets, Cell, ContentArrangement, Table, TableComponent};
 use num_format::{Locale, ToFormattedString};
@@ -50,5 +50,32 @@ pub fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
         Cell::new(value)
     } else {
         Cell::new(value).fg(comfy_table::Color::DarkGreen)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn clear_screen() {
+    if let Ok(mut c) = Command::new("clear").spawn() {
+        if let Err(e) = c.wait() {
+            println!("{e}");
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn clear_screen() {
+    if let Ok(mut c) = Command::new("cmd").arg("/c").arg("cls").spawn() {
+        if let Err(e) = c.wait() {
+            println!("{e}");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn clear_screen() {
+    if let Ok(mut c) = Command::new("printf").arg("\\033[3J").spawn() {
+        if let Err(e) = c.wait() {
+            println!("{e}");
+        }
     }
 }

@@ -6,7 +6,7 @@ use tinkoff::{
     client::{to_influence, OperationInfluence, TinkoffClient},
     domain::{Asset, Instrument, Money, Paper, Portfolio},
     progress::{Progress, Progresser},
-    to_decimal, to_money,
+    to_decimal, to_money, ux,
 };
 use tinkoff_invest_api::{tcs::AccountType, TIResult};
 
@@ -31,6 +31,7 @@ macro_rules! instruments {
 
 #[tokio::main]
 async fn main() -> TIResult<()> {
+    ux::clear_screen();
     let cli = build_cli().get_matches();
 
     let token = if let Some(t) = cli.get_one::<String>("token") {
