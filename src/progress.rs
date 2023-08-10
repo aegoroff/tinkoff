@@ -8,7 +8,7 @@ pub trait Size {
 
 pub trait Progress {
     fn progress(&mut self, current: u64);
-    fn finish(&self, message: &'static str);
+    fn finish(&self);
     fn message(&self, message: String);
 }
 
@@ -21,10 +21,14 @@ impl Progresser {
     #[must_use]
     pub fn new(total: u64) -> Self {
         let bar = ProgressBar::new(total);
-        bar.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})\n{wide_msg}")
-            .expect("Progress template not parsed")
-            .progress_chars("#>-"));
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+                )
+                .expect("Progress template not parsed")
+                .progress_chars("#>-"),
+        );
 
         Self { bar, items: 0 }
     }
@@ -35,8 +39,8 @@ impl Progress for Progresser {
         self.bar.set_position(current);
     }
 
-    fn finish(&self, message: &'static str) {
-        self.bar.finish_with_message(message);
+    fn finish(&self) {
+        self.bar.finish();
     }
 
     fn message(&self, message: String) {

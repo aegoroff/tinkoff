@@ -148,7 +148,7 @@ async fn all(token: String) -> TIResult<()> {
         progresser.progress(progress);
         progress += 1;
     }
-    progresser.finish("");
+    progresser.finish();
     print!("{pf}");
 
     Ok(())
@@ -321,7 +321,7 @@ async fn asset(
         progresser.progress(progress);
         progress += 1;
     }
-    progresser.finish("");
+    progresser.finish();
     print!("{asset}");
 
     Ok(())
