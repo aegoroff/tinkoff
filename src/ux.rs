@@ -73,7 +73,12 @@ pub fn clear_screen() {
 
 #[cfg(target_os = "macos")]
 pub fn clear_screen() {
-    if let Ok(mut c) = Command::new("printf").arg("\\033[3J").spawn() {
+    if let Ok(mut c) = Command::new("clear").spawn() {
+        if let Err(e) = c.wait() {
+            println!("{e}");
+        }
+    }
+    if let Ok(mut c) = Command::new("printf").arg("\x1b[3J").spawn() {
         if let Err(e) = c.wait() {
             println!("{e}");
         }
