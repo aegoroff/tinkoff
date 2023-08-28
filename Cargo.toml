@@ -19,12 +19,12 @@ tokio-stream = {version = "0.1", features = ["net"]}
 futures-util = {version = "0.3.28"}
 rust_decimal = "1.32.0"
 rust_decimal_macros = "1.32.0"
-iso_currency = "0.4.3"
+iso_currency = "0.4.4"
 itertools = "0.11.0"
 indicatif = "0.17.6"
 num-format = "0.4.4"
 comfy-table = "7.0.1"
-clap = { version = "4.3.24", features = ["std", "color", "cargo"] }
+clap = { version = "4.4.0", features = ["std", "color", "cargo"] }
 
 [profile.release]
 lto = true
