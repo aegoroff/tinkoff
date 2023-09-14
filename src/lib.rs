@@ -7,6 +7,7 @@ pub mod domain;
 pub mod progress;
 pub mod ux;
 
+/// Converts Option<&Quotation> into Decimal
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     if let Some(x) = val {
         let s = if x.units == 0 && x.nano < 0 {
@@ -20,6 +21,7 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     }
 }
 
+/// Option<&MoneyValue> to Option<Money>
 pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
     if let Some(x) = val {
         let s = if x.units == 0 && x.nano < 0 {
