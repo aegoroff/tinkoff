@@ -39,7 +39,7 @@ pub struct Paper {
     pub average_buy_price: Money,
     pub current_instrument_price: Money,
     pub quantity: Decimal,
-    /// Expences to get current amount of paper, i.e. average position price multiplied to quantity
+    /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
     pub balance_value: Money,
     /// Current position value, i.e. current position price multiplied to quantity
     pub current_value: Money,
