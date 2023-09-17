@@ -215,7 +215,7 @@ async fn asset(
 
     let mut progresser = Progresser::new(positions.len() as u64);
     let mut progress = 1u64;
-    let mut asset = Asset::new(asset_name.to_owned(), true);
+    let mut asset = Asset::new(asset_name.clone(), true);
     for p in &positions {
         let Some(currency) = iso_currency::Currency::from_code(
             &p.current_price
@@ -314,7 +314,7 @@ fn all_cmd() -> Command {
         .aliases(["all"])
         .about("Get all portfolio")
         .arg(
-            arg!(-a --aggregate)
+            arg!(-a - -aggregate)
                 .required(false)
                 .action(ArgAction::SetTrue)
                 .help("Output only aggregated information about assets"),
