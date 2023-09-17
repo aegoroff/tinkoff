@@ -9,6 +9,10 @@ use crate::ux::{self, format_decimal};
 
 const HUNDRED: Decimal = dec!(100);
 const TOTAL_INCOME: &str = "Total income";
+const INCOME: &str = "Income";
+const CURRENT_VALUE: &str = "Current value";
+const BALANCE_VALUE: &str = "Balance value";
+const BALANCE_INCOME: &str = "Balance income";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Money {
@@ -272,9 +276,9 @@ impl Display for Asset {
             .fg(comfy_table::Color::DarkYellow);
         table.set_header(vec![title, Cell::new("")]);
 
-        table.add_row(vec![Cell::new("Balance value"), Cell::new(balance_value)]);
-        table.add_row(vec![Cell::new("Current value"), Cell::new(current_value)]);
-        table.add_row(vec![Cell::new("Balance income"), balance_income]);
+        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(balance_value)]);
+        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(current_value)]);
+        table.add_row(vec![Cell::new(BALANCE_INCOME), balance_income]);
         table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
         table.add_row(vec![
             Cell::new("Dividents or coupons"),
@@ -317,11 +321,11 @@ impl Display for Paper {
             Cell::new(self.quantity.round_dp(2)),
         ]);
         table.add_row(vec![
-            Cell::new("Balance value"),
+            Cell::new(BALANCE_VALUE),
             Cell::new(self.balance_value),
         ]);
         table.add_row(vec![
-            Cell::new("Current value"),
+            Cell::new(CURRENT_VALUE),
             Cell::new(self.current_value),
         ]);
         table.add_row(vec!["", ""]);
@@ -334,7 +338,7 @@ impl Display for Paper {
         total_income.add(&income);
 
         let expected_yield = ux::colored_cell(income);
-        table.add_row(vec![Cell::new("Income"), expected_yield]);
+        table.add_row(vec![Cell::new(INCOME), expected_yield]);
 
         let dividents_and_coupons = ux::colored_cell(self.dividents_and_coupons);
         table.add_row(vec![Cell::new("Dividends"), dividents_and_coupons]);
@@ -383,14 +387,14 @@ impl Display for Portfolio {
             .fg(comfy_table::Color::DarkRed);
         table.set_header(vec![title, Cell::new("")]);
 
-        table.add_row(vec![Cell::new("Balance income"), income]);
+        table.add_row(vec![Cell::new(BALANCE_INCOME), income]);
         table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
         table.add_row(vec![
             Cell::new("Dividents and coupons"),
             ux::colored_cell(dividents),
         ]);
-        table.add_row(vec![Cell::new("Balance value"), Cell::new(balance)]);
-        table.add_row(vec![Cell::new("Current value"), Cell::new(current)]);
+        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(balance)]);
+        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(current)]);
 
         writeln!(f)?;
         writeln!(f, "{table}")
