@@ -320,11 +320,20 @@ impl Display for Paper {
         table.add_row(vec!["", ""]);
 
         let income = Income::new(self.current_value, self.balance_value);
+        let mut total_income = Income::new(
+            self.dividents_and_coupons,
+            Money::zero(self.dividents_and_coupons.currency),
+        );
+        total_income.add(&income);
+
         let expected_yield = ux::colored_cell(income);
         table.add_row(vec![Cell::new("Income"), expected_yield]);
 
         let dividents_and_coupons = ux::colored_cell(self.dividents_and_coupons);
         table.add_row(vec![Cell::new("Dividends"), dividents_and_coupons]);
+
+        let total_income = ux::colored_cell(total_income);
+        table.add_row(vec![Cell::new("Total income"), total_income]);
 
         let taxes_and_fees = ux::colored_cell(self.taxes_and_fees);
         table.add_row(vec![Cell::new("Taxes and fees"), taxes_and_fees]);
