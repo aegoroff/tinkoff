@@ -29,6 +29,7 @@ pub enum OperationInfluence {
     Unspecified,
 }
 
+#[must_use]
 pub fn to_influence(op: OperationType) -> OperationInfluence {
     match op {
         tinkoff_invest_api::tcs::OperationType::DividendTax
@@ -68,6 +69,7 @@ macro_rules! collect {
 }
 
 impl TinkoffClient {
+    #[must_use]
     pub fn new(token: String) -> Self {
         Self {
             service: TinkoffInvestService::new(token),
@@ -142,7 +144,10 @@ impl TinkoffClient {
             .get_ref()
             .accounts
             .iter()
-            .find(|a| a.r#type() == account) else { return Ok(Portfolio::default()); };
+            .find(|a| a.r#type() == account)
+        else {
+            return Ok(Portfolio::default());
+        };
 
         let portfolio = operations
             .get_portfolio(PortfolioRequest {

@@ -8,6 +8,7 @@ pub mod progress;
 pub mod ux;
 
 /// Converts Option<&Quotation> into Decimal
+#[must_use]
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     if let Some(x) = val {
         let s = if x.units == 0 && x.nano < 0 {
@@ -22,6 +23,7 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
 }
 
 /// Option<&MoneyValue> to Option<Money>
+#[must_use]
 pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
     if let Some(x) = val {
         let s = if x.units == 0 && x.nano < 0 {
@@ -30,7 +32,7 @@ pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
             format!("{}.{}", x.units, x.nano.abs())
         };
         let value = Decimal::from_str_exact(&s).unwrap();
-        Money::new(value, x.currency.clone())
+        Money::new(value, &x.currency)
     } else {
         None
     }

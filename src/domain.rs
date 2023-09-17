@@ -64,14 +64,17 @@ pub struct Asset {
 }
 
 impl Money {
-    pub fn new(value: Decimal, currency: String) -> Option<Self> {
+    #[must_use]
+    pub fn new(value: Decimal, currency: &str) -> Option<Self> {
         Currency::from_code(&currency.to_ascii_uppercase()).map(|currency| Self { value, currency })
     }
 
+    #[must_use]
     pub fn from_value(value: Decimal, currency: Currency) -> Self {
         Self { value, currency }
     }
 
+    #[must_use]
     pub fn zero(currency: Currency) -> Self {
         Self {
             value: Decimal::default(),
@@ -85,6 +88,7 @@ impl Money {
 }
 
 impl Income {
+    #[must_use]
     pub fn new(current: Money, balance: Money) -> Self {
         Self {
             currency: current.currency,
@@ -92,7 +96,7 @@ impl Income {
             balance: balance.value,
         }
     }
-
+    #[must_use]
     pub fn zero(currency: Currency) -> Self {
         Self {
             currency,
@@ -162,6 +166,7 @@ impl NumberRange for Income {
 }
 
 impl Portfolio {
+    #[must_use]
     pub fn new(verbose: bool) -> Self {
         Self {
             bonds: Asset::new("Bonds".to_owned(), verbose),
@@ -179,6 +184,7 @@ impl Default for Portfolio {
 }
 
 impl Asset {
+    #[must_use]
     pub fn new(name: String, verbose: bool) -> Self {
         Self {
             papers: vec![],
