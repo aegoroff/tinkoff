@@ -8,6 +8,7 @@ use rust_decimal_macros::dec;
 use crate::ux::{self, format_decimal};
 
 const HUNDRED: Decimal = dec!(100);
+const TOTAL_INCOME: &str = "Total income";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Money {
@@ -268,7 +269,7 @@ impl Display for Asset {
         table.add_row(vec![Cell::new("Balance value"), Cell::new(balance_value)]);
         table.add_row(vec![Cell::new("Current value"), Cell::new(current_value)]);
         table.add_row(vec![Cell::new("Balance income"), balance_income]);
-        table.add_row(vec![Cell::new("Total income"), total_income]);
+        table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
         table.add_row(vec![
             Cell::new("Dividents or coupons"),
             ux::colored_cell(dividents),
@@ -333,7 +334,7 @@ impl Display for Paper {
         table.add_row(vec![Cell::new("Dividends"), dividents_and_coupons]);
 
         let total_income = ux::colored_cell(total_income);
-        table.add_row(vec![Cell::new("Total income"), total_income]);
+        table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
 
         let taxes_and_fees = ux::colored_cell(self.taxes_and_fees);
         table.add_row(vec![Cell::new("Taxes and fees"), taxes_and_fees]);
@@ -377,7 +378,7 @@ impl Display for Portfolio {
         table.set_header(vec![title, Cell::new("")]);
 
         table.add_row(vec![Cell::new("Balance income"), income]);
-        table.add_row(vec![Cell::new("Total income"), total_income]);
+        table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
         table.add_row(vec![
             Cell::new("Dividents and coupons"),
             ux::colored_cell(dividents),
