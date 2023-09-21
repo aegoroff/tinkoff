@@ -1,4 +1,5 @@
 use domain::Money;
+use iso_currency::Currency;
 use rust_decimal::Decimal;
 use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
 
@@ -31,11 +32,16 @@ pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
         } else {
             format!("{}.{}", x.units, x.nano.abs())
         };
-        let value = Decimal::from_str_exact(&s).unwrap();
+        let value = Decimal::from_str_exact(&s).ok()?;
         Money::new(value, &x.currency)
     } else {
         None
     }
+}
+
+#[must_use]
+pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
+    iso_currency::Currency::from_code(&mv.as_ref()?.currency.to_ascii_uppercase())
 }
 
 #[cfg(test)]

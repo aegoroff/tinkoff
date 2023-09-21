@@ -71,13 +71,7 @@ async fn all(token: String, verbose: bool) -> TIResult<()> {
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
     let mut progress = 1u64;
     for p in &portfolio.positions {
-        let Some(currency) = iso_currency::Currency::from_code(
-            &p.current_price
-                .as_ref()
-                .unwrap()
-                .currency
-                .to_ascii_uppercase(),
-        ) else {
+        let Some(currency) = tinkoff::to_currency(&p.current_price) else {
             progresser.progress(progress);
             progress += 1;
             continue;
@@ -217,13 +211,7 @@ async fn asset(
     let mut progress = 1u64;
     let mut asset = Asset::new(asset_name.clone(), true);
     for p in &positions {
-        let Some(currency) = iso_currency::Currency::from_code(
-            &p.current_price
-                .as_ref()
-                .unwrap()
-                .currency
-                .to_ascii_uppercase(),
-        ) else {
+        let Some(currency) = tinkoff::to_currency(&p.current_price) else {
             progresser.progress(progress);
             progress += 1;
             continue;
