@@ -31,10 +31,11 @@ macro_rules! instruments {
 
 macro_rules! add_instrument {
     ($container:ident, $paper:ident, $p:ident, $pf:ident, $target:ident) => {{
-        let b = $container.get(&$p.figi).unwrap();
-        $paper.name = b.name.clone();
-        $paper.ticker = b.ticker.clone();
-        $pf.$target.add_paper($paper);
+        if let Some(b) = $container.get(&$p.figi) {
+            $paper.name = b.name.clone();
+            $paper.ticker = b.ticker.clone();
+            $pf.$target.add_paper($paper);
+        }
     }};
 }
 
@@ -252,24 +253,25 @@ async fn asset(
             }
         }
 
-        let inst = instruments.get(&p.figi).unwrap();
-        let paper = Paper {
-            name: inst.name.clone(),
-            ticker: inst.ticker.clone(),
-            figi: p.figi.clone(),
-            expected_yield,
-            average_buy_price,
-            quantity,
-            balance_value,
-            current_value,
-            current_instrument_price,
-            taxes_and_fees: fees,
-            dividents_and_coupons: dividents,
-        };
+        if let Some(inst) = instruments.get(&p.figi) {
+            let paper = Paper {
+                name: inst.name.clone(),
+                ticker: inst.ticker.clone(),
+                figi: p.figi.clone(),
+                expected_yield,
+                average_buy_price,
+                quantity,
+                balance_value,
+                current_value,
+                current_instrument_price,
+                taxes_and_fees: fees,
+                dividents_and_coupons: dividents,
+            };
 
-        asset.add_paper(paper);
-        progresser.progress(progress);
-        progress += 1;
+            asset.add_paper(paper);
+            progresser.progress(progress);
+            progress += 1;
+        }
     }
     progresser.finish();
     println!("{asset}");
