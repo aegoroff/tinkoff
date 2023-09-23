@@ -29,6 +29,15 @@ macro_rules! instruments {
     }};
 }
 
+macro_rules! add_instrument {
+    ($container:ident, $paper:ident, $p:ident, $pf:ident, $target:ident) => {{
+        let b = $container.get(&$p.figi).unwrap();
+        $paper.name = b.name.clone();
+        $paper.ticker = b.ticker.clone();
+        $pf.$target.add_paper($paper);
+    }};
+}
+
 #[tokio::main]
 async fn main() -> TIResult<()> {
     ux::clear_screen();
@@ -131,28 +140,16 @@ async fn all(token: String, verbose: bool) -> TIResult<()> {
 
         match p.instrument_type.as_str() {
             "bond" => {
-                let b = bonds.get(&p.figi).unwrap();
-                paper.name = b.name.clone();
-                paper.ticker = b.ticker.clone();
-                pf.bonds.add_paper(paper);
+                add_instrument!(bonds, paper, p, pf, bonds);
             }
             "share" => {
-                let s = shares.get(&p.figi).unwrap();
-                paper.name = s.name.clone();
-                paper.ticker = s.ticker.clone();
-                pf.shares.add_paper(paper);
+                add_instrument!(shares, paper, p, pf, shares);
             }
             "etf" => {
-                let e = etfs.get(&p.figi).unwrap();
-                paper.name = e.name.clone();
-                paper.ticker = e.ticker.clone();
-                pf.etfs.add_paper(paper);
+                add_instrument!(etfs, paper, p, pf, etfs);
             }
             "currency" => {
-                let c = currencies.get(&p.figi).unwrap();
-                paper.name = c.name.clone();
-                paper.ticker = c.ticker.clone();
-                pf.currencies.add_paper(paper);
+                add_instrument!(currencies, paper, p, pf, currencies);
             }
             _ => {}
         };
