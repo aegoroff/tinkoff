@@ -104,8 +104,8 @@ async fn all(token: String, verbose: bool) -> TIResult<()> {
         };
 
         let executed_ops = client
-            .get_operations(portfolio.account_id.clone(), p.figi.clone())
-            .await?;
+            .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
+            .await;
 
         let mut fees = Money::zero(currency);
         let mut dividents = Money::zero(currency);
@@ -232,8 +232,8 @@ async fn asset(
         };
 
         let executed_ops = client
-            .get_operations(portfolio.account_id.clone(), p.figi.clone())
-            .await?;
+            .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
+            .await;
 
         let mut fees = Money::zero(currency);
         let mut dividents = Money::zero(currency);

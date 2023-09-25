@@ -180,4 +180,19 @@ impl TinkoffClient {
 
         Ok(operations.into_inner().operations)
     }
+
+    pub async fn get_operations_until_done(
+        &self,
+        account_id: String,
+        figi: String,
+    ) -> Vec<Operation> {
+        loop {
+            match self
+            .get_operations(account_id.clone(), figi.clone())
+            .await {
+                Ok(ops) => break ops,
+                Err(_) => continue,
+            }
+        }
+    }
 }
