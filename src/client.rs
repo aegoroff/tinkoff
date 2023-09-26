@@ -76,7 +76,7 @@ impl TinkoffClient {
         }
     }
 
-    pub async fn get_all_bonds(&self) -> TIResult<HashMap<String, Bond>> {
+    async fn get_all_bonds(&self) -> TIResult<HashMap<String, Bond>> {
         let channel = self.service.create_channel().await?;
         let mut bonds = self.service.instruments(channel).await?;
         let bonds = bonds
@@ -88,7 +88,16 @@ impl TinkoffClient {
         Ok(bonds)
     }
 
-    pub async fn get_all_shares(&self) -> TIResult<HashMap<String, Share>> {
+    pub async fn get_all_bonds_until_done(&self) -> HashMap<String, Bond> {
+        loop {
+            match self.get_all_bonds().await {
+                Ok(p) => break p,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    async fn get_all_shares(&self) -> TIResult<HashMap<String, Share>> {
         let channel = self.service.create_channel().await?;
         let mut shares = self.service.instruments(channel).await?;
         let shares = shares
@@ -100,7 +109,16 @@ impl TinkoffClient {
         Ok(shares)
     }
 
-    pub async fn get_all_etfs(&self) -> TIResult<HashMap<String, Etf>> {
+    pub async fn get_all_shares_until_done(&self) -> HashMap<String, Share> {
+        loop {
+            match self.get_all_shares().await {
+                Ok(p) => break p,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    async fn get_all_etfs(&self) -> TIResult<HashMap<String, Etf>> {
         let channel = self.service.create_channel().await?;
         let mut etfs = self.service.instruments(channel).await?;
         let etfs = etfs
@@ -112,7 +130,16 @@ impl TinkoffClient {
         Ok(etfs)
     }
 
-    pub async fn get_all_currencies(&self) -> TIResult<HashMap<String, Currency>> {
+    pub async fn get_all_etfs_until_done(&self) -> HashMap<String, Etf> {
+        loop {
+            match self.get_all_etfs().await {
+                Ok(p) => break p,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    async fn get_all_currencies(&self) -> TIResult<HashMap<String, Currency>> {
         let channel = self.service.create_channel().await?;
         let mut currencies = self.service.instruments(channel).await?;
         let currencies = currencies
@@ -124,7 +151,16 @@ impl TinkoffClient {
         Ok(currencies)
     }
 
-    pub async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
+    pub async fn get_all_currencies_until_done(&self) -> HashMap<String, Currency> {
+        loop {
+            match self.get_all_currencies().await {
+                Ok(p) => break p,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
         let (channel, users_channel) =
             tokio::join!(self.service.create_channel(), self.service.create_channel());
         let channel = channel?;
@@ -170,11 +206,7 @@ impl TinkoffClient {
         }
     }
 
-    pub async fn get_operations(
-        &self,
-        account_id: String,
-        figi: String,
-    ) -> TIResult<Vec<Operation>> {
+    async fn get_operations(&self, account_id: String, figi: String) -> TIResult<Vec<Operation>> {
         let channel = self.service.create_channel().await?;
         let mut operations = self.service.operations(channel).await?;
         let operations = operations
@@ -198,18 +230,6 @@ impl TinkoffClient {
         loop {
             match self.get_operations(account_id.clone(), figi.clone()).await {
                 Ok(ops) => break ops,
-                Err(_) => continue,
-            }
-        }
-    }
-
-    async fn get_until_done<F, R>(&self, wrapped: F) -> R
-    where
-        F: Fn() -> dyn futures::Future<Output = TIResult<R>> + futures::Future,
-    {
-        loop {
-            match wrapped.await {
-                Ok(p) => break p,
                 Err(_) => continue,
             }
         }

@@ -8,7 +8,7 @@ use tinkoff::{
     progress::{Progress, Progresser},
     to_decimal, to_money, ux,
 };
-use tinkoff_invest_api::{tcs::AccountType, TIResult};
+use tinkoff_invest_api::tcs::AccountType;
 
 #[macro_use]
 extern crate clap;
@@ -40,7 +40,7 @@ macro_rules! add_instrument {
 }
 
 #[tokio::main]
-async fn main() -> TIResult<()> {
+async fn main() {
     ux::clear_screen();
     let cli = build_cli().get_matches();
 
@@ -56,25 +56,20 @@ async fn main() -> TIResult<()> {
         Some(("b", _)) => bonds(token).await,
         Some(("e", _)) => etfs(token).await,
         Some(("c", _)) => currencies(token).await,
-        _ => Ok(()),
+        _ => {}
     }
 }
 
-async fn all(token: String, verbose: bool) -> TIResult<()> {
+async fn all(token: String, verbose: bool) {
     let client = TinkoffClient::new(token);
 
     let (bonds, shares, etfs, currencies, portfolio) = tokio::join!(
-        client.get_all_bonds(),
-        client.get_all_shares(),
-        client.get_all_etfs(),
-        client.get_all_currencies(),
+        client.get_all_bonds_until_done(),
+        client.get_all_shares_until_done(),
+        client.get_all_etfs_until_done(),
+        client.get_all_currencies_until_done(),
         client.get_portfolio_until_done(AccountType::Tinkoff),
     );
-
-    let bonds = bonds?;
-    let shares = shares?;
-    let etfs = etfs?;
-    let currencies = currencies?;
 
     let mut pf = Portfolio::new(verbose);
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
@@ -158,34 +153,32 @@ async fn all(token: String, verbose: bool) -> TIResult<()> {
     }
     progresser.finish();
     print!("{pf}");
-
-    Ok(())
 }
 
-async fn bonds(token: String) -> TIResult<()> {
+async fn bonds(token: String) {
     let client = TinkoffClient::new(token);
-    let bonds = client.get_all_bonds().await?;
+    let bonds = client.get_all_bonds_until_done().await;
     let i = instruments!(bonds);
     asset(client, "Bonds".to_owned(), "bond", i).await
 }
 
-async fn shares(token: String) -> TIResult<()> {
+async fn shares(token: String) {
     let client = TinkoffClient::new(token);
-    let shares = client.get_all_shares().await?;
+    let shares = client.get_all_shares_until_done().await;
     let i = instruments!(shares);
     asset(client, "Shares".to_owned(), "share", i).await
 }
 
-async fn etfs(token: String) -> TIResult<()> {
+async fn etfs(token: String) {
     let client = TinkoffClient::new(token);
-    let etfs = client.get_all_etfs().await?;
+    let etfs = client.get_all_etfs_until_done().await;
     let i = instruments!(etfs);
     asset(client, "Etfs".to_owned(), "etf", i).await
 }
 
-async fn currencies(token: String) -> TIResult<()> {
+async fn currencies(token: String) {
     let client = TinkoffClient::new(token);
-    let currencies = client.get_all_currencies().await?;
+    let currencies = client.get_all_currencies_until_done().await;
     let i = instruments!(currencies);
     asset(client, "Currencies".to_owned(), "currency", i).await
 }
@@ -195,7 +188,7 @@ async fn asset(
     asset_name: String,
     instrument_type: &str,
     instruments: HashMap<String, Instrument>,
-) -> TIResult<()> {
+) {
     let portfolio = client.get_portfolio_until_done(AccountType::Tinkoff).await;
 
     let positions = portfolio
@@ -274,8 +267,6 @@ async fn asset(
     }
     progresser.finish();
     println!("{asset}");
-
-    Ok(())
 }
 
 fn build_cli() -> Command {
