@@ -202,4 +202,16 @@ impl TinkoffClient {
             }
         }
     }
+
+    async fn get_until_done<F, R>(&self, wrapped: F) -> R
+    where
+        F: Fn() -> dyn futures::Future<Output = TIResult<R>> + futures::Future,
+    {
+        loop {
+            match wrapped.await {
+                Ok(p) => break p,
+                Err(_) => continue,
+            }
+        }
+    }
 }
