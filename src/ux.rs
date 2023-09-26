@@ -6,6 +6,11 @@ use rust_decimal::{prelude::ToPrimitive, Decimal};
 
 use crate::domain::NumberRange;
 
+/// Converts Decimal to string.
+///
+/// # Errors
+///
+/// This function will return an error if failed to convert rounded decimal to i64.
 pub fn format_decimal(v: Decimal) -> Result<String, Error> {
     let integer = v
         .round_dp(2)

@@ -15,7 +15,7 @@ pub struct Portfolio {
     pub positions: Vec<PortfolioPosition>,
 }
 
-pub struct TinkoffClient {
+pub struct TinkoffInvestment {
     service: TinkoffInvestService,
 }
 
@@ -68,7 +68,7 @@ macro_rules! collect {
     }};
 }
 
-impl TinkoffClient {
+impl TinkoffInvestment {
     #[must_use]
     pub fn new(token: String) -> Self {
         Self {

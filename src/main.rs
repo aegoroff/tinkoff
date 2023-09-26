@@ -3,7 +3,7 @@ use std::{collections::HashMap, env};
 use clap::{command, ArgAction, Command};
 use itertools::Itertools;
 use tinkoff::{
-    client::{to_influence, OperationInfluence, TinkoffClient},
+    client::{to_influence, OperationInfluence, TinkoffInvestment},
     domain::{Asset, Instrument, Money, Paper, Portfolio},
     progress::{Progress, Progresser},
     to_decimal, to_money, ux,
@@ -61,7 +61,7 @@ async fn main() {
 }
 
 async fn all(token: String, verbose: bool) {
-    let client = TinkoffClient::new(token);
+    let client = TinkoffInvestment::new(token);
 
     let (bonds, shares, etfs, currencies, portfolio) = tokio::join!(
         client.get_all_bonds_until_done(),
@@ -156,35 +156,35 @@ async fn all(token: String, verbose: bool) {
 }
 
 async fn bonds(token: String) {
-    let client = TinkoffClient::new(token);
+    let client = TinkoffInvestment::new(token);
     let bonds = client.get_all_bonds_until_done().await;
     let i = instruments!(bonds);
     asset(client, "Bonds".to_owned(), "bond", i).await;
 }
 
 async fn shares(token: String) {
-    let client = TinkoffClient::new(token);
+    let client = TinkoffInvestment::new(token);
     let shares = client.get_all_shares_until_done().await;
     let i = instruments!(shares);
     asset(client, "Shares".to_owned(), "share", i).await;
 }
 
 async fn etfs(token: String) {
-    let client = TinkoffClient::new(token);
+    let client = TinkoffInvestment::new(token);
     let etfs = client.get_all_etfs_until_done().await;
     let i = instruments!(etfs);
     asset(client, "Etfs".to_owned(), "etf", i).await;
 }
 
 async fn currencies(token: String) {
-    let client = TinkoffClient::new(token);
+    let client = TinkoffInvestment::new(token);
     let currencies = client.get_all_currencies_until_done().await;
     let i = instruments!(currencies);
     asset(client, "Currencies".to_owned(), "currency", i).await;
 }
 
 async fn asset(
-    client: TinkoffClient,
+    client: TinkoffInvestment,
     asset_name: String,
     instrument_type: &str,
     instruments: HashMap<String, Instrument>,

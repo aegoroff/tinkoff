@@ -17,7 +17,11 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
         } else {
             format!("{}.{}", x.units, x.nano.abs())
         };
-        Decimal::from_str_exact(&s).unwrap()
+        if let Ok(d) = Decimal::from_str_exact(&s) {
+            d
+        } else {
+            Decimal::default()
+        }
     } else {
         Decimal::default()
     }

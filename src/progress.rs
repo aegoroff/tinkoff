@@ -18,6 +18,11 @@ pub struct Progresser {
 }
 
 impl Progresser {
+    /// Creates a new [`Progresser`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if fail to compile output template.
     #[must_use]
     pub fn new(total: u64) -> Self {
         let bar = ProgressBar::new(total);
