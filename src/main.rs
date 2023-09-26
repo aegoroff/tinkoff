@@ -159,28 +159,28 @@ async fn bonds(token: String) {
     let client = TinkoffClient::new(token);
     let bonds = client.get_all_bonds_until_done().await;
     let i = instruments!(bonds);
-    asset(client, "Bonds".to_owned(), "bond", i).await
+    asset(client, "Bonds".to_owned(), "bond", i).await;
 }
 
 async fn shares(token: String) {
     let client = TinkoffClient::new(token);
     let shares = client.get_all_shares_until_done().await;
     let i = instruments!(shares);
-    asset(client, "Shares".to_owned(), "share", i).await
+    asset(client, "Shares".to_owned(), "share", i).await;
 }
 
 async fn etfs(token: String) {
     let client = TinkoffClient::new(token);
     let etfs = client.get_all_etfs_until_done().await;
     let i = instruments!(etfs);
-    asset(client, "Etfs".to_owned(), "etf", i).await
+    asset(client, "Etfs".to_owned(), "etf", i).await;
 }
 
 async fn currencies(token: String) {
     let client = TinkoffClient::new(token);
     let currencies = client.get_all_currencies_until_done().await;
     let i = instruments!(currencies);
-    asset(client, "Currencies".to_owned(), "currency", i).await
+    asset(client, "Currencies".to_owned(), "currency", i).await;
 }
 
 async fn asset(
