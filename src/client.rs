@@ -161,6 +161,15 @@ impl TinkoffClient {
         })
     }
 
+    pub async fn get_portfolio_until_done(&self, account: AccountType) -> Portfolio {
+        loop {
+            match self.get_portfolio(account).await {
+                Ok(p) => break p,
+                Err(_) => continue,
+            }
+        }
+    }
+
     pub async fn get_operations(
         &self,
         account_id: String,
@@ -187,9 +196,7 @@ impl TinkoffClient {
         figi: String,
     ) -> Vec<Operation> {
         loop {
-            match self
-            .get_operations(account_id.clone(), figi.clone())
-            .await {
+            match self.get_operations(account_id.clone(), figi.clone()).await {
                 Ok(ops) => break ops,
                 Err(_) => continue,
             }

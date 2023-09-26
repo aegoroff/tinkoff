@@ -68,14 +68,13 @@ async fn all(token: String, verbose: bool) -> TIResult<()> {
         client.get_all_shares(),
         client.get_all_etfs(),
         client.get_all_currencies(),
-        client.get_portfolio(AccountType::Tinkoff),
+        client.get_portfolio_until_done(AccountType::Tinkoff),
     );
 
     let bonds = bonds?;
     let shares = shares?;
     let etfs = etfs?;
     let currencies = currencies?;
-    let portfolio = portfolio?;
 
     let mut pf = Portfolio::new(verbose);
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
@@ -197,7 +196,7 @@ async fn asset(
     instrument_type: &str,
     instruments: HashMap<String, Instrument>,
 ) -> TIResult<()> {
-    let portfolio = client.get_portfolio(AccountType::Tinkoff).await?;
+    let portfolio = client.get_portfolio_until_done(AccountType::Tinkoff).await;
 
     let positions = portfolio
         .positions
