@@ -57,6 +57,17 @@ pub fn to_influence(op: OperationType) -> OperationInfluence {
     }
 }
 
+macro_rules! loop_until_success {
+    ($e:expr) => {{
+        loop {
+            match $e {
+                Ok(x) => break x,
+                Err(_) => continue,
+            }
+        }
+    }};
+}
+
 macro_rules! collect {
     ($response:ident, $t:tt) => {{
         $response
@@ -72,12 +83,7 @@ macro_rules! impl_get_until_done {
     ($(($wrapped:ident, $type:ty, $method:ident)),*) => {
         $(
             pub async fn $method(&self) -> HashMap<String, $type> {
-                loop {
-                    match self.$wrapped().await {
-                        Ok(p) => break p,
-                        Err(_) => continue,
-                    }
-                }
+                loop_until_success!(self.$wrapped().await)
             }
         )*
     };
@@ -160,12 +166,7 @@ impl TinkoffInvestment {
     }
 
     pub async fn get_portfolio_until_done(&self, account: AccountType) -> Portfolio {
-        loop {
-            match self.get_portfolio(account).await {
-                Ok(p) => break p,
-                Err(_) => continue,
-            }
-        }
+        loop_until_success!(self.get_portfolio(account).await)
     }
 
     async fn get_operations(&self, account_id: String, figi: String) -> TIResult<Vec<Operation>> {
@@ -189,11 +190,6 @@ impl TinkoffInvestment {
         account_id: String,
         figi: String,
     ) -> Vec<Operation> {
-        loop {
-            match self.get_operations(account_id.clone(), figi.clone()).await {
-                Ok(ops) => break ops,
-                Err(_) => continue,
-            }
-        }
+        loop_until_success!(self.get_operations(account_id.clone(), figi.clone()).await)
     }
 }
