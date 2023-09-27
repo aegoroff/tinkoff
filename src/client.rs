@@ -83,6 +83,24 @@ macro_rules! impl_get_until_done {
     };
 }
 
+macro_rules! impl_get_instrument_method {
+    ($(($name:ident, $type:ty, $method:ident)),*) => {
+        $(
+            async fn $name(&self) -> TIResult<HashMap<String, $type>> {
+                let channel = self.service.create_channel().await?;
+                let mut instruments = self.service.instruments(channel).await?;
+                let instruments = instruments
+                    .$method(InstrumentsRequest {
+                        instrument_status: InstrumentStatus::All as i32,
+                    })
+                    .await?;
+                let instruments = collect!(instruments, $type);
+                Ok(instruments)
+            }
+        )*
+    };
+}
+
 impl TinkoffInvestment {
     #[must_use]
     pub fn new(token: String) -> Self {
@@ -90,60 +108,19 @@ impl TinkoffInvestment {
             service: TinkoffInvestService::new(token),
         }
     }
+    impl_get_instrument_method!(
+        (get_all_bonds, Bond, bonds),
+        (get_all_shares, Share, shares),
+        (get_all_etfs, Etf, etfs),
+        (get_all_currencies, Currency, currencies)
+    );
+
     impl_get_until_done!(
         (get_all_bonds, Bond, get_all_bonds_until_done),
         (get_all_shares, Share, get_all_shares_until_done),
         (get_all_etfs, Etf, get_all_etfs_until_done),
         (get_all_currencies, Currency, get_all_currencies_until_done)
     );
-
-    async fn get_all_bonds(&self) -> TIResult<HashMap<String, Bond>> {
-        let channel = self.service.create_channel().await?;
-        let mut bonds = self.service.instruments(channel).await?;
-        let bonds = bonds
-            .bonds(InstrumentsRequest {
-                instrument_status: InstrumentStatus::All as i32,
-            })
-            .await?;
-        let bonds = collect!(bonds, Bond);
-        Ok(bonds)
-    }
-
-    async fn get_all_shares(&self) -> TIResult<HashMap<String, Share>> {
-        let channel = self.service.create_channel().await?;
-        let mut shares = self.service.instruments(channel).await?;
-        let shares = shares
-            .shares(InstrumentsRequest {
-                instrument_status: InstrumentStatus::All as i32,
-            })
-            .await?;
-        let shares = collect!(shares, Share);
-        Ok(shares)
-    }
-
-    async fn get_all_etfs(&self) -> TIResult<HashMap<String, Etf>> {
-        let channel = self.service.create_channel().await?;
-        let mut etfs = self.service.instruments(channel).await?;
-        let etfs = etfs
-            .etfs(InstrumentsRequest {
-                instrument_status: InstrumentStatus::All as i32,
-            })
-            .await?;
-        let etfs = collect!(etfs, Etf);
-        Ok(etfs)
-    }
-
-    async fn get_all_currencies(&self) -> TIResult<HashMap<String, Currency>> {
-        let channel = self.service.create_channel().await?;
-        let mut currencies = self.service.instruments(channel).await?;
-        let currencies = currencies
-            .currencies(InstrumentsRequest {
-                instrument_status: InstrumentStatus::All as i32,
-            })
-            .await?;
-        let currencies = collect!(currencies, Currency);
-        Ok(currencies)
-    }
 
     async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
         let (channel, users_channel) =
