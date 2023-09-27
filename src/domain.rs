@@ -28,6 +28,7 @@ pub struct Instrument {
     pub ticker: String,
 }
 
+#[derive(Clone, Copy)]
 pub struct Income {
     currency: Currency,
     current: Decimal,
@@ -130,13 +131,15 @@ impl Income {
         }
     }
 
-    pub fn add(&mut self, other: &Income) {
-        self.current += other.current;
-        self.balance += other.balance;
-    }
-
     fn income(&self) -> Decimal {
         self.current - self.balance
+    }
+}
+
+impl AddAssign for Income {
+    fn add_assign(&mut self, other: Self) {
+        self.current += other.current;
+        self.balance += other.balance;
     }
 }
 
@@ -225,7 +228,7 @@ impl Asset {
     pub fn income(&self) -> Income {
         self.fold(Income::zero, |mut acc, p| {
             let income = Income::new(p.current_value, p.balance_value);
-            acc.add(&income);
+            acc += income;
             acc
         })
     }
@@ -284,7 +287,7 @@ impl Display for Asset {
         let balance_value = self.balance();
         let current_value = self.current();
         let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
-        total_income.add(&balance_income);
+        total_income += balance_income;
 
         let balance_income = ux::colored_cell(balance_income);
         let total_income = ux::colored_cell(total_income);
@@ -356,7 +359,7 @@ impl Display for Paper {
             self.dividents_and_coupons,
             Money::zero(self.dividents_and_coupons.currency),
         );
-        total_income.add(&income);
+        total_income += income;
 
         let expected_yield = ux::colored_cell(income);
         table.add_row(vec![Cell::new(INCOME), expected_yield]);
@@ -382,8 +385,8 @@ impl Display for Portfolio {
         write!(f, "{}", self.currencies)?;
 
         let mut income = self.bonds.income();
-        income.add(&self.shares.income());
-        income.add(&self.currencies.income());
+        income += self.shares.income();
+        income += self.currencies.income();
 
         let mut balance = self.bonds.balance();
         balance += self.shares.balance();
@@ -393,7 +396,7 @@ impl Display for Portfolio {
         dividents += self.shares.dividents();
 
         let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
-        total_income.add(&income);
+        total_income += income;
 
         let mut current = self.bonds.current();
         current += self.shares.current();
