@@ -21,7 +21,7 @@ pub struct TinkoffInvestment {
     service: TinkoffInvestService,
 }
 
-pub enum OperationInfluence {
+enum OperationInfluence {
     /// Anything that affects to dividents or coupons value.<br/>
     /// Including negative values like divident tax etc. to calculate pure income<br/>
     /// without taxes.
