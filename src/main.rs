@@ -3,7 +3,7 @@ use std::{collections::HashMap, env};
 use clap::{command, ArgAction, Command};
 use itertools::Itertools;
 use tinkoff::{
-    client::{to_influence, OperationInfluence, TinkoffInvestment},
+    client::TinkoffInvestment,
     domain::{Asset, Instrument, Money, Paper, Portfolio},
     progress::{Progress, Progresser},
     to_decimal, to_money, ux,
@@ -114,23 +114,7 @@ async fn all(token: String, verbose: bool) {
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
             .await;
 
-        let mut fees = Money::zero(currency);
-        let mut dividents = Money::zero(currency);
-        for op in &executed_ops {
-            let op_type = op.operation_type();
-            let Some(payment) = to_money(op.payment.as_ref()) else {
-                continue;
-            };
-            match to_influence(op_type) {
-                OperationInfluence::PureIncome => {
-                    dividents.value += payment.value;
-                }
-                OperationInfluence::Fees => {
-                    fees.value += payment.value;
-                }
-                OperationInfluence::Unspecified => {}
-            }
-        }
+        let totals = tinkoff::client::reduce(&executed_ops, currency);
 
         let mut paper = Paper {
             name: String::new(),
@@ -142,8 +126,8 @@ async fn all(token: String, verbose: bool) {
             balance_value,
             current_value,
             current_instrument_price,
-            taxes_and_fees: fees,
-            dividents_and_coupons: dividents,
+            taxes_and_fees: totals.fees,
+            dividents_and_coupons: totals.dividents,
         };
 
         match p.instrument_type.as_str() {
@@ -224,23 +208,7 @@ async fn asset(
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
             .await;
 
-        let mut fees = Money::zero(currency);
-        let mut dividents = Money::zero(currency);
-        for op in &executed_ops {
-            let op_type = op.operation_type();
-            let Some(payment) = to_money(op.payment.as_ref()) else {
-                continue;
-            };
-            match to_influence(op_type) {
-                OperationInfluence::PureIncome => {
-                    dividents.value += payment.value;
-                }
-                OperationInfluence::Fees => {
-                    fees.value += payment.value;
-                }
-                OperationInfluence::Unspecified => {}
-            }
-        }
+        let totals = tinkoff::client::reduce(&executed_ops, currency);
 
         if let Some(inst) = instruments.get(&p.figi) {
             let paper = Paper {
@@ -253,8 +221,8 @@ async fn asset(
                 balance_value,
                 current_value,
                 current_instrument_price,
-                taxes_and_fees: fees,
-                dividents_and_coupons: dividents,
+                taxes_and_fees: totals.fees,
+                dividents_and_coupons: totals.dividents,
             };
 
             asset.add_paper(paper);

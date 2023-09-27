@@ -9,6 +9,8 @@ use tinkoff_invest_api::{
     TIResult, TinkoffInvestService,
 };
 
+use crate::domain::{Money, Totals};
+
 #[derive(Default)]
 pub struct Portfolio {
     pub account_id: String,
@@ -30,7 +32,7 @@ pub enum OperationInfluence {
 }
 
 #[must_use]
-pub fn to_influence(op: OperationType) -> OperationInfluence {
+fn to_influence(op: OperationType) -> OperationInfluence {
     match op {
         tinkoff_invest_api::tcs::OperationType::DividendTax
         | tinkoff_invest_api::tcs::OperationType::DividendTaxProgressive
@@ -55,6 +57,27 @@ pub fn to_influence(op: OperationType) -> OperationInfluence {
         | tinkoff_invest_api::tcs::OperationType::OutputPenalty => OperationInfluence::Fees,
         _ => OperationInfluence::Unspecified,
     }
+}
+
+#[must_use]
+pub fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Totals {
+    let mut fees = Money::zero(currency);
+    let mut dividents = Money::zero(currency);
+    for op in operations {
+        let Some(payment) = crate::to_money(op.payment.as_ref()) else {
+            continue;
+        };
+        match to_influence(op.operation_type()) {
+            OperationInfluence::PureIncome => {
+                dividents += payment;
+            }
+            OperationInfluence::Fees => {
+                fees += payment;
+            }
+            OperationInfluence::Unspecified => {}
+        }
+    }
+    Totals { dividents, fees }
 }
 
 macro_rules! loop_until_success {

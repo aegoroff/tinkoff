@@ -1,4 +1,7 @@
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    ops::{self, AddAssign},
+};
 
 use comfy_table::{Attribute, Cell, TableComponent};
 use iso_currency::Currency;
@@ -67,6 +70,11 @@ pub struct Asset {
     verbose: bool,
 }
 
+pub struct Totals {
+    pub dividents: Money,
+    pub fees: Money,
+}
+
 impl Money {
     #[must_use]
     pub fn new(value: Decimal, currency: &str) -> Option<Self> {
@@ -85,8 +93,21 @@ impl Money {
             currency,
         }
     }
+}
 
-    pub fn add(&mut self, other: &Money) {
+impl ops::Add<Money> for Money {
+    type Output = Money;
+
+    fn add(self, rhs: Money) -> Money {
+        Money {
+            value: self.value + rhs.value,
+            currency: self.currency,
+        }
+    }
+}
+
+impl AddAssign for Money {
+    fn add_assign(&mut self, other: Self) {
         self.value += other.value;
     }
 }
@@ -211,21 +232,21 @@ impl Asset {
 
     pub fn current(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc.add(&p.current_value);
+            acc += p.current_value;
             acc
         })
     }
 
     pub fn balance(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc.add(&p.balance_value);
+            acc += p.balance_value;
             acc
         })
     }
 
     pub fn dividents(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc.add(&p.dividents_and_coupons);
+            acc += p.dividents_and_coupons;
             acc
         })
     }
@@ -365,18 +386,18 @@ impl Display for Portfolio {
         income.add(&self.currencies.income());
 
         let mut balance = self.bonds.balance();
-        balance.add(&self.shares.balance());
-        balance.add(&self.currencies.balance());
+        balance += self.shares.balance();
+        balance += self.currencies.balance();
 
         let mut dividents = self.bonds.dividents();
-        dividents.add(&self.shares.dividents());
+        dividents += self.shares.dividents();
 
         let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
         total_income.add(&income);
 
         let mut current = self.bonds.current();
-        current.add(&self.shares.current());
-        current.add(&self.currencies.current());
+        current += self.shares.current();
+        current += self.currencies.current();
 
         let income = ux::colored_cell(income);
         let total_income = ux::colored_cell(total_income);
