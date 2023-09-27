@@ -39,6 +39,19 @@ macro_rules! add_instrument {
     }};
 }
 
+macro_rules! impl_instrument_fn {
+    ($(($name:ident, $method:ident, $asset_name:expr, $insr_type:expr)),*) => {
+        $(
+            async fn $name(token: String) {
+                let client = TinkoffInvestment::new(token);
+                let instruments = client.$method().await;
+                let i = instruments!(instruments);
+                asset(client, $asset_name.to_owned(), $insr_type, i).await;
+            }
+        )*
+    };
+}
+
 #[tokio::main]
 async fn main() {
     ux::clear_screen();
@@ -155,33 +168,17 @@ async fn all(token: String, verbose: bool) {
     print!("{pf}");
 }
 
-async fn bonds(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let bonds = client.get_all_bonds_until_done().await;
-    let i = instruments!(bonds);
-    asset(client, "Bonds".to_owned(), "bond", i).await;
-}
-
-async fn shares(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let shares = client.get_all_shares_until_done().await;
-    let i = instruments!(shares);
-    asset(client, "Shares".to_owned(), "share", i).await;
-}
-
-async fn etfs(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let etfs = client.get_all_etfs_until_done().await;
-    let i = instruments!(etfs);
-    asset(client, "Etfs".to_owned(), "etf", i).await;
-}
-
-async fn currencies(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let currencies = client.get_all_currencies_until_done().await;
-    let i = instruments!(currencies);
-    asset(client, "Currencies".to_owned(), "currency", i).await;
-}
+impl_instrument_fn!(
+    (bonds, get_all_bonds_until_done, "Bonds", "bond"),
+    (shares, get_all_shares_until_done, "Shares", "share"),
+    (etfs, get_all_etfs_until_done, "Etfs", "etf"),
+    (
+        currencies,
+        get_all_currencies_until_done,
+        "Currencies",
+        "currency"
+    )
+);
 
 async fn asset(
     client: TinkoffInvestment,
