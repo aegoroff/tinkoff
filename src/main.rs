@@ -40,7 +40,7 @@ macro_rules! add_instrument {
 }
 
 macro_rules! impl_instrument_fn {
-    ($(($name:ident, $method:ident, $asset_name:expr, $insr_type:expr)),*) => {
+    ($(($name:ident, $method:ident, $asset_name:literal, $insr_type:literal)),*) => {
         $(
             async fn $name(token: String) {
                 let client = TinkoffInvestment::new(token);

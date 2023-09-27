@@ -69,7 +69,7 @@ macro_rules! loop_until_success {
 }
 
 macro_rules! collect {
-    ($response:ident, $t:tt) => {{
+    ($response:ident, $t:ty) => {{
         $response
             .into_inner()
             .instruments
