@@ -73,7 +73,7 @@ async fn main() {
     }
 }
 
-async fn all(token: String, verbose: bool) {
+async fn all(token: String, output_papers: bool) {
     let client = TinkoffInvestment::new(token);
 
     let (bonds, shares, etfs, currencies, portfolio) = tokio::join!(
@@ -84,7 +84,7 @@ async fn all(token: String, verbose: bool) {
         client.get_portfolio_until_done(AccountType::Tinkoff),
     );
 
-    let mut pf = Portfolio::new(verbose);
+    let mut pf = Portfolio::new(output_papers);
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
     let mut progress = 1u64;
     for p in &portfolio.positions {

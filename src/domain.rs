@@ -68,7 +68,7 @@ pub struct Portfolio {
 pub struct Asset {
     name: String,
     papers: Vec<Paper>,
-    verbose: bool,
+    output_papers: bool,
 }
 
 pub struct Totals {
@@ -195,12 +195,12 @@ impl NumberRange for Income {
 
 impl Portfolio {
     #[must_use]
-    pub fn new(verbose: bool) -> Self {
+    pub fn new(output_papers: bool) -> Self {
         Self {
-            bonds: Asset::new("Bonds".to_owned(), verbose),
-            shares: Asset::new("Shares".to_owned(), verbose),
-            etfs: Asset::new("Etfs".to_owned(), verbose),
-            currencies: Asset::new("Currencies".to_owned(), verbose),
+            bonds: Asset::new("Bonds".to_owned(), output_papers),
+            shares: Asset::new("Shares".to_owned(), output_papers),
+            etfs: Asset::new("Etfs".to_owned(), output_papers),
+            currencies: Asset::new("Currencies".to_owned(), output_papers),
         }
     }
 }
@@ -213,11 +213,11 @@ impl Default for Portfolio {
 
 impl Asset {
     #[must_use]
-    pub fn new(name: String, verbose: bool) -> Self {
+    pub fn new(name: String, output_papers: bool) -> Self {
         Self {
             papers: vec![],
             name,
-            verbose,
+            output_papers,
         }
     }
 
@@ -276,7 +276,7 @@ impl Display for Asset {
             .fg(comfy_table::Color::DarkBlue)]);
         asset_table.set_style(TableComponent::HeaderLines, ' ');
 
-        if self.verbose {
+        if self.output_papers {
             for p in &self.papers {
                 asset_table.add_row(vec![Cell::new(p)]);
             }
