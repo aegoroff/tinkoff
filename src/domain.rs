@@ -40,6 +40,7 @@ pub trait NumberRange {
     fn is_zero(&self) -> bool;
 }
 
+/// Paper represents things like share, bond, currency, etf etc.
 pub struct Paper {
     pub name: String,
     pub ticker: String,
@@ -58,6 +59,8 @@ pub struct Paper {
     pub dividents_and_coupons: Money,
 }
 
+/// Portfolio is an Asset's container
+/// Asset is a Paper's container
 pub struct Portfolio {
     pub bonds: Asset,
     pub shares: Asset,
@@ -65,6 +68,7 @@ pub struct Portfolio {
     pub currencies: Asset,
 }
 
+/// Asset is a Paper's container
 pub struct Asset {
     name: String,
     papers: Vec<Paper>,
