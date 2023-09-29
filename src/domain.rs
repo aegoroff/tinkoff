@@ -68,6 +68,9 @@ pub struct Portfolio {
 pub struct Asset {
     name: String,
     papers: Vec<Paper>,
+    /// Whether to include asset's papers into output
+    /// If true papers will be displyed
+    /// If false they only accounted during calculations (balance, income etc,)
     output_papers: bool,
 }
 
