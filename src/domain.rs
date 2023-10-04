@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    ops::{self, AddAssign},
+    ops::{self, AddAssign, SubAssign},
 };
 
 use comfy_table::{Attribute, Cell, TableComponent};
@@ -117,6 +117,23 @@ impl ops::Add<Money> for Money {
 impl AddAssign for Money {
     fn add_assign(&mut self, other: Self) {
         self.value += other.value;
+    }
+}
+
+impl ops::Sub<Money> for Money {
+    type Output = Money;
+
+    fn sub(self, rhs: Money) -> Money {
+        Money {
+            value: self.value - rhs.value,
+            currency: self.currency,
+        }
+    }
+}
+
+impl SubAssign for Money {
+    fn sub_assign(&mut self, other: Self) {
+        self.value -= other.value;
     }
 }
 
