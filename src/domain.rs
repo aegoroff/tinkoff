@@ -394,6 +394,35 @@ impl Portfolio {
             currencies: Asset::new("Currencies".to_owned(), output_papers),
         }
     }
+
+    pub fn income(&self) -> Income {
+        self.bonds.income() + self.shares.income() + self.currencies.income() + self.etfs.income()
+    }
+
+    pub fn total_income(&self) -> Income {
+        self.bonds.total_income()
+            + self.shares.total_income()
+            + self.currencies.total_income()
+            + self.etfs.total_income()
+    }
+
+    pub fn balance(&self) -> Money {
+        self.bonds.balance()
+            + self.shares.balance()
+            + self.currencies.balance()
+            + self.etfs.balance()
+    }
+
+    pub fn current(&self) -> Money {
+        self.bonds.current()
+            + self.shares.current()
+            + self.currencies.current()
+            + self.etfs.current()
+    }
+
+    pub fn dividents(&self) -> Money {
+        self.bonds.dividents() + self.shares.dividents() + self.shares.dividents()
+    }
 }
 
 impl Default for Portfolio {
@@ -572,31 +601,6 @@ impl Display for Portfolio {
         write!(f, "{}", self.shares)?;
         write!(f, "{}", self.currencies)?;
 
-        let mut income = self.bonds.income();
-        income += self.shares.income();
-        income += self.currencies.income();
-        income += self.etfs.income();
-
-        let mut balance = self.bonds.balance();
-        balance += self.shares.balance();
-        balance += self.currencies.balance();
-        balance += self.etfs.balance();
-
-        let mut dividents = self.bonds.dividents();
-        dividents += self.shares.dividents();
-
-        let mut total_income = self.bonds.total_income();
-        total_income += self.shares.total_income();
-        total_income += self.currencies.total_income();
-        total_income += self.etfs.total_income();
-
-        let mut current = self.bonds.current();
-        current += self.shares.current();
-        current += self.currencies.current();
-        current += self.etfs.current();
-
-        let income = ux::colored_cell(income);
-        let total_income = ux::colored_cell(total_income);
         let mut table = ux::new_table();
 
         let title = Cell::new("Portfolio totals:")
@@ -604,14 +608,20 @@ impl Display for Portfolio {
             .fg(comfy_table::Color::DarkRed);
         table.set_header(vec![title, Cell::new("")]);
 
-        table.add_row(vec![Cell::new(BALANCE_INCOME), income]);
-        table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
+        table.add_row(vec![
+            Cell::new(BALANCE_INCOME),
+            ux::colored_cell(self.income()),
+        ]);
+        table.add_row(vec![
+            Cell::new(TOTAL_INCOME),
+            ux::colored_cell(self.total_income()),
+        ]);
         table.add_row(vec![
             Cell::new("Dividents and coupons"),
-            ux::colored_cell(dividents),
+            ux::colored_cell(self.dividents()),
         ]);
-        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(balance)]);
-        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(current)]);
+        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
+        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
 
         writeln!(f)?;
         writeln!(f, "{table}")
