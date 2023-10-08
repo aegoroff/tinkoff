@@ -89,6 +89,16 @@ pub struct Totals {
 }
 
 impl Paper {
+    /// Paper income (difference between current and balance prices)
+    pub fn income(&self) -> Income {
+        Income::new(self.current(), self.balance())
+    }
+
+    /// Total income (income + dividents)
+    pub fn total_income(&self) -> Income {
+        self.income() + Income::new(self.dividents(), Money::zero(self.currency()))
+    }
+
     /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
     pub fn balance(&self) -> Money {
         self.position.balance
@@ -305,6 +315,18 @@ impl Income {
     }
 }
 
+impl ops::Add<Income> for Income {
+    type Output = Income;
+
+    fn add(self, rhs: Income) -> Income {
+        Income {
+            current: self.current + rhs.current,
+            balance: self.balance + rhs.balance,
+            currency: self.currency,
+        }
+    }
+}
+
 impl AddAssign for Income {
     fn add_assign(&mut self, other: Self) {
         self.current += other.current;
@@ -396,8 +418,14 @@ impl Asset {
 
     pub fn income(&self) -> Income {
         self.fold(Income::zero, |mut acc, p| {
-            let income = Income::new(p.current(), p.balance());
-            acc += income;
+            acc += p.income();
+            acc
+        })
+    }
+
+    pub fn total_income(&self) -> Income {
+        self.fold(Income::zero, |mut acc, p| {
+            acc += p.total_income();
             acc
         })
     }
@@ -455,8 +483,7 @@ impl Display for Asset {
         let dividents = self.dividents();
         let balance_value = self.balance();
         let current_value = self.current();
-        let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
-        total_income += balance_income;
+        let total_income: Income = self.total_income();
 
         let balance_income = ux::colored_cell(balance_income);
         let total_income = ux::colored_cell(total_income);
@@ -517,21 +544,22 @@ impl Display for Paper {
         table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
         table.add_row(vec!["", ""]);
 
-        let income = Income::new(self.current(), self.balance());
-        let mut total_income = Income::new(self.dividents(), Money::zero(self.currency()));
-        total_income += income;
+        table.add_row(vec![Cell::new(INCOME), ux::colored_cell(self.income())]);
 
-        let expected_yield = ux::colored_cell(income);
-        table.add_row(vec![Cell::new(INCOME), expected_yield]);
+        table.add_row(vec![
+            Cell::new("Dividends"),
+            ux::colored_cell(self.dividents()),
+        ]);
 
-        let dividents_and_coupons = ux::colored_cell(self.dividents());
-        table.add_row(vec![Cell::new("Dividends"), dividents_and_coupons]);
+        table.add_row(vec![
+            Cell::new(TOTAL_INCOME),
+            ux::colored_cell(self.total_income()),
+        ]);
 
-        let total_income = ux::colored_cell(total_income);
-        table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
-
-        let taxes_and_fees = ux::colored_cell(self.fees());
-        table.add_row(vec![Cell::new("Taxes and fees"), taxes_and_fees]);
+        table.add_row(vec![
+            Cell::new("Taxes and fees"),
+            ux::colored_cell(self.fees()),
+        ]);
 
         write!(f, "{table}")
     }
@@ -547,20 +575,25 @@ impl Display for Portfolio {
         let mut income = self.bonds.income();
         income += self.shares.income();
         income += self.currencies.income();
+        income += self.etfs.income();
 
         let mut balance = self.bonds.balance();
         balance += self.shares.balance();
         balance += self.currencies.balance();
+        balance += self.etfs.balance();
 
         let mut dividents = self.bonds.dividents();
         dividents += self.shares.dividents();
 
-        let mut total_income = Income::new(dividents, Money::zero(dividents.currency));
-        total_income += income;
+        let mut total_income = self.bonds.total_income();
+        total_income += self.shares.total_income();
+        total_income += self.currencies.total_income();
+        total_income += self.etfs.total_income();
 
         let mut current = self.bonds.current();
         current += self.shares.current();
         current += self.currencies.current();
+        current += self.etfs.current();
 
         let income = ux::colored_cell(income);
         let total_income = ux::colored_cell(total_income);
