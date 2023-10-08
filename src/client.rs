@@ -90,25 +90,19 @@ impl TryFrom<&PortfolioPosition> for Position {
     fn try_from(value: &PortfolioPosition) -> Result<Self, Self::Error> {
         let currency =
             to_currency(&value.current_price).ok_or(eyre::eyre!("Failed to get currency"))?;
-        let expected_yield = to_decimal(value.expected_yield.as_ref());
-        let expected_yield = Money::from_value(expected_yield, currency);
+
         let average_buy_price = to_money(value.average_position_price.as_ref())
             .ok_or(eyre::eyre!("Failed to get average position price"))?;
 
         let quantity = to_decimal(value.quantity.as_ref());
-        let balance = average_buy_price * quantity;
 
         let current_instrument_price = to_money(value.current_price.as_ref())
             .ok_or(eyre::eyre!("Failed to get current price"))?;
-        let current = current_instrument_price * quantity;
 
         Ok(Self {
             currency,
             average_buy_price,
             current_instrument_price,
-            current,
-            balance,
-            expected_yield,
             quantity,
         })
     }

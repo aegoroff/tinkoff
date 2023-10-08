@@ -40,11 +40,6 @@ pub struct Position {
     pub currency: Currency,
     pub average_buy_price: Money,
     pub current_instrument_price: Money,
-    /// Current position value, i.e. current position price multiplied to quantity
-    pub current: Money,
-    /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
-    pub balance: Money,
-    pub expected_yield: Money,
     pub quantity: Decimal,
 }
 
@@ -105,13 +100,13 @@ impl Paper {
     /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
     #[must_use]
     pub fn balance(&self) -> Money {
-        self.position.balance
+        self.position.average_buy_price * self.position.quantity
     }
 
     /// Current position value, i.e. current position price multiplied to quantity
     #[must_use]
     pub fn current(&self) -> Money {
-        self.position.current
+        self.position.current_instrument_price * self.position.quantity
     }
 
     /// Dividents and coupons
@@ -312,12 +307,23 @@ impl Income {
             balance: balance.value,
         }
     }
+
     #[must_use]
     pub fn zero(currency: Currency) -> Self {
         Self {
             currency,
             current: Decimal::default(),
             balance: Decimal::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn percent(&self) -> Decimal {
+        let income = self.income();
+        if self.balance.is_zero() {
+            Decimal::default()
+        } else {
+            (income / self.balance) * HUNDRED
         }
     }
 
@@ -368,19 +374,12 @@ impl NumberRange for Money {
 
 impl Display for Income {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let income = self.income();
-        let percent = if self.balance.is_zero() {
-            Decimal::default()
-        } else {
-            (income / self.balance) * HUNDRED
-        };
-
         write!(
             f,
             "{} {} ({}%)",
-            format_decimal(income)?,
+            format_decimal(self.income())?,
             self.currency.symbol(),
-            percent.round_dp(2)
+            self.percent().round_dp(2)
         )
     }
 }
@@ -447,7 +446,7 @@ impl Portfolio {
     pub fn dividents(&self) -> Money {
         self.bonds.dividents()
             + self.shares.dividents()
-            + self.shares.dividents()
+            + self.etfs.dividents()
             + self.futures.dividents()
     }
 }
@@ -661,5 +660,86 @@ impl Display for Portfolio {
 
         writeln!(f)?;
         writeln!(f, "{table}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::{fixture, rstest};
+
+    #[rstest]
+    fn portfolio_balance(test_portfolio: Portfolio) {
+        assert_eq!(dec!(1500), test_portfolio.balance().value);
+    }
+
+    #[rstest]
+    fn portfolio_current(test_portfolio: Portfolio) {
+        assert_eq!(dec!(1700), test_portfolio.current().value);
+    }
+
+    #[rstest]
+    fn portfolio_income(test_portfolio: Portfolio) {
+        assert_eq!(dec!(1500), test_portfolio.income().balance);
+        assert_eq!(dec!(1700), test_portfolio.income().current);
+        assert_eq!(dec!(13.33), test_portfolio.income().percent().round_dp(2));
+    }
+
+    #[rstest]
+    fn portfolio_dividents(test_portfolio: Portfolio) {
+        assert_eq!(dec!(150), test_portfolio.dividents().value);
+    }
+
+    #[rstest]
+    fn portfolio_total_income(test_portfolio: Portfolio) {
+        assert_eq!(dec!(1850), test_portfolio.total_income().current);
+    }
+
+    #[fixture]
+    fn test_portfolio() -> Portfolio {
+        let currency = Currency::RUB;
+        let mut bonds = Asset::new("Bonds".to_string(), true);
+        bonds.add_paper(Paper {
+            name: "1".to_string(),
+            ticker: "1t".to_string(),
+            figi: "1f".to_string(),
+            position: Position {
+                currency,
+                average_buy_price: Money::from_value(dec!(10), currency),
+                current_instrument_price: Money::from_value(dec!(11), currency),
+                quantity: dec!(100),
+            },
+            totals: Totals {
+                dividents: Money::from_value(dec!(100), currency),
+                fees: Money::from_value(dec!(10), currency),
+            },
+        });
+        let mut shares = Asset::new("Shares".to_string(), true);
+        shares.add_paper(Paper {
+            name: "2".to_string(),
+            ticker: "2t".to_string(),
+            figi: "2f".to_string(),
+            position: Position {
+                currency,
+                average_buy_price: Money::from_value(dec!(5), currency),
+                current_instrument_price: Money::from_value(dec!(6), currency),
+                quantity: dec!(100),
+            },
+            totals: Totals {
+                dividents: Money::from_value(dec!(50), currency),
+                fees: Money::from_value(dec!(10), currency),
+            },
+        });
+
+        let etfs = Asset::new("Etfs".to_string(), true);
+        let currencies = Asset::new("Currencies".to_string(), true);
+        let futures = Asset::new("Futures".to_string(), true);
+        Portfolio {
+            bonds,
+            shares,
+            etfs,
+            currencies,
+            futures,
+        }
     }
 }

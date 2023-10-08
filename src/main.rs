@@ -103,7 +103,7 @@ async fn all(token: String, output_papers: bool) {
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
             .await;
 
-        let totals = tinkoff::client::reduce(&executed_ops, position.balance.currency);
+        let totals = tinkoff::client::reduce(&executed_ops, position.currency);
 
         let mut paper = Paper {
             name: String::new(),
@@ -179,7 +179,7 @@ async fn asset(
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
             .await;
 
-        let totals = tinkoff::client::reduce(&executed_ops, position.balance.currency);
+        let totals = tinkoff::client::reduce(&executed_ops, position.currency);
 
         if let Some(inst) = instruments.get(&p.figi) {
             let paper = Paper {
