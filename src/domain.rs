@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    ops::{self, AddAssign, SubAssign},
+    ops::{self, AddAssign, DivAssign, MulAssign, SubAssign},
 };
 
 use comfy_table::{Attribute, Cell, TableComponent};
@@ -114,9 +114,26 @@ impl ops::Add<Money> for Money {
     }
 }
 
+impl ops::Add<Decimal> for Money {
+    type Output = Money;
+
+    fn add(self, rhs: Decimal) -> Money {
+        Money {
+            value: self.value + rhs,
+            currency: self.currency,
+        }
+    }
+}
+
 impl AddAssign for Money {
     fn add_assign(&mut self, other: Self) {
         self.value += other.value;
+    }
+}
+
+impl AddAssign<Decimal> for Money {
+    fn add_assign(&mut self, other: Decimal) {
+        self.value += other;
     }
 }
 
@@ -131,9 +148,94 @@ impl ops::Sub<Money> for Money {
     }
 }
 
+impl ops::Sub<Decimal> for Money {
+    type Output = Money;
+
+    fn sub(self, rhs: Decimal) -> Money {
+        Money {
+            value: self.value - rhs,
+            currency: self.currency,
+        }
+    }
+}
+
 impl SubAssign for Money {
     fn sub_assign(&mut self, other: Self) {
         self.value -= other.value;
+    }
+}
+
+impl SubAssign<Decimal> for Money {
+    fn sub_assign(&mut self, other: Decimal) {
+        self.value -= other;
+    }
+}
+
+impl ops::Mul<Money> for Money {
+    type Output = Money;
+
+    fn mul(self, rhs: Money) -> Money {
+        Money {
+            value: self.value * rhs.value,
+            currency: self.currency,
+        }
+    }
+}
+
+impl ops::Mul<Decimal> for Money {
+    type Output = Money;
+
+    fn mul(self, rhs: Decimal) -> Money {
+        Money {
+            value: self.value * rhs,
+            currency: self.currency,
+        }
+    }
+}
+
+impl MulAssign for Money {
+    fn mul_assign(&mut self, other: Self) {
+        self.value *= other.value;
+    }
+}
+
+impl MulAssign<Decimal> for Money {
+    fn mul_assign(&mut self, other: Decimal) {
+        self.value *= other;
+    }
+}
+
+impl ops::Div<Money> for Money {
+    type Output = Money;
+
+    fn div(self, rhs: Money) -> Money {
+        Money {
+            value: self.value / rhs.value,
+            currency: self.currency,
+        }
+    }
+}
+
+impl ops::Div<Decimal> for Money {
+    type Output = Money;
+
+    fn div(self, rhs: Decimal) -> Money {
+        Money {
+            value: self.value / rhs,
+            currency: self.currency,
+        }
+    }
+}
+
+impl DivAssign for Money {
+    fn div_assign(&mut self, other: Self) {
+        self.value /= other.value;
+    }
+}
+
+impl DivAssign<Decimal> for Money {
+    fn div_assign(&mut self, other: Decimal) {
+        self.value /= other;
     }
 }
 

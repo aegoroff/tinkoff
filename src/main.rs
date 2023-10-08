@@ -99,16 +99,10 @@ async fn all(token: String, output_papers: bool) {
         let average_buy_price = to_money(p.average_position_price.as_ref()).unwrap();
 
         let quantity = to_decimal(p.quantity.as_ref());
-        let balance_value = Money {
-            value: average_buy_price.value * quantity,
-            currency: average_buy_price.currency,
-        };
+        let balance_value = average_buy_price * quantity;
 
         let current_instrument_price = to_money(p.current_price.as_ref()).unwrap();
-        let current_value = Money {
-            value: current_instrument_price.value * quantity,
-            currency: current_instrument_price.currency,
-        };
+        let current_value = current_instrument_price * quantity;
 
         let executed_ops = client
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
@@ -193,16 +187,10 @@ async fn asset(
         let average_buy_price = to_money(p.average_position_price.as_ref()).unwrap();
 
         let quantity = to_decimal(p.quantity.as_ref());
-        let balance_value = Money {
-            value: average_buy_price.value * quantity,
-            currency: average_buy_price.currency,
-        };
+        let balance_value = average_buy_price * quantity;
 
         let current_instrument_price = to_money(p.current_price.as_ref()).unwrap();
-        let current_value = Money {
-            value: current_instrument_price.value * quantity,
-            currency: current_instrument_price.currency,
-        };
+        let current_value = current_instrument_price * quantity;
 
         let executed_ops = client
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
