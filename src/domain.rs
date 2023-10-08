@@ -485,12 +485,16 @@ impl Asset {
         IF: FnMut(Currency) -> B,
         F: FnMut(B, &Paper) -> B,
     {
-        let currency = if self.papers.is_empty() {
+        let currency = self.currency();
+        self.papers.iter().fold(init(currency), f)
+    }
+
+    fn currency(&self) -> Currency {
+        if self.papers.is_empty() {
             iso_currency::Currency::RUB
         } else {
             self.papers[0].currency()
-        };
-        self.papers.iter().fold(init(currency), f)
+        }
     }
 }
 
