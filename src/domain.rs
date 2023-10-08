@@ -91,47 +91,57 @@ pub struct Totals {
 
 impl Paper {
     /// Paper income (difference between current and balance prices)
+    #[must_use]
     pub fn income(&self) -> Income {
         Income::new(self.current(), self.balance())
     }
 
     /// Total income (income + dividents)
+    #[must_use]
     pub fn total_income(&self) -> Income {
         self.income() + Income::new(self.dividents(), Money::zero(self.currency()))
     }
 
     /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
+    #[must_use]
     pub fn balance(&self) -> Money {
         self.position.balance
     }
 
     /// Current position value, i.e. current position price multiplied to quantity
+    #[must_use]
     pub fn current(&self) -> Money {
         self.position.current
     }
 
     /// Dividents and coupons
+    #[must_use]
     pub fn dividents(&self) -> Money {
         self.totals.dividents
     }
 
     /// Taxes and fees
+    #[must_use]
     pub fn fees(&self) -> Money {
         self.totals.fees
     }
 
+    #[must_use]
     pub fn currency(&self) -> Currency {
         self.position.currency
     }
 
+    #[must_use]
     pub fn quantity(&self) -> Decimal {
         self.position.quantity
     }
 
+    #[must_use]
     pub fn current_instrument_price(&self) -> Money {
         self.position.current_instrument_price
     }
 
+    #[must_use]
     pub fn average_buy_price(&self) -> Money {
         self.position.average_buy_price
     }
@@ -397,6 +407,7 @@ impl Portfolio {
         }
     }
 
+    #[must_use]
     pub fn income(&self) -> Income {
         self.bonds.income()
             + self.shares.income()
@@ -405,6 +416,7 @@ impl Portfolio {
             + self.futures.income()
     }
 
+    #[must_use]
     pub fn total_income(&self) -> Income {
         self.bonds.total_income()
             + self.shares.total_income()
@@ -413,6 +425,7 @@ impl Portfolio {
             + self.futures.total_income()
     }
 
+    #[must_use]
     pub fn balance(&self) -> Money {
         self.bonds.balance()
             + self.shares.balance()
@@ -421,6 +434,7 @@ impl Portfolio {
             + self.futures.balance()
     }
 
+    #[must_use]
     pub fn current(&self) -> Money {
         self.bonds.current()
             + self.shares.current()
@@ -429,6 +443,7 @@ impl Portfolio {
             + self.futures.current()
     }
 
+    #[must_use]
     pub fn dividents(&self) -> Money {
         self.bonds.dividents()
             + self.shares.dividents()
@@ -492,6 +507,7 @@ impl Asset {
         })
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.papers.is_empty()
     }
@@ -553,10 +569,10 @@ impl Display for Asset {
         ]);
         asset_table.add_row(vec![Cell::new(table)]);
 
-        if !self.is_empty() {
-            write!(f, "{asset_table}")
-        } else {
+        if self.is_empty() {
             Ok(())
+        } else {
+            write!(f, "{asset_table}")
         }
     }
 }
