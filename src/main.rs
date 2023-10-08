@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     };
 
     match cli.subcommand() {
-        Some(("a", cmd)) => all(token, !cmd.get_flag("aggregate")).await,
+        Some(("a", cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await,
         Some(("s", _)) => shares(token).await,
         Some(("b", _)) => bonds(token).await,
         Some(("e", _)) => etfs(token).await,
