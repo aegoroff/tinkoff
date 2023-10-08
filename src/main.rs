@@ -1,12 +1,13 @@
 use std::{collections::HashMap, env};
 
 use clap::{command, ArgAction, Command};
+use color_eyre::eyre::Result;
 use itertools::Itertools;
 use tinkoff::{
     client::TinkoffInvestment,
-    domain::{Asset, Instrument, Money, Paper, Portfolio},
+    domain::{Asset, Instrument, Paper, Portfolio, Position},
     progress::{Progress, Progresser},
-    to_decimal, to_money, ux,
+    ux,
 };
 use tinkoff_invest_api::tcs::AccountType;
 
@@ -53,7 +54,8 @@ macro_rules! impl_instrument_fn {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
     ux::clear_screen();
     let cli = build_cli().get_matches();
 
@@ -71,6 +73,7 @@ async fn main() {
         Some(("c", _)) => currencies(token).await,
         _ => {}
     }
+    Ok(())
 }
 
 async fn all(token: String, output_papers: bool) {
@@ -88,40 +91,24 @@ async fn all(token: String, output_papers: bool) {
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
     let mut progress = 1u64;
     for p in &portfolio.positions {
-        let Some(currency) = tinkoff::to_currency(&p.current_price) else {
+        let Ok(position) = Position::try_from(p) else {
             progresser.progress(progress);
             progress += 1;
             continue;
         };
 
-        let expected_yield = to_decimal(p.expected_yield.as_ref());
-        let expected_yield = Money::from_value(expected_yield, currency);
-        let average_buy_price = to_money(p.average_position_price.as_ref()).unwrap();
-
-        let quantity = to_decimal(p.quantity.as_ref());
-        let balance_value = average_buy_price * quantity;
-
-        let current_instrument_price = to_money(p.current_price.as_ref()).unwrap();
-        let current_value = current_instrument_price * quantity;
-
         let executed_ops = client
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
             .await;
 
-        let totals = tinkoff::client::reduce(&executed_ops, currency);
+        let totals = tinkoff::client::reduce(&executed_ops, position.balance.currency);
 
         let mut paper = Paper {
             name: String::new(),
             ticker: String::new(),
             figi: p.figi.clone(),
-            expected_yield,
-            average_buy_price,
-            quantity,
-            balance_value,
-            current_value,
-            current_instrument_price,
-            taxes_and_fees: totals.fees,
-            dividents_and_coupons: totals.dividents,
+            position,
+            totals,
         };
 
         match p.instrument_type.as_str() {
@@ -176,41 +163,25 @@ async fn asset(
     let mut progress = 1u64;
     let mut asset = Asset::new(asset_name.clone(), true);
     for p in &positions {
-        let Some(currency) = tinkoff::to_currency(&p.current_price) else {
+        let Ok(position) = Position::try_from(p) else {
             progresser.progress(progress);
             progress += 1;
             continue;
         };
 
-        let expected_yield = to_decimal(p.expected_yield.as_ref());
-        let expected_yield = Money::from_value(expected_yield, currency);
-        let average_buy_price = to_money(p.average_position_price.as_ref()).unwrap();
-
-        let quantity = to_decimal(p.quantity.as_ref());
-        let balance_value = average_buy_price * quantity;
-
-        let current_instrument_price = to_money(p.current_price.as_ref()).unwrap();
-        let current_value = current_instrument_price * quantity;
-
         let executed_ops = client
             .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
             .await;
 
-        let totals = tinkoff::client::reduce(&executed_ops, currency);
+        let totals = tinkoff::client::reduce(&executed_ops, position.balance.currency);
 
         if let Some(inst) = instruments.get(&p.figi) {
             let paper = Paper {
                 name: inst.name.clone(),
                 ticker: inst.ticker.clone(),
                 figi: p.figi.clone(),
-                expected_yield,
-                average_buy_price,
-                quantity,
-                balance_value,
-                current_value,
-                current_instrument_price,
-                taxes_and_fees: totals.fees,
-                dividents_and_coupons: totals.dividents,
+                position,
+                totals,
             };
 
             asset.add_paper(paper);

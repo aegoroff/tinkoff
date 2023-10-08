@@ -35,6 +35,19 @@ pub struct Income {
     balance: Decimal,
 }
 
+#[derive(Clone, Copy)]
+pub struct Position {
+    pub currency: Currency,
+    pub average_buy_price: Money,
+    pub current_instrument_price: Money,
+    /// Current position value, i.e. current position price multiplied to quantity
+    pub current: Money,
+    /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
+    pub balance: Money,
+    pub expected_yield: Money,
+    pub quantity: Decimal,
+}
+
 pub trait NumberRange {
     fn is_negative(&self) -> bool;
     fn is_zero(&self) -> bool;
@@ -45,18 +58,8 @@ pub struct Paper {
     pub name: String,
     pub ticker: String,
     pub figi: String,
-    pub expected_yield: Money,
-    pub average_buy_price: Money,
-    pub current_instrument_price: Money,
-    pub quantity: Decimal,
-    /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
-    pub balance_value: Money,
-    /// Current position value, i.e. current position price multiplied to quantity
-    pub current_value: Money,
-    /// Taxes and fees
-    pub taxes_and_fees: Money,
-    /// Dividents and coupons
-    pub dividents_and_coupons: Money,
+    pub position: Position,
+    pub totals: Totals,
 }
 
 /// Portfolio is an Asset's container
@@ -79,7 +82,9 @@ pub struct Asset {
 }
 
 pub struct Totals {
+    /// Dividents and coupons
     pub dividents: Money,
+    /// Taxes and fees
     pub fees: Money,
 }
 
@@ -353,7 +358,7 @@ impl Asset {
 
     pub fn income(&self) -> Income {
         self.fold(Income::zero, |mut acc, p| {
-            let income = Income::new(p.current_value, p.balance_value);
+            let income = Income::new(p.position.current, p.position.balance);
             acc += income;
             acc
         })
@@ -361,21 +366,21 @@ impl Asset {
 
     pub fn current(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc += p.current_value;
+            acc += p.position.current;
             acc
         })
     }
 
     pub fn balance(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc += p.balance_value;
+            acc += p.position.balance;
             acc
         })
     }
 
     pub fn dividents(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc += p.dividents_and_coupons;
+            acc += p.totals.dividents;
             acc
         })
     }
@@ -388,7 +393,7 @@ impl Asset {
         let currency = if self.papers.is_empty() {
             iso_currency::Currency::RUB
         } else {
-            self.papers[0].current_value.currency
+            self.papers[0].position.current.currency
         };
         self.papers.iter().fold(init(currency), f)
     }
@@ -447,7 +452,7 @@ impl Display for Paper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut table = ux::new_table();
 
-        let currency = self.balance_value.currency.code().to_owned();
+        let currency = self.position.currency.code().to_owned();
         let title = format!(
             "{} ({} | {} | {})",
             self.name, self.ticker, self.figi, currency
@@ -460,43 +465,41 @@ impl Display for Paper {
 
         table.add_row(vec![
             Cell::new("Average buy price"),
-            Cell::new(self.average_buy_price),
+            Cell::new(self.position.average_buy_price),
         ]);
         table.add_row(vec![
             Cell::new("Last instrument price"),
-            Cell::new(self.current_instrument_price),
+            Cell::new(self.position.current_instrument_price),
         ]);
         table.add_row(vec![
             Cell::new("Current items count"),
-            Cell::new(self.quantity.round_dp(2)),
+            Cell::new(self.position.quantity.round_dp(2)),
         ]);
         table.add_row(vec![
             Cell::new(BALANCE_VALUE),
-            Cell::new(self.balance_value),
+            Cell::new(self.position.balance),
         ]);
         table.add_row(vec![
             Cell::new(CURRENT_VALUE),
-            Cell::new(self.current_value),
+            Cell::new(self.position.current),
         ]);
         table.add_row(vec!["", ""]);
 
-        let income = Income::new(self.current_value, self.balance_value);
-        let mut total_income = Income::new(
-            self.dividents_and_coupons,
-            Money::zero(self.dividents_and_coupons.currency),
-        );
+        let income = Income::new(self.position.current, self.position.balance);
+        let mut total_income =
+            Income::new(self.totals.dividents, Money::zero(self.position.currency));
         total_income += income;
 
         let expected_yield = ux::colored_cell(income);
         table.add_row(vec![Cell::new(INCOME), expected_yield]);
 
-        let dividents_and_coupons = ux::colored_cell(self.dividents_and_coupons);
+        let dividents_and_coupons = ux::colored_cell(self.totals.dividents);
         table.add_row(vec![Cell::new("Dividends"), dividents_and_coupons]);
 
         let total_income = ux::colored_cell(total_income);
         table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
 
-        let taxes_and_fees = ux::colored_cell(self.taxes_and_fees);
+        let taxes_and_fees = ux::colored_cell(self.totals.fees);
         table.add_row(vec![Cell::new("Taxes and fees"), taxes_and_fees]);
 
         write!(f, "{table}")

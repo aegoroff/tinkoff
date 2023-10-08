@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use color_eyre::eyre;
 use tinkoff_invest_api::{
     tcs::{
         portfolio_request::CurrencyRequest, AccountType, Bond, Currency, Etf, GetAccountsRequest,
@@ -9,7 +10,10 @@ use tinkoff_invest_api::{
     TIResult, TinkoffInvestService,
 };
 
-use crate::domain::{Money, Totals};
+use crate::{
+    domain::{Money, Position, Totals},
+    to_currency, to_decimal, to_money,
+};
 
 #[derive(Default)]
 pub struct Portfolio {
@@ -78,6 +82,36 @@ pub fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Tot
         }
     }
     Totals { dividents, fees }
+}
+
+impl TryFrom<&PortfolioPosition> for Position {
+    type Error = color_eyre::eyre::Error;
+
+    fn try_from(value: &PortfolioPosition) -> Result<Self, Self::Error> {
+        let currency =
+            to_currency(&value.current_price).ok_or(eyre::eyre!("Failed to get currency"))?;
+        let expected_yield = to_decimal(value.expected_yield.as_ref());
+        let expected_yield = Money::from_value(expected_yield, currency);
+        let average_buy_price = to_money(value.average_position_price.as_ref())
+            .ok_or(eyre::eyre!("Failed to get average position price"))?;
+
+        let quantity = to_decimal(value.quantity.as_ref());
+        let balance = average_buy_price * quantity;
+
+        let current_instrument_price = to_money(value.current_price.as_ref())
+            .ok_or(eyre::eyre!("Failed to get current price"))?;
+        let current = current_instrument_price * quantity;
+
+        Ok(Self {
+            currency,
+            average_buy_price,
+            current_instrument_price,
+            current,
+            balance,
+            expected_yield,
+            quantity,
+        })
+    }
 }
 
 macro_rules! loop_until_success {
