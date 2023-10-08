@@ -69,6 +69,7 @@ pub struct Portfolio {
     pub shares: Asset,
     pub etfs: Asset,
     pub currencies: Asset,
+    pub futures: Asset,
 }
 
 /// Asset is a Paper's container
@@ -392,11 +393,16 @@ impl Portfolio {
             shares: Asset::new("Shares".to_owned(), output_papers),
             etfs: Asset::new("Etfs".to_owned(), output_papers),
             currencies: Asset::new("Currencies".to_owned(), output_papers),
+            futures: Asset::new("Futures".to_owned(), output_papers),
         }
     }
 
     pub fn income(&self) -> Income {
-        self.bonds.income() + self.shares.income() + self.currencies.income() + self.etfs.income()
+        self.bonds.income()
+            + self.shares.income()
+            + self.currencies.income()
+            + self.etfs.income()
+            + self.futures.income()
     }
 
     pub fn total_income(&self) -> Income {
@@ -404,6 +410,7 @@ impl Portfolio {
             + self.shares.total_income()
             + self.currencies.total_income()
             + self.etfs.total_income()
+            + self.futures.total_income()
     }
 
     pub fn balance(&self) -> Money {
@@ -411,6 +418,7 @@ impl Portfolio {
             + self.shares.balance()
             + self.currencies.balance()
             + self.etfs.balance()
+            + self.futures.balance()
     }
 
     pub fn current(&self) -> Money {
@@ -418,10 +426,14 @@ impl Portfolio {
             + self.shares.current()
             + self.currencies.current()
             + self.etfs.current()
+            + self.futures.current()
     }
 
     pub fn dividents(&self) -> Money {
-        self.bonds.dividents() + self.shares.dividents() + self.shares.dividents()
+        self.bonds.dividents()
+            + self.shares.dividents()
+            + self.shares.dividents()
+            + self.futures.dividents()
     }
 }
 
@@ -480,6 +492,10 @@ impl Asset {
         })
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.papers.is_empty()
+    }
+
     fn fold<B, IF, F>(&self, mut init: IF, f: F) -> B
     where
         IF: FnMut(Currency) -> B,
@@ -512,14 +528,8 @@ impl Display for Asset {
             }
         }
 
-        let balance_income = self.income();
-        let dividents = self.dividents();
-        let balance_value = self.balance();
-        let current_value = self.current();
-        let total_income: Income = self.total_income();
-
-        let balance_income = ux::colored_cell(balance_income);
-        let total_income = ux::colored_cell(total_income);
+        let balance_income = ux::colored_cell(self.income());
+        let total_income = ux::colored_cell(self.total_income());
 
         let mut table = ux::new_table();
 
@@ -529,20 +539,25 @@ impl Display for Asset {
             .fg(comfy_table::Color::DarkYellow);
         table.set_header(vec![title, Cell::new("")]);
 
-        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(balance_value)]);
-        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(current_value)]);
+        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
+        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
         table.add_row(vec![Cell::new(BALANCE_INCOME), balance_income]);
         table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
         table.add_row(vec![
             Cell::new("Dividents or coupons"),
-            ux::colored_cell(dividents),
+            ux::colored_cell(self.dividents()),
         ]);
         table.add_row(vec![
             Cell::new("Instruments count"),
             Cell::new(self.papers.len()),
         ]);
         asset_table.add_row(vec![Cell::new(table)]);
-        write!(f, "{asset_table}")
+
+        if !self.is_empty() {
+            write!(f, "{asset_table}")
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -600,10 +615,11 @@ impl Display for Paper {
 
 impl Display for Portfolio {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.etfs)?;
-        write!(f, "{}", self.bonds)?;
-        write!(f, "{}", self.shares)?;
-        write!(f, "{}", self.currencies)?;
+        self.etfs.fmt(f)?;
+        self.futures.fmt(f)?;
+        self.bonds.fmt(f)?;
+        self.shares.fmt(f)?;
+        self.currencies.fmt(f)?;
 
         let mut table = ux::new_table();
 

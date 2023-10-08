@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
         Some(("b", _)) => bonds(token).await,
         Some(("e", _)) => etfs(token).await,
         Some(("c", _)) => currencies(token).await,
+        Some(("f", _)) => futures(token).await,
         _ => {}
     }
     Ok(())
@@ -79,11 +80,12 @@ async fn main() -> Result<()> {
 async fn all(token: String, output_papers: bool) {
     let client = TinkoffInvestment::new(token);
 
-    let (bonds, shares, etfs, currencies, portfolio) = tokio::join!(
+    let (bonds, shares, etfs, currencies, futures, portfolio) = tokio::join!(
         client.get_all_bonds_until_done(),
         client.get_all_shares_until_done(),
         client.get_all_etfs_until_done(),
         client.get_all_currencies_until_done(),
+        client.get_all_futures_until_done(),
         client.get_portfolio_until_done(AccountType::Tinkoff),
     );
 
@@ -124,6 +126,9 @@ async fn all(token: String, output_papers: bool) {
             "currency" => {
                 add_instrument!(currencies, paper, p, pf, currencies);
             }
+            "futures" => {
+                add_instrument!(futures, paper, p, pf, futures);
+            }
             _ => {}
         };
         progresser.progress(progress);
@@ -137,6 +142,7 @@ impl_instrument_fn!(
     (bonds, get_all_bonds_until_done, "Bonds", "bond"),
     (shares, get_all_shares_until_done, "Shares", "share"),
     (etfs, get_all_etfs_until_done, "Etfs", "etf"),
+    (futures, get_all_futures_until_done, "Futures", "futures"),
     (
         currencies,
         get_all_currencies_until_done,
@@ -208,6 +214,7 @@ fn build_cli() -> Command {
         .subcommand(bonds_cmd())
         .subcommand(etfs_cmd())
         .subcommand(currencies_cmd())
+        .subcommand(futures_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -244,4 +251,10 @@ fn currencies_cmd() -> Command {
     Command::new("c")
         .aliases(["currencies"])
         .about("Get portfolio currencies")
+}
+
+fn futures_cmd() -> Command {
+    Command::new("f")
+        .aliases(["futures"])
+        .about("Get portfolio futures")
 }

@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use color_eyre::eyre;
 use tinkoff_invest_api::{
     tcs::{
-        portfolio_request::CurrencyRequest, AccountType, Bond, Currency, Etf, GetAccountsRequest,
-        InstrumentStatus, InstrumentsRequest, Operation, OperationState, OperationType,
-        OperationsRequest, PortfolioPosition, PortfolioRequest, Share,
+        portfolio_request::CurrencyRequest, AccountType, Bond, Currency, Etf, Future,
+        GetAccountsRequest, InstrumentStatus, InstrumentsRequest, Operation, OperationState,
+        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest, Share,
     },
     TIResult, TinkoffInvestService,
 };
@@ -175,14 +175,16 @@ impl TinkoffInvestment {
         (get_all_bonds, Bond, bonds),
         (get_all_shares, Share, shares),
         (get_all_etfs, Etf, etfs),
-        (get_all_currencies, Currency, currencies)
+        (get_all_currencies, Currency, currencies),
+        (get_all_futures, Future, futures)
     );
 
     impl_get_until_done!(
         (get_all_bonds, Bond, get_all_bonds_until_done),
         (get_all_shares, Share, get_all_shares_until_done),
         (get_all_etfs, Etf, get_all_etfs_until_done),
-        (get_all_currencies, Currency, get_all_currencies_until_done)
+        (get_all_currencies, Currency, get_all_currencies_until_done),
+        (get_all_futures, Future, get_all_futures_until_done)
     );
 
     async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
