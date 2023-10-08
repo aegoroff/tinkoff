@@ -18,6 +18,7 @@ Commands:
   b     Get portfolio bonds
   e     Get portfolio etfs
   c     Get portfolio currencies
+  f     Get portfolio futures
   help  Print this message or the help of the given subcommand(s)
 
 Options:
