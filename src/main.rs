@@ -47,7 +47,7 @@ macro_rules! impl_instrument_fn {
                 let client = TinkoffInvestment::new(token);
                 let instruments = client.$method().await;
                 let i = instruments!(instruments);
-                asset(client, $asset_name.to_owned(), $insr_type, i).await;
+                asset(client, $asset_name, $insr_type, i).await;
             }
         )*
     };
@@ -153,7 +153,7 @@ impl_instrument_fn!(
 
 async fn asset(
     client: TinkoffInvestment,
-    asset_name: String,
+    asset_name: &'static str,
     instrument_type: &str,
     instruments: HashMap<String, Instrument>,
 ) {
@@ -167,7 +167,7 @@ async fn asset(
 
     let mut progresser = Progresser::new(positions.len() as u64);
     let mut progress = 1u64;
-    let mut asset = Asset::new(asset_name.clone(), true);
+    let mut asset = Asset::new(asset_name, true);
     for p in &positions {
         let Ok(position) = Position::try_from(p) else {
             progresser.progress(progress);

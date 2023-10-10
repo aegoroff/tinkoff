@@ -69,7 +69,7 @@ pub struct Portfolio {
 
 /// Asset is a Paper's container
 pub struct Asset {
-    name: String,
+    name: &'static str,
     papers: Vec<Paper>,
     /// Whether to include asset's papers into output
     /// If true papers will be displyed
@@ -398,11 +398,11 @@ impl Portfolio {
     #[must_use]
     pub fn new(output_papers: bool) -> Self {
         Self {
-            bonds: Asset::new("Bonds".to_owned(), output_papers),
-            shares: Asset::new("Shares".to_owned(), output_papers),
-            etfs: Asset::new("Etfs".to_owned(), output_papers),
-            currencies: Asset::new("Currencies".to_owned(), output_papers),
-            futures: Asset::new("Futures".to_owned(), output_papers),
+            bonds: Asset::new("Bonds", output_papers),
+            shares: Asset::new("Shares", output_papers),
+            etfs: Asset::new("Etfs", output_papers),
+            currencies: Asset::new("Currencies", output_papers),
+            futures: Asset::new("Futures", output_papers),
         }
     }
 
@@ -459,7 +459,7 @@ impl Default for Portfolio {
 
 impl Asset {
     #[must_use]
-    pub fn new(name: String, output_papers: bool) -> Self {
+    pub fn new(name: &'static str, output_papers: bool) -> Self {
         Self {
             papers: vec![],
             name,
@@ -532,7 +532,7 @@ impl Asset {
 impl Display for Asset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut asset_table = ux::new_table();
-        asset_table.set_header(vec![Cell::new(&self.name)
+        asset_table.set_header(vec![Cell::new(self.name)
             .add_attribute(Attribute::Bold)
             .fg(comfy_table::Color::DarkBlue)]);
         asset_table.set_style(TableComponent::HeaderLines, ' ');
@@ -698,7 +698,7 @@ mod tests {
     #[fixture]
     fn test_portfolio() -> Portfolio {
         let currency = Currency::RUB;
-        let mut bonds = Asset::new("Bonds".to_string(), true);
+        let mut bonds = Asset::new("Bonds", true);
         bonds.add_paper(Paper {
             name: "1".to_string(),
             ticker: "1t".to_string(),
@@ -714,7 +714,7 @@ mod tests {
                 fees: Money::from_value(dec!(10), currency),
             },
         });
-        let mut shares = Asset::new("Shares".to_string(), true);
+        let mut shares = Asset::new("Shares", true);
         shares.add_paper(Paper {
             name: "2".to_string(),
             ticker: "2t".to_string(),
@@ -731,9 +731,9 @@ mod tests {
             },
         });
 
-        let etfs = Asset::new("Etfs".to_string(), true);
-        let currencies = Asset::new("Currencies".to_string(), true);
-        let futures = Asset::new("Futures".to_string(), true);
+        let etfs = Asset::new("Etfs", true);
+        let currencies = Asset::new("Currencies", true);
+        let futures = Asset::new("Futures", true);
         Portfolio {
             bonds,
             shares,
