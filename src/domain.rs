@@ -86,9 +86,15 @@ pub struct Totals {
     pub fees: Money,
 }
 
+/// Represents additional asset profit way
+/// besides balance value growing due to price increase.
+/// Used mainly for output
 pub trait Profit: Copy {
-    fn has_profit() -> bool;
-    fn profit_name() -> &'static str;
+    /// shows whether additional profit
+    /// applicable to an asset
+    fn applicable() -> bool;
+    /// Profit name
+    fn name() -> &'static str;
 }
 
 #[derive(Clone, Copy)]
@@ -99,31 +105,31 @@ pub struct CouponProfit;
 pub struct NoneProfit;
 
 impl Profit for DivdentProfit {
-    fn has_profit() -> bool {
+    fn applicable() -> bool {
         true
     }
 
-    fn profit_name() -> &'static str {
+    fn name() -> &'static str {
         "Dividents"
     }
 }
 
 impl Profit for CouponProfit {
-    fn has_profit() -> bool {
+    fn applicable() -> bool {
         true
     }
 
-    fn profit_name() -> &'static str {
+    fn name() -> &'static str {
         "Coupons"
     }
 }
 
 impl Profit for NoneProfit {
-    fn has_profit() -> bool {
+    fn applicable() -> bool {
         false
     }
 
-    fn profit_name() -> &'static str {
+    fn name() -> &'static str {
         ""
     }
 }
@@ -603,10 +609,10 @@ impl<P: Profit> Display for Asset<P> {
         table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
         table.add_row(vec![Cell::new(BALANCE_INCOME), balance_income]);
 
-        if P::has_profit() {
+        if P::applicable() {
             table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
             table.add_row(vec![
-                Cell::new(P::profit_name()),
+                Cell::new(P::name()),
                 ux::colored_cell(self.dividents()),
             ]);
         }
@@ -658,9 +664,9 @@ impl<P: Profit> Display for Paper<P> {
 
         table.add_row(vec![Cell::new(INCOME), ux::colored_cell(self.income())]);
 
-        if P::has_profit() {
+        if P::applicable() {
             table.add_row(vec![
-                Cell::new(P::profit_name()),
+                Cell::new(P::name()),
                 ux::colored_cell(self.dividents()),
             ]);
 
