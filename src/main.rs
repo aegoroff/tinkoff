@@ -95,38 +95,6 @@ async fn all(token: String, output_papers: bool) {
     print!("{container}");
 }
 
-async fn create_paper_from_position<P: Profit>(
-    client: &TinkoffInvestment,
-    instruments: &HashMap<String, Instrument>,
-    account_id: String,
-    p: &PortfolioPosition,
-    profit: P,
-) -> Option<Paper<P>> {
-    let position = Position::try_from(p).ok()?;
-
-    let executed_ops = client
-        .get_operations_until_done(account_id, p.figi.clone())
-        .await;
-
-    let totals = tinkoff::client::reduce(&executed_ops, position.currency);
-
-    let b = instruments.get(&p.figi)?;
-    Some(Paper {
-        name: b.name.clone(),
-        ticker: b.ticker.clone(),
-        figi: p.figi.clone(),
-        position,
-        totals,
-        profit,
-    })
-}
-
-fn add_paper<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {
-    if let Some(p) = paper {
-        asset.add_paper(p);
-    }
-}
-
 async fn bonds(token: String) {
     let client = TinkoffInvestment::new(token);
     let instruments = client.get_all_bonds_until_done().await;
@@ -192,6 +160,38 @@ async fn asset<P: Profit>(
     }
     progresser.finish();
     println!("{asset}");
+}
+
+async fn create_paper_from_position<P: Profit>(
+    client: &TinkoffInvestment,
+    instruments: &HashMap<String, Instrument>,
+    account_id: String,
+    p: &PortfolioPosition,
+    profit: P,
+) -> Option<Paper<P>> {
+    let position = Position::try_from(p).ok()?;
+
+    let executed_ops = client
+        .get_operations_until_done(account_id, p.figi.clone())
+        .await;
+
+    let totals = tinkoff::client::reduce(&executed_ops, position.currency);
+
+    let b = instruments.get(&p.figi)?;
+    Some(Paper {
+        name: b.name.clone(),
+        ticker: b.ticker.clone(),
+        figi: p.figi.clone(),
+        position,
+        totals,
+        profit,
+    })
+}
+
+fn add_paper<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {
+    if let Some(p) = paper {
+        asset.add_paper(p);
+    }
 }
 
 fn build_cli() -> Command {
