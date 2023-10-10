@@ -80,8 +80,9 @@ pub struct Asset<P: Profit> {
 }
 
 pub struct Totals {
-    /// Dividents and coupons
-    pub dividents: Money,
+    /// Dividents, coupons etc. i.e. some extra value
+    /// an asset may earn
+    pub additional_profit: Money,
     /// Taxes and fees
     pub fees: Money,
 }
@@ -162,7 +163,7 @@ impl<P: Profit> Paper<P> {
     /// Dividents and coupons
     #[must_use]
     pub fn dividents(&self) -> Money {
-        self.totals.dividents
+        self.totals.additional_profit
     }
 
     /// Taxes and fees
@@ -767,7 +768,7 @@ mod tests {
                 quantity: dec!(100),
             },
             totals: Totals {
-                dividents: Money::from_value(dec!(100), currency),
+                additional_profit: Money::from_value(dec!(100), currency),
                 fees: Money::from_value(dec!(10), currency),
             },
             profit: CouponProfit,
@@ -784,7 +785,7 @@ mod tests {
                 quantity: dec!(100),
             },
             totals: Totals {
-                dividents: Money::from_value(dec!(50), currency),
+                additional_profit: Money::from_value(dec!(50), currency),
                 fees: Money::from_value(dec!(10), currency),
             },
             profit: DivdentProfit,

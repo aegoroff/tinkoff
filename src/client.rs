@@ -66,14 +66,14 @@ fn to_influence(op: OperationType) -> OperationInfluence {
 #[must_use]
 pub fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Totals {
     let mut fees = Money::zero(currency);
-    let mut dividents = Money::zero(currency);
+    let mut additional_profit = Money::zero(currency);
     for op in operations {
         let Some(payment) = crate::to_money(op.payment.as_ref()) else {
             continue;
         };
         match to_influence(op.operation_type()) {
             OperationInfluence::PureIncome => {
-                dividents += payment;
+                additional_profit += payment;
             }
             OperationInfluence::Fees => {
                 fees += payment;
@@ -81,7 +81,10 @@ pub fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Tot
             OperationInfluence::Unspecified => {}
         }
     }
-    Totals { dividents, fees }
+    Totals {
+        additional_profit,
+        fees,
+    }
 }
 
 impl TryFrom<&PortfolioPosition> for Position {
