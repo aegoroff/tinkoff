@@ -49,28 +49,30 @@ pub trait NumberRange {
 }
 
 /// Paper represents things like share, bond, currency, etf etc.
-pub struct Paper {
+pub struct Paper<P: Profit> {
     pub name: String,
     pub ticker: String,
     pub figi: String,
     pub position: Position,
     pub totals: Totals,
+    pub profit: P,
 }
 
 /// Portfolio is an Asset's container
 /// Asset is a Paper's container
 pub struct Portfolio {
-    pub bonds: Asset,
-    pub shares: Asset,
-    pub etfs: Asset,
-    pub currencies: Asset,
-    pub futures: Asset,
+    pub bonds: Asset<CouponProfit>,
+    pub shares: Asset<DivdentProfit>,
+    pub etfs: Asset<NoneProfit>,
+    pub currencies: Asset<NoneProfit>,
+    pub futures: Asset<NoneProfit>,
 }
 
 /// Asset is a Paper's container
-pub struct Asset {
+pub struct Asset<P: Profit> {
     name: &'static str,
-    papers: Vec<Paper>,
+    papers: Vec<Paper<P>>,
+    pub profit: P,
     /// Whether to include asset's papers into output
     /// If true papers will be displyed
     /// If false they only accounted during calculations (balance, income etc,)
@@ -84,7 +86,49 @@ pub struct Totals {
     pub fees: Money,
 }
 
-impl Paper {
+pub trait Profit: Copy {
+    fn has_profit() -> bool;
+    fn profit_name() -> &'static str;
+}
+
+#[derive(Clone, Copy)]
+pub struct DivdentProfit;
+#[derive(Clone, Copy)]
+pub struct CouponProfit;
+#[derive(Clone, Copy)]
+pub struct NoneProfit;
+
+impl Profit for DivdentProfit {
+    fn has_profit() -> bool {
+        true
+    }
+
+    fn profit_name() -> &'static str {
+        "Dividents"
+    }
+}
+
+impl Profit for CouponProfit {
+    fn has_profit() -> bool {
+        true
+    }
+
+    fn profit_name() -> &'static str {
+        "Coupons"
+    }
+}
+
+impl Profit for NoneProfit {
+    fn has_profit() -> bool {
+        false
+    }
+
+    fn profit_name() -> &'static str {
+        ""
+    }
+}
+
+impl<P: Profit> Paper<P> {
     /// Paper income (difference between current and balance prices)
     #[must_use]
     pub fn income(&self) -> Income {
@@ -398,11 +442,11 @@ impl Portfolio {
     #[must_use]
     pub fn new(output_papers: bool) -> Self {
         Self {
-            bonds: Asset::new("Bonds", output_papers),
-            shares: Asset::new("Shares", output_papers),
-            etfs: Asset::new("Etfs", output_papers),
-            currencies: Asset::new("Currencies", output_papers),
-            futures: Asset::new("Futures", output_papers),
+            bonds: Asset::new("Bonds", CouponProfit, output_papers),
+            shares: Asset::new("Shares", DivdentProfit, output_papers),
+            etfs: Asset::new("Etfs", NoneProfit, output_papers),
+            currencies: Asset::new("Currencies", NoneProfit, output_papers),
+            futures: Asset::new("Futures", NoneProfit, output_papers),
         }
     }
 
@@ -457,17 +501,18 @@ impl Default for Portfolio {
     }
 }
 
-impl Asset {
+impl<P: Profit> Asset<P> {
     #[must_use]
-    pub fn new(name: &'static str, output_papers: bool) -> Self {
+    pub fn new(name: &'static str, profit: P, output_papers: bool) -> Self {
         Self {
             papers: vec![],
             name,
             output_papers,
+            profit,
         }
     }
 
-    pub fn add_paper(&mut self, paper: Paper) {
+    pub fn add_paper(&mut self, paper: Paper<P>) {
         self.papers.push(paper);
     }
 
@@ -514,7 +559,7 @@ impl Asset {
     fn fold<B, IF, F>(&self, mut init: IF, f: F) -> B
     where
         IF: FnMut(Currency) -> B,
-        F: FnMut(B, &Paper) -> B,
+        F: FnMut(B, &Paper<P>) -> B,
     {
         let currency = self.currency();
         self.papers.iter().fold(init(currency), f)
@@ -529,7 +574,7 @@ impl Asset {
     }
 }
 
-impl Display for Asset {
+impl<P: Profit> Display for Asset<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut asset_table = ux::new_table();
         asset_table.set_header(vec![Cell::new(self.name)
@@ -557,11 +602,15 @@ impl Display for Asset {
         table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
         table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
         table.add_row(vec![Cell::new(BALANCE_INCOME), balance_income]);
-        table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
-        table.add_row(vec![
-            Cell::new("Dividents or coupons"),
-            ux::colored_cell(self.dividents()),
-        ]);
+
+        if P::has_profit() {
+            table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
+            table.add_row(vec![
+                Cell::new(P::profit_name()),
+                ux::colored_cell(self.dividents()),
+            ]);
+        }
+
         table.add_row(vec![
             Cell::new("Instruments count"),
             Cell::new(self.papers.len()),
@@ -576,7 +625,7 @@ impl Display for Asset {
     }
 }
 
-impl Display for Paper {
+impl<P: Profit> Display for Paper<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut table = ux::new_table();
 
@@ -609,15 +658,17 @@ impl Display for Paper {
 
         table.add_row(vec![Cell::new(INCOME), ux::colored_cell(self.income())]);
 
-        table.add_row(vec![
-            Cell::new("Dividends"),
-            ux::colored_cell(self.dividents()),
-        ]);
+        if P::has_profit() {
+            table.add_row(vec![
+                Cell::new(P::profit_name()),
+                ux::colored_cell(self.dividents()),
+            ]);
 
-        table.add_row(vec![
-            Cell::new(TOTAL_INCOME),
-            ux::colored_cell(self.total_income()),
-        ]);
+            table.add_row(vec![
+                Cell::new(TOTAL_INCOME),
+                ux::colored_cell(self.total_income()),
+            ]);
+        }
 
         table.add_row(vec![
             Cell::new("Taxes and fees"),
@@ -698,7 +749,7 @@ mod tests {
     #[fixture]
     fn test_portfolio() -> Portfolio {
         let currency = Currency::RUB;
-        let mut bonds = Asset::new("Bonds", true);
+        let mut bonds = Asset::new("Bonds", CouponProfit, true);
         bonds.add_paper(Paper {
             name: "1".to_string(),
             ticker: "1t".to_string(),
@@ -713,8 +764,9 @@ mod tests {
                 dividents: Money::from_value(dec!(100), currency),
                 fees: Money::from_value(dec!(10), currency),
             },
+            profit: CouponProfit,
         });
-        let mut shares = Asset::new("Shares", true);
+        let mut shares = Asset::new("Shares", DivdentProfit, true);
         shares.add_paper(Paper {
             name: "2".to_string(),
             ticker: "2t".to_string(),
@@ -729,11 +781,12 @@ mod tests {
                 dividents: Money::from_value(dec!(50), currency),
                 fees: Money::from_value(dec!(10), currency),
             },
+            profit: DivdentProfit,
         });
 
-        let etfs = Asset::new("Etfs", true);
-        let currencies = Asset::new("Currencies", true);
-        let futures = Asset::new("Futures", true);
+        let etfs = Asset::new("Etfs", NoneProfit, true);
+        let currencies = Asset::new("Currencies", NoneProfit, true);
+        let futures = Asset::new("Futures", NoneProfit, true);
         Portfolio {
             bonds,
             shares,
