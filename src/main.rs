@@ -7,27 +7,15 @@ use tinkoff::{
     client::TinkoffInvestment,
     domain::{
         Asset, CouponProfit, DivdentProfit, Instrument, NoneProfit, Paper, Portfolio, Position,
-        Profit, Totals,
+        Profit,
     },
     progress::{Progress, Progresser},
     ux,
 };
-use tinkoff_invest_api::tcs::AccountType;
+use tinkoff_invest_api::tcs::{AccountType, PortfolioPosition};
 
 #[macro_use]
 extern crate clap;
-
-macro_rules! impl_instrument_fn {
-    ($(($name:ident, $method:ident, $asset_name:literal, $insr_type:literal, $profit:ident)),*) => {
-        $(
-            async fn $name(token: String) {
-                let client = TinkoffInvestment::new(token);
-                let instruments = client.$method().await;
-                asset(client, $asset_name, $insr_type, instruments, $profit).await;
-            }
-        )*
-    };
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -70,42 +58,33 @@ async fn all(token: String, output_papers: bool) {
     all.extend(currencies);
     all.extend(futures);
 
-    let mut pf = Portfolio::new(output_papers);
+    let mut container = Portfolio::new(output_papers);
     let mut progresser = Progresser::new(portfolio.positions.len() as u64);
     let mut progress = 1u64;
     for p in &portfolio.positions {
-        let Ok(position) = Position::try_from(p) else {
-            progresser.progress(progress);
-            progress += 1;
-            continue;
-        };
-
-        let executed_ops = client
-            .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
-            .await;
-
-        let totals = tinkoff::client::reduce(&executed_ops, position.currency);
-
+        let account = portfolio.account_id.clone();
         match p.instrument_type.as_str() {
             "bond" => {
-                let paper = create_paper(&all, position, totals, &p.figi, CouponProfit);
-                add_paper(&mut pf.bonds, paper);
+                let paper =
+                    create_paper_from_position(&client, &all, account, p, CouponProfit).await;
+                add_paper(&mut container.bonds, paper);
             }
             "share" => {
-                let paper = create_paper(&all, position, totals, &p.figi, DivdentProfit);
-                add_paper(&mut pf.shares, paper);
+                let paper =
+                    create_paper_from_position(&client, &all, account, p, DivdentProfit).await;
+                add_paper(&mut container.shares, paper);
             }
             "etf" => {
-                let paper = create_paper(&all, position, totals, &p.figi, NoneProfit);
-                add_paper(&mut pf.etfs, paper);
+                let paper = create_paper_from_position(&client, &all, account, p, NoneProfit).await;
+                add_paper(&mut container.etfs, paper);
             }
             "currency" => {
-                let paper = create_paper(&all, position, totals, &p.figi, NoneProfit);
-                add_paper(&mut pf.currencies, paper);
+                let paper = create_paper_from_position(&client, &all, account, p, NoneProfit).await;
+                add_paper(&mut container.currencies, paper);
             }
             "futures" => {
-                let paper = create_paper(&all, position, totals, &p.figi, NoneProfit);
-                add_paper(&mut pf.futures, paper);
+                let paper = create_paper_from_position(&client, &all, account, p, NoneProfit).await;
+                add_paper(&mut container.futures, paper);
             }
             _ => {}
         };
@@ -113,21 +92,29 @@ async fn all(token: String, output_papers: bool) {
         progress += 1;
     }
     progresser.finish();
-    print!("{pf}");
+    print!("{container}");
 }
 
-fn create_paper<P: Profit>(
+async fn create_paper_from_position<P: Profit>(
+    client: &TinkoffInvestment,
     instruments: &HashMap<String, Instrument>,
-    position: Position,
-    totals: Totals,
-    figi: &String,
+    account_id: String,
+    p: &PortfolioPosition,
     profit: P,
 ) -> Option<Paper<P>> {
-    let b = instruments.get(figi)?;
+    let position = Position::try_from(p).ok()?;
+
+    let executed_ops = client
+        .get_operations_until_done(account_id, p.figi.clone())
+        .await;
+
+    let totals = tinkoff::client::reduce(&executed_ops, position.currency);
+
+    let b = instruments.get(&p.figi)?;
     Some(Paper {
         name: b.name.clone(),
         ticker: b.ticker.clone(),
-        figi: figi.clone(),
+        figi: p.figi.clone(),
         position,
         totals,
         profit,
@@ -140,37 +127,35 @@ fn add_paper<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {
     }
 }
 
-impl_instrument_fn!(
-    (
-        bonds,
-        get_all_bonds_until_done,
-        "Bonds",
-        "bond",
-        CouponProfit
-    ),
-    (
-        shares,
-        get_all_shares_until_done,
-        "Shares",
-        "share",
-        DivdentProfit
-    ),
-    (etfs, get_all_etfs_until_done, "Etfs", "etf", NoneProfit),
-    (
-        futures,
-        get_all_futures_until_done,
-        "Futures",
-        "futures",
-        NoneProfit
-    ),
-    (
-        currencies,
-        get_all_currencies_until_done,
-        "Currencies",
-        "currency",
-        NoneProfit
-    )
-);
+async fn bonds(token: String) {
+    let client = TinkoffInvestment::new(token);
+    let instruments = client.get_all_bonds_until_done().await;
+    asset(client, "Bonds", "bond", instruments, CouponProfit).await;
+}
+
+async fn shares(token: String) {
+    let client = TinkoffInvestment::new(token);
+    let instruments = client.get_all_shares_until_done().await;
+    asset(client, "Shares", "share", instruments, DivdentProfit).await;
+}
+
+async fn etfs(token: String) {
+    let client = TinkoffInvestment::new(token);
+    let instruments = client.get_all_etfs_until_done().await;
+    asset(client, "Etfs", "etf", instruments, NoneProfit).await;
+}
+
+async fn futures(token: String) {
+    let client = TinkoffInvestment::new(token);
+    let instruments = client.get_all_futures_until_done().await;
+    asset(client, "Futures", "futures", instruments, NoneProfit).await;
+}
+
+async fn currencies(token: String) {
+    let client = TinkoffInvestment::new(token);
+    let instruments = client.get_all_currencies_until_done().await;
+    asset(client, "Currencies", "currency", instruments, NoneProfit).await;
+}
 
 async fn asset<P: Profit>(
     client: TinkoffInvestment,
@@ -191,19 +176,15 @@ async fn asset<P: Profit>(
     let mut progress = 1u64;
     let mut asset = Asset::new(asset_name, profit, true);
     for p in &positions {
-        let Ok(position) = Position::try_from(p) else {
-            progresser.progress(progress);
-            progress += 1;
-            continue;
-        };
+        let paper = create_paper_from_position(
+            &client,
+            &instruments,
+            portfolio.account_id.clone(),
+            p,
+            profit,
+        )
+        .await;
 
-        let executed_ops = client
-            .get_operations_until_done(portfolio.account_id.clone(), p.figi.clone())
-            .await;
-
-        let totals = tinkoff::client::reduce(&executed_ops, position.currency);
-
-        let paper = create_paper(&instruments, position, totals, &p.figi, profit);
         add_paper(&mut asset, paper);
 
         progresser.progress(progress);
