@@ -3,15 +3,15 @@ use std::collections::HashMap;
 use color_eyre::eyre;
 use tinkoff_invest_api::{
     tcs::{
-        portfolio_request::CurrencyRequest, AccountType, Bond, Currency, Etf, Future,
-        GetAccountsRequest, InstrumentStatus, InstrumentsRequest, Operation, OperationState,
-        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest, Share,
+        portfolio_request::CurrencyRequest, AccountType, GetAccountsRequest, InstrumentStatus,
+        InstrumentsRequest, Operation, OperationState, OperationType, OperationsRequest,
+        PortfolioPosition, PortfolioRequest,
     },
     TIResult, TinkoffInvestService,
 };
 
 use crate::{
-    domain::{Money, Position, Totals},
+    domain::{Instrument, Money, Position, Totals},
     to_currency, to_decimal, to_money,
 };
 
@@ -123,20 +123,28 @@ macro_rules! loop_until_success {
 }
 
 macro_rules! collect {
-    ($response:ident, $t:ty) => {{
+    ($response:ident) => {{
         $response
             .into_inner()
             .instruments
             .into_iter()
-            .map(|x| (x.figi.clone(), x))
-            .collect::<HashMap<String, $t>>()
+            .map(|x| {
+                (
+                    x.figi.clone(),
+                    Instrument {
+                        name: x.name.clone(),
+                        ticker: x.ticker.clone(),
+                    },
+                )
+            })
+            .collect::<HashMap<String, Instrument>>()
     }};
 }
 
 macro_rules! impl_get_until_done {
-    ($(($wrapped:ident, $type:ty, $method:ident)),*) => {
+    ($(($wrapped:ident, $method:ident)),*) => {
         $(
-            pub async fn $method(&self) -> HashMap<String, $type> {
+            pub async fn $method(&self) -> HashMap<String, Instrument> {
                 loop_until_success!(self.$wrapped().await)
             }
         )*
@@ -144,9 +152,9 @@ macro_rules! impl_get_until_done {
 }
 
 macro_rules! impl_get_instrument_method {
-    ($(($name:ident, $type:ty, $method:ident)),*) => {
+    ($(($name:ident, $method:ident)),*) => {
         $(
-            async fn $name(&self) -> TIResult<HashMap<String, $type>> {
+            async fn $name(&self) -> TIResult<HashMap<String, Instrument>> {
                 let channel = self.service.create_channel().await?;
                 let mut instruments = self.service.instruments(channel).await?;
                 let instruments = instruments
@@ -154,7 +162,7 @@ macro_rules! impl_get_instrument_method {
                         instrument_status: InstrumentStatus::All as i32,
                     })
                     .await?;
-                let instruments = collect!(instruments, $type);
+                let instruments = collect!(instruments);
                 Ok(instruments)
             }
         )*
@@ -169,19 +177,19 @@ impl TinkoffInvestment {
         }
     }
     impl_get_instrument_method!(
-        (get_all_bonds, Bond, bonds),
-        (get_all_shares, Share, shares),
-        (get_all_etfs, Etf, etfs),
-        (get_all_currencies, Currency, currencies),
-        (get_all_futures, Future, futures)
+        (get_all_bonds, bonds),
+        (get_all_shares, shares),
+        (get_all_etfs, etfs),
+        (get_all_currencies, currencies),
+        (get_all_futures, futures)
     );
 
     impl_get_until_done!(
-        (get_all_bonds, Bond, get_all_bonds_until_done),
-        (get_all_shares, Share, get_all_shares_until_done),
-        (get_all_etfs, Etf, get_all_etfs_until_done),
-        (get_all_currencies, Currency, get_all_currencies_until_done),
-        (get_all_futures, Future, get_all_futures_until_done)
+        (get_all_bonds, get_all_bonds_until_done),
+        (get_all_shares, get_all_shares_until_done),
+        (get_all_etfs, get_all_etfs_until_done),
+        (get_all_currencies, get_all_currencies_until_done),
+        (get_all_futures, get_all_futures_until_done)
     );
 
     async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
