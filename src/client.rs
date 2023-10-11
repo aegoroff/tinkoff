@@ -142,23 +142,23 @@ macro_rules! collect {
 }
 
 macro_rules! impl_get_until_done {
-    ($(($wrapped:ident, $method:ident)),*) => {
+    ($(($target_method:ident, $source_method:ident)),*) => {
         $(
-            pub async fn $method(&self) -> HashMap<String, Instrument> {
-                loop_until_success!(self.$wrapped().await)
+            pub async fn $target_method(&self) -> HashMap<String, Instrument> {
+                loop_until_success!(self.$source_method().await)
             }
         )*
     };
 }
 
 macro_rules! impl_get_instrument_method {
-    ($(($name:ident, $method:ident)),*) => {
+    ($(($target_method:ident, $source_method:ident)),*) => {
         $(
-            async fn $name(&self) -> TIResult<HashMap<String, Instrument>> {
+            async fn $target_method(&self) -> TIResult<HashMap<String, Instrument>> {
                 let channel = self.service.create_channel().await?;
                 let mut instruments = self.service.instruments(channel).await?;
                 let instruments = instruments
-                    .$method(InstrumentsRequest {
+                    .$source_method(InstrumentsRequest {
                         instrument_status: InstrumentStatus::All as i32,
                     })
                     .await?;
@@ -185,11 +185,11 @@ impl TinkoffInvestment {
     );
 
     impl_get_until_done!(
-        (get_all_bonds, get_all_bonds_until_done),
-        (get_all_shares, get_all_shares_until_done),
-        (get_all_etfs, get_all_etfs_until_done),
-        (get_all_currencies, get_all_currencies_until_done),
-        (get_all_futures, get_all_futures_until_done)
+        (get_all_bonds_until_done, get_all_bonds),
+        (get_all_shares_until_done, get_all_shares),
+        (get_all_etfs_until_done, get_all_etfs),
+        (get_all_currencies_until_done, get_all_currencies),
+        (get_all_futures_until_done, get_all_futures)
     );
 
     async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
