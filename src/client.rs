@@ -11,7 +11,7 @@ use tinkoff_invest_api::{
 };
 
 use crate::{
-    domain::{Instrument, Money, Position, Totals},
+    domain::{Instrument, Money, Paper, Position, Profit, Totals},
     to_currency, to_decimal, to_money,
 };
 
@@ -64,7 +64,7 @@ fn to_influence(op: OperationType) -> OperationInfluence {
 }
 
 #[must_use]
-pub fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Totals {
+fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Totals {
     let mut fees = Money::zero(currency);
     let mut additional_profit = Money::zero(currency);
     for op in operations {
@@ -255,5 +255,31 @@ impl TinkoffInvestment {
         figi: String,
     ) -> Vec<Operation> {
         loop_until_success!(self.get_operations(account_id.clone(), figi.clone()).await)
+    }
+
+    pub async fn create_paper_from_position<P: Profit>(
+        &self,
+        instruments: &HashMap<String, Instrument>,
+        account_id: String,
+        p: &PortfolioPosition,
+        profit: P,
+    ) -> Option<Paper<P>> {
+        let position = Position::try_from(p).ok()?;
+
+        let executed_ops = self
+            .get_operations_until_done(account_id, p.figi.clone())
+            .await;
+
+        let totals = reduce(&executed_ops, position.currency);
+
+        let b = instruments.get(&p.figi)?;
+        Some(Paper {
+            name: b.name.clone(),
+            ticker: b.ticker.clone(),
+            figi: p.figi.clone(),
+            position,
+            totals,
+            profit,
+        })
     }
 }
