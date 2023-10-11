@@ -261,22 +261,22 @@ impl TinkoffInvestment {
         &self,
         instruments: &HashMap<String, Instrument>,
         account_id: String,
-        p: &PortfolioPosition,
+        portfolio_position: &PortfolioPosition,
         profit: P,
     ) -> Option<Paper<P>> {
-        let position = Position::try_from(p).ok()?;
+        let position = Position::try_from(portfolio_position).ok()?;
 
         let executed_ops = self
-            .get_operations_until_done(account_id, p.figi.clone())
+            .get_operations_until_done(account_id, portfolio_position.figi.clone())
             .await;
 
         let totals = reduce(&executed_ops, position.currency);
 
-        let b = instruments.get(&p.figi)?;
+        let instrument = instruments.get(&portfolio_position.figi)?;
         Some(Paper {
-            name: b.name.clone(),
-            ticker: b.ticker.clone(),
-            figi: p.figi.clone(),
+            name: instrument.name.clone(),
+            ticker: instrument.ticker.clone(),
+            figi: portfolio_position.figi.clone(),
             position,
             totals,
             profit,
