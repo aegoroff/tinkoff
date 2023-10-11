@@ -6,13 +6,12 @@ use itertools::Itertools;
 use tinkoff::{
     client::TinkoffInvestment,
     domain::{
-        Asset, CouponProfit, DivdentProfit, Instrument, NoneProfit, Paper, Portfolio,
-        Profit,
+        Asset, CouponProfit, DivdentProfit, Instrument, NoneProfit, Paper, Portfolio, Profit,
     },
     progress::{Progress, Progresser},
     ux,
 };
-use tinkoff_invest_api::tcs::AccountType;
+use tinkoff_invest_api::tcs::{AccountType, PortfolioPosition};
 
 #[macro_use]
 extern crate clap;
@@ -58,79 +57,50 @@ async fn all(token: String, output_papers: bool) {
     all.extend(currencies);
     all.extend(futures);
 
-    let mut container = Portfolio::new(output_papers);
-    let mut progresser = Progresser::new(portfolio.positions.len() as u64);
-    let mut progress = 1u64;
-    for p in &portfolio.positions {
-        let account = portfolio.account_id.clone();
-        match p.instrument_type.as_str() {
-            "bond" => {
-                let paper =
-                client.create_paper_from_position(&all, account, p, CouponProfit).await;
-                add_paper(&mut container.bonds, paper);
-            }
-            "share" => {
-                let paper =
-                client.create_paper_from_position(&all, account, p, DivdentProfit).await;
-                add_paper(&mut container.shares, paper);
-            }
-            "etf" => {
-                let paper = client.create_paper_from_position(&all, account, p, NoneProfit).await;
-                add_paper(&mut container.etfs, paper);
-            }
-            "currency" => {
-                let paper = client.create_paper_from_position(&all, account, p, NoneProfit).await;
-                add_paper(&mut container.currencies, paper);
-            }
-            "futures" => {
-                let paper = client.create_paper_from_position(&all, account, p, NoneProfit).await;
-                add_paper(&mut container.futures, paper);
-            }
-            _ => {}
-        };
-        progresser.progress(progress);
-        progress += 1;
-    }
-    progresser.finish();
-    print!("{container}");
+    print_positions(
+        &client,
+        &all,
+        &portfolio.positions,
+        &portfolio.account_id,
+        output_papers,
+    )
+    .await;
 }
 
 async fn bonds(token: String) {
     let client = TinkoffInvestment::new(token);
     let instruments = client.get_all_bonds_until_done().await;
-    asset(client, "Bonds", "bond", instruments, CouponProfit).await;
+    asset(client, instruments, "bond").await;
 }
 
 async fn shares(token: String) {
     let client = TinkoffInvestment::new(token);
     let instruments = client.get_all_shares_until_done().await;
-    asset(client, "Shares", "share", instruments, DivdentProfit).await;
+    asset(client, instruments, "share").await;
 }
 
 async fn etfs(token: String) {
     let client = TinkoffInvestment::new(token);
     let instruments = client.get_all_etfs_until_done().await;
-    asset(client, "Etfs", "etf", instruments, NoneProfit).await;
+    asset(client, instruments, "etf").await;
 }
 
 async fn futures(token: String) {
     let client = TinkoffInvestment::new(token);
     let instruments = client.get_all_futures_until_done().await;
-    asset(client, "Futures", "futures", instruments, NoneProfit).await;
+    asset(client, instruments, "futures").await;
 }
 
 async fn currencies(token: String) {
     let client = TinkoffInvestment::new(token);
     let instruments = client.get_all_currencies_until_done().await;
-    asset(client, "Currencies", "currency", instruments, NoneProfit).await;
+    asset(client, instruments, "currency").await;
 }
 
-async fn asset<P: Profit>(
+async fn asset(
     client: TinkoffInvestment,
-    asset_name: &'static str,
-    instrument_type: &str,
     instruments: HashMap<String, Instrument>,
-    profit: P,
+    instrument_type: &str,
 ) {
     let portfolio = client.get_portfolio_until_done(AccountType::Tinkoff).await;
 
@@ -140,26 +110,66 @@ async fn asset<P: Profit>(
         .filter(|p| p.instrument_type == instrument_type)
         .collect_vec();
 
+    print_positions(
+        &client,
+        &instruments,
+        &positions,
+        &portfolio.account_id,
+        true,
+    )
+    .await;
+}
+
+async fn print_positions(
+    client: &TinkoffInvestment,
+    instruments: &HashMap<String, Instrument>,
+    positions: &Vec<PortfolioPosition>,
+    account_id: &str,
+    output_papers: bool,
+) {
+    let mut container = Portfolio::new(output_papers);
     let mut progresser = Progresser::new(positions.len() as u64);
     let mut progress = 1u64;
-    let mut asset = Asset::new(asset_name, profit, true);
-    for p in &positions {
-        let paper = client
-            .create_paper_from_position(
-                &instruments,
-                portfolio.account_id.clone(),
-                p,
-                profit,
-            )
-            .await;
-
-        add_paper(&mut asset, paper);
-
+    for p in positions {
+        let account = account_id.to_owned();
+        match p.instrument_type.as_str() {
+            "bond" => {
+                let paper = client
+                    .create_paper_from_position(instruments, account, p, CouponProfit)
+                    .await;
+                add_paper(&mut container.bonds, paper);
+            }
+            "share" => {
+                let paper = client
+                    .create_paper_from_position(instruments, account, p, DivdentProfit)
+                    .await;
+                add_paper(&mut container.shares, paper);
+            }
+            "etf" => {
+                let paper = client
+                    .create_paper_from_position(instruments, account, p, NoneProfit)
+                    .await;
+                add_paper(&mut container.etfs, paper);
+            }
+            "currency" => {
+                let paper = client
+                    .create_paper_from_position(instruments, account, p, NoneProfit)
+                    .await;
+                add_paper(&mut container.currencies, paper);
+            }
+            "futures" => {
+                let paper = client
+                    .create_paper_from_position(instruments, account, p, NoneProfit)
+                    .await;
+                add_paper(&mut container.futures, paper);
+            }
+            _ => {}
+        };
         progresser.progress(progress);
         progress += 1;
     }
     progresser.finish();
-    println!("{asset}");
+    print!("{container}");
 }
 
 fn add_paper<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {

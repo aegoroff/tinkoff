@@ -500,6 +500,19 @@ impl Portfolio {
             + self.etfs.dividents()
             + self.futures.dividents()
     }
+
+    #[must_use]
+    pub fn count_not_empty_assets(&self) -> usize {
+        // REMARKS: not very efficient implementation but let it be
+        let empty_assets = vec![
+            self.bonds.is_empty(),
+            self.shares.is_empty(),
+            self.currencies.is_empty(),
+            self.etfs.is_empty(),
+            self.futures.is_empty(),
+        ];
+        empty_assets.into_iter().filter(|x| !x).count()
+    }
 }
 
 impl Default for Portfolio {
@@ -694,30 +707,34 @@ impl Display for Portfolio {
         self.shares.fmt(f)?;
         self.currencies.fmt(f)?;
 
-        let mut table = ux::new_table();
+        if self.count_not_empty_assets() > 1 {
+            let mut table = ux::new_table();
 
-        let title = Cell::new("Portfolio totals:")
-            .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::DarkRed);
-        table.set_header(vec![title, Cell::new("")]);
+            let title = Cell::new("Portfolio totals:")
+                .add_attribute(Attribute::Bold)
+                .fg(comfy_table::Color::DarkRed);
+            table.set_header(vec![title, Cell::new("")]);
 
-        table.add_row(vec![
-            Cell::new(BALANCE_INCOME),
-            ux::colored_cell(self.income()),
-        ]);
-        table.add_row(vec![
-            Cell::new(TOTAL_INCOME),
-            ux::colored_cell(self.total_income()),
-        ]);
-        table.add_row(vec![
-            Cell::new("Dividents and coupons"),
-            ux::colored_cell(self.dividents()),
-        ]);
-        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
-        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
+            table.add_row(vec![
+                Cell::new(BALANCE_INCOME),
+                ux::colored_cell(self.income()),
+            ]);
+            table.add_row(vec![
+                Cell::new(TOTAL_INCOME),
+                ux::colored_cell(self.total_income()),
+            ]);
+            table.add_row(vec![
+                Cell::new("Dividents and coupons"),
+                ux::colored_cell(self.dividents()),
+            ]);
+            table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
+            table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
 
-        writeln!(f)?;
-        writeln!(f, "{table}")
+            writeln!(f)?;
+            writeln!(f, "{table}")
+        } else {
+            writeln!(f)
+        }
     }
 }
 
