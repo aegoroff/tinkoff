@@ -127,9 +127,15 @@ async fn print_positions(
     account_id: &str,
     output_papers: bool,
 ) {
+    fn add_paper_into_container<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {
+        if let Some(p) = paper {
+            asset.add_paper(p);
+        }
+    }
     let mut container = Portfolio::new(output_papers);
     let mut progresser = Progresser::new(positions.len() as u64);
     let mut progress = 1u64;
+
     for p in positions {
         let account = account_id.to_owned();
         match p.instrument_type.as_str() {
@@ -137,31 +143,31 @@ async fn print_positions(
                 let paper = client
                     .create_paper_from_position(instruments, account, p, CouponProfit)
                     .await;
-                add_paper(&mut container.bonds, paper);
+                add_paper_into_container(&mut container.bonds, paper);
             }
             "share" => {
                 let paper = client
                     .create_paper_from_position(instruments, account, p, DivdentProfit)
                     .await;
-                add_paper(&mut container.shares, paper);
+                add_paper_into_container(&mut container.shares, paper);
             }
             "etf" => {
                 let paper = client
                     .create_paper_from_position(instruments, account, p, NoneProfit)
                     .await;
-                add_paper(&mut container.etfs, paper);
+                add_paper_into_container(&mut container.etfs, paper);
             }
             "currency" => {
                 let paper = client
                     .create_paper_from_position(instruments, account, p, NoneProfit)
                     .await;
-                add_paper(&mut container.currencies, paper);
+                add_paper_into_container(&mut container.currencies, paper);
             }
             "futures" => {
                 let paper = client
                     .create_paper_from_position(instruments, account, p, NoneProfit)
                     .await;
-                add_paper(&mut container.futures, paper);
+                add_paper_into_container(&mut container.futures, paper);
             }
             _ => {}
         };
@@ -170,12 +176,6 @@ async fn print_positions(
     }
     progresser.finish();
     print!("{container}");
-}
-
-fn add_paper<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {
-    if let Some(p) = paper {
-        asset.add_paper(p);
-    }
 }
 
 fn build_cli() -> Command {
