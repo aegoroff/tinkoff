@@ -712,10 +712,8 @@ impl Display for Portfolio {
                 Cell::new(TOTAL_INCOME),
                 ux::colored_cell(self.total_income()),
             ]);
-            table.add_row(vec![
-                Cell::new("Dividents and coupons"),
-                ux::colored_cell(self.dividents()),
-            ]);
+
+            ux::add_row_colorized(&mut table, "Dividents and coupons", self.dividents());
 
             ux::add_row(&mut table, BALANCE_VALUE, self.balance());
             ux::add_row(&mut table, CURRENT_VALUE, self.current());
