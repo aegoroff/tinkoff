@@ -660,40 +660,29 @@ impl<P: Profit> Display for Paper<P> {
             Cell::new(""),
         ]);
 
-        table.add_row(vec![
-            Cell::new("Average buy price"),
-            Cell::new(self.average_buy_price()),
-        ]);
-        table.add_row(vec![
-            Cell::new("Last instrument price"),
-            Cell::new(self.current_instrument_price()),
-        ]);
-        table.add_row(vec![
-            Cell::new("Current items count"),
-            Cell::new(self.quantity().round_dp(2)),
-        ]);
-        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
-        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
+        ux::add_row(&mut table, "Average buy price", self.average_buy_price());
+        ux::add_row(
+            &mut table,
+            "Last instrument price",
+            self.current_instrument_price(),
+        );
+        ux::add_row(
+            &mut table,
+            "Current items count",
+            self.quantity().round_dp(2),
+        );
+        ux::add_row(&mut table, BALANCE_VALUE, self.balance());
+        ux::add_row(&mut table, CURRENT_VALUE, self.current());
         table.add_row(vec!["", ""]);
 
-        table.add_row(vec![Cell::new(INCOME), ux::colored_cell(self.income())]);
+        ux::add_row_colorized(&mut table, INCOME, self.income());
 
         if P::applicable() {
-            table.add_row(vec![
-                Cell::new(P::name()),
-                ux::colored_cell(self.dividents()),
-            ]);
-
-            table.add_row(vec![
-                Cell::new(TOTAL_INCOME),
-                ux::colored_cell(self.total_income()),
-            ]);
+            ux::add_row_colorized(&mut table, P::name(), self.dividents());
+            ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
         }
 
-        table.add_row(vec![
-            Cell::new("Taxes and fees"),
-            ux::colored_cell(self.fees()),
-        ]);
+        ux::add_row_colorized(&mut table, "Taxes and fees", self.fees());
 
         write!(f, "{table}")
     }
@@ -727,8 +716,9 @@ impl Display for Portfolio {
                 Cell::new("Dividents and coupons"),
                 ux::colored_cell(self.dividents()),
             ]);
-            table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
-            table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
+
+            ux::add_row(&mut table, BALANCE_VALUE, self.balance());
+            ux::add_row(&mut table, CURRENT_VALUE, self.current());
 
             writeln!(f)?;
             writeln!(f, "{table}")
