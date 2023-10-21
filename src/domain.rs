@@ -608,9 +608,6 @@ impl<P: Profit> Display for Asset<P> {
             }
         }
 
-        let balance_income = ux::colored_cell(self.income());
-        let total_income = ux::colored_cell(self.total_income());
-
         let mut table = ux::new_table();
 
         let title = format!("{} totals:", self.name);
@@ -619,22 +616,16 @@ impl<P: Profit> Display for Asset<P> {
             .fg(comfy_table::Color::DarkYellow);
         table.set_header(vec![title, Cell::new("")]);
 
-        table.add_row(vec![Cell::new(BALANCE_VALUE), Cell::new(self.balance())]);
-        table.add_row(vec![Cell::new(CURRENT_VALUE), Cell::new(self.current())]);
-        table.add_row(vec![Cell::new(BALANCE_INCOME), balance_income]);
+        ux::add_row(&mut table, BALANCE_VALUE, self.balance());
+        ux::add_row(&mut table, CURRENT_VALUE, self.current());
+        ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
 
         if P::applicable() {
-            table.add_row(vec![Cell::new(TOTAL_INCOME), total_income]);
-            table.add_row(vec![
-                Cell::new(P::name()),
-                ux::colored_cell(self.dividents()),
-            ]);
+            ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
+            ux::add_row_colorized(&mut table, P::name(), self.dividents());
         }
 
-        table.add_row(vec![
-            Cell::new("Instruments count"),
-            Cell::new(self.papers.len()),
-        ]);
+        ux::add_row(&mut table, "Instruments count", self.papers.len());
         asset_table.add_row(vec![Cell::new(table)]);
 
         if self.is_empty() {
@@ -704,15 +695,8 @@ impl Display for Portfolio {
                 .fg(comfy_table::Color::DarkRed);
             table.set_header(vec![title, Cell::new("")]);
 
-            table.add_row(vec![
-                Cell::new(BALANCE_INCOME),
-                ux::colored_cell(self.income()),
-            ]);
-            table.add_row(vec![
-                Cell::new(TOTAL_INCOME),
-                ux::colored_cell(self.total_income()),
-            ]);
-
+            ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
+            ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
             ux::add_row_colorized(&mut table, "Dividents and coupons", self.dividents());
 
             ux::add_row(&mut table, BALANCE_VALUE, self.balance());
