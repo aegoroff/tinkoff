@@ -24,7 +24,7 @@ itertools = "0.11.0"
 indicatif = "0.17.7"
 num-format = "0.4.4"
 comfy-table = "7.1.0"
-clap = { version = "4.4.6", features = ["std", "color", "cargo"] }
+clap = { version = "4.4.7", features = ["std", "color", "cargo"] }
 color-eyre = "0.6.2"
 
 [dev-dependencies]
