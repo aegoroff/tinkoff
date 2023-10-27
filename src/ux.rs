@@ -24,6 +24,7 @@ pub fn format_decimal(v: Decimal) -> Result<String, Error> {
     Ok(format!("{integer}{fract}"))
 }
 
+/// Creates new table
 #[must_use]
 pub fn new_table() -> Table {
     let mut table = Table::new();
@@ -48,10 +49,13 @@ pub fn new_table() -> Table {
     table
 }
 
+/// Adds row into a table
 pub fn add_row<C1: ToString, C2: ToString>(table: &mut Table, first_column: C1, second_column: C2) {
     table.add_row(vec![Cell::new(first_column), Cell::new(second_column)]);
 }
 
+/// Adds row with colorized `second_column` into table. Colorization based on numeric
+/// value. Positives will be green, negatives will be red zero color won't be changed
 pub fn add_row_colorized<C1: ToString, C2: ToString + NumberRange>(
     table: &mut Table,
     first_column: C1,
@@ -60,6 +64,8 @@ pub fn add_row_colorized<C1: ToString, C2: ToString + NumberRange>(
     table.add_row(vec![Cell::new(first_column), colored_cell(second_column)]);
 }
 
+/// Creates colorized cell based on numeric value.
+/// Positives will be green, negatives will be red zero color won't be changed
 pub fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
     if value.is_negative() {
         Cell::new(value).fg(comfy_table::Color::DarkRed)
