@@ -9,6 +9,7 @@ pub mod progress;
 pub mod ux;
 
 /// Converts Option<&Quotation> into Decimal
+/// if None passed - zero `Decimal` will be retured
 #[must_use]
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     if let Some(x) = val {
