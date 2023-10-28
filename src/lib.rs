@@ -8,7 +8,7 @@ pub mod domain;
 pub mod progress;
 pub mod ux;
 
-/// Converts Option<&Quotation> into Decimal
+/// Converts `Option<&Quotation>` into `Decimal`
 /// if None passed - zero `Decimal` will be retured
 #[must_use]
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
@@ -28,7 +28,7 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     }
 }
 
-/// Option<&MoneyValue> to Option<Money>
+/// `Option<&MoneyValue>` to `Option<Money>`
 #[must_use]
 pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
     if let Some(x) = val {
