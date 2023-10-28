@@ -7,8 +7,11 @@ pub trait Size {
 }
 
 pub trait Progress {
+    /// Shows progress
     fn progress(&mut self, current: u64);
+    /// Finishes process
     fn finish(&self);
+    /// Sets the current message of the progress
     fn message(&self, message: String);
 }
 
