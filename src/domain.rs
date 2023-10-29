@@ -87,7 +87,7 @@ pub struct Totals {
     pub fees: Money,
 }
 
-/// Represents additional asset profit way
+/// Represents additional asset profit
 /// besides balance value growing due to price increase.
 /// Used mainly for output
 pub trait Profit: Copy {
