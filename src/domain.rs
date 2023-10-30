@@ -58,8 +58,8 @@ pub struct Paper<P: Profit> {
     pub profit: P,
 }
 
-/// Portfolio is an Asset's container
-/// Asset is a Paper's container
+/// Portfolio is an [`Asset`]'s container
+/// [`Asset`] is a [`Paper`]'s container
 pub struct Portfolio {
     pub bonds: Asset<CouponProfit>,
     pub shares: Asset<DivdentProfit>,
@@ -68,7 +68,7 @@ pub struct Portfolio {
     pub futures: Asset<NoneProfit>,
 }
 
-/// Asset is a Paper's container
+/// Asset is a [`Paper`]'s container
 pub struct Asset<P: Profit> {
     name: &'static str,
     papers: Vec<Paper<P>>,
