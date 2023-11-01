@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use color_eyre::eyre;
 use tinkoff_invest_api::{
     tcs::{
-        portfolio_request::CurrencyRequest, AccountType, GetAccountsRequest, InstrumentStatus,
-        InstrumentsRequest, Operation, OperationState, OperationType, OperationsRequest,
-        PortfolioPosition, PortfolioRequest,
+        portfolio_request::CurrencyRequest, Account, AccountType, GetAccountsRequest,
+        InstrumentStatus, InstrumentsRequest, Operation, OperationState, OperationType,
+        OperationsRequest, PortfolioPosition, PortfolioRequest,
     },
     TIResult, TinkoffInvestService,
 };
@@ -203,6 +203,18 @@ impl TinkoffInvestment {
             account_id: account.id.clone(),
             positions: portfolio.into_inner().positions,
         })
+    }
+
+    pub async fn get_account(&self, account_type: AccountType) -> TIResult<Account> {
+        let channel = self.service.create_channel().await?;
+        let mut users = self.service.users(channel).await?;
+        let accounts = users.get_accounts(GetAccountsRequest {}).await?;
+        let all_accounts = &accounts.get_ref().accounts;
+        let account = all_accounts
+            .iter()
+            .find(|a| a.r#type() == account_type)
+            .unwrap_or(all_accounts.first().unwrap());
+        Ok(account.clone())
     }
 
     pub async fn get_portfolio_until_done(&self, account: AccountType) -> Portfolio {

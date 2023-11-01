@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env};
 
-use clap::{command, ArgAction, Command};
+use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::Result;
 use itertools::Itertools;
 use tinkoff::{
@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
         Some(("e", _)) => etfs(token).await,
         Some(("c", _)) => currencies(token).await,
         Some(("f", _)) => futures(token).await,
+        Some(("hi", cmd)) => history(token, cmd).await,
         _ => {}
     }
     Ok(())
@@ -65,6 +66,17 @@ async fn all(token: String, output_papers: bool) {
         output_papers,
     )
     .await;
+}
+
+async fn history(token: String, cmd: &ArgMatches) {
+    let client = TinkoffInvestment::new(token);
+    let ticker = if let Some(t) = cmd.get_one::<String>("TICKER") {
+        t.clone()
+    } else {
+        String::new()
+    };
+    let account = client.get_account(AccountType::Tinkoff).await.unwrap();
+    client.get_operations_until_done(account.id, ticker).await;
 }
 
 async fn bonds(token: String) {
@@ -240,7 +252,7 @@ fn futures_cmd() -> Command {
 }
 
 fn history_cmd() -> Command {
-    Command::new("h")
+    Command::new("hi")
         .aliases(["history"])
         .about("Get an instrument history")
         .arg(arg!([TICKER]).help("Instrument's tiker").required(true))
