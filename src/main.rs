@@ -194,6 +194,7 @@ fn build_cli() -> Command {
         .subcommand(etfs_cmd())
         .subcommand(currencies_cmd())
         .subcommand(futures_cmd())
+        .subcommand(history_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -236,4 +237,11 @@ fn futures_cmd() -> Command {
     Command::new("f")
         .aliases(["futures"])
         .about("Get portfolio futures")
+}
+
+fn history_cmd() -> Command {
+    Command::new("h")
+        .aliases(["history"])
+        .about("Get an instrument history")
+        .arg(arg!([TICKER]).help("Instrument's tiker").required(true))
 }
