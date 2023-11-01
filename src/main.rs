@@ -75,8 +75,22 @@ async fn history(token: String, cmd: &ArgMatches) {
     } else {
         String::new()
     };
-    let account = client.get_account(AccountType::Tinkoff).await.unwrap();
-    client.get_operations_until_done(account.id, ticker).await;
+    let (account, instruments) = tokio::join!(
+        client.get_account(AccountType::Tinkoff),
+        client.find_instruments_by_ticker(ticker),
+    );
+    let account = account.unwrap();
+    let instruments = instruments.unwrap();
+
+    for instr in instruments {
+        let operaions = client
+            .get_operations_until_done(account.id.clone(), instr.figi)
+            .await;
+        for op in operaions {
+            op.operation_type();
+            println!("{:#?} | {} | {}", op.operation_type(), op.quantity, op.figi);
+        }
+    }
 }
 
 async fn bonds(token: String) {

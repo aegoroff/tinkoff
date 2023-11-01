@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use color_eyre::eyre;
 use tinkoff_invest_api::{
     tcs::{
-        portfolio_request::CurrencyRequest, Account, AccountType, GetAccountsRequest,
-        InstrumentStatus, InstrumentsRequest, Operation, OperationState, OperationType,
-        OperationsRequest, PortfolioPosition, PortfolioRequest,
+        portfolio_request::CurrencyRequest, Account, AccountType, FindInstrumentRequest,
+        GetAccountsRequest, InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest,
+        Operation, OperationState, OperationType, OperationsRequest, PortfolioPosition,
+        PortfolioRequest,
     },
     TIResult, TinkoffInvestService,
 };
@@ -215,6 +216,23 @@ impl TinkoffInvestment {
             .find(|a| a.r#type() == account_type)
             .unwrap_or(all_accounts.first().unwrap());
         Ok(account.clone())
+    }
+
+    pub async fn find_instruments_by_ticker(
+        &self,
+        ticker: String,
+    ) -> TIResult<Vec<InstrumentShort>> {
+        let channel = self.service.create_channel().await?;
+        let mut insrument_client = self.service.instruments(channel).await?;
+        let instrument = insrument_client
+            .find_instrument(FindInstrumentRequest {
+                instrument_kind: InstrumentType::Unspecified.into(),
+                query: ticker,
+                api_trade_available_flag: false,
+            })
+            .await?;
+        let instrument = instrument.get_ref();
+        Ok(instrument.instruments.clone())
     }
 
     pub async fn get_portfolio_until_done(&self, account: AccountType) -> Portfolio {
