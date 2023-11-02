@@ -2,14 +2,15 @@ use std::{collections::HashMap, env};
 
 use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::Result;
+use iso_currency::Currency;
 use itertools::Itertools;
 use tinkoff::{
     client::TinkoffInvestment,
     domain::{
-        Asset, CouponProfit, DivdentProfit, Instrument, NoneProfit, Paper, Portfolio, Profit,
+        Asset, CouponProfit, DivdentProfit, Instrument, Money, NoneProfit, Paper, Portfolio, Profit,
     },
     progress::{Progress, Progresser},
-    ux,
+    to_money, ux,
 };
 use tinkoff_invest_api::tcs::{AccountType, PortfolioPosition};
 
@@ -87,8 +88,24 @@ async fn history(token: String, cmd: &ArgMatches) {
             .get_operations_until_done(account.id.clone(), instr.figi)
             .await;
         for op in operaions {
-            op.operation_type();
-            println!("{:#?} | {} | {}", op.operation_type(), op.quantity, op.figi);
+            let currency = Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap();
+            let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
+                payment
+            } else {
+                Money::zero(currency)
+            };
+            let price = if let Some(price) = to_money(op.price.as_ref()) {
+                price
+            } else {
+                Money::zero(currency)
+            };
+            println!(
+                "{:#?} | {} | {} | {}",
+                op.operation_type(),
+                op.quantity,
+                price,
+                payment
+            );
         }
     }
 }
