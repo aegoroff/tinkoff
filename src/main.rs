@@ -120,9 +120,15 @@ async fn history(token: String, cmd: &ArgMatches) {
             let dt = op.date.as_ref().unwrap();
             let dt =
                 DateTime::<Utc>::from_timestamp(dt.seconds, dt.nanos as u32).unwrap_or_default();
+
             println!(
-                "{} | {} | {} | {} | {}",
-                dt, op.quantity, price, payment, op.r#type
+                "{} | {} | {} | {} | {} | {:#?}",
+                dt,
+                op.quantity,
+                price,
+                payment,
+                op.r#type,
+                op.state()
             );
         });
 }
