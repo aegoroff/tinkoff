@@ -1,5 +1,6 @@
 use std::{collections::HashMap, env};
 
+use chrono::prelude::*;
 use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::Result;
 use iso_currency::Currency;
@@ -83,11 +84,27 @@ async fn history(token: String, cmd: &ArgMatches) {
     let account = account.unwrap();
     let instruments = instruments.unwrap();
 
+    let mut operations = vec![];
     for instr in instruments {
-        let operaions = client
+        let instr_operaions = client
             .get_operations_until_done(account.id.clone(), instr.figi)
             .await;
-        for op in operaions {
+
+        operations.extend(instr_operaions.iter().cloned());
+    }
+    operations
+        .iter()
+        .unique_by(|op| &op.id)
+        .sorted_by(|a, b| {
+            let dt_a = a.date.as_ref().unwrap();
+            let dt_a = DateTime::<Utc>::from_timestamp(dt_a.seconds, dt_a.nanos as u32)
+                .unwrap_or_default();
+            let dt_b = b.date.as_ref().unwrap();
+            let dt_b = DateTime::<Utc>::from_timestamp(dt_b.seconds, dt_b.nanos as u32)
+                .unwrap_or_default();
+            Ord::cmp(&dt_a, &dt_b)
+        })
+        .for_each(|op| {
             let currency = Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap();
             let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
                 payment
@@ -99,15 +116,15 @@ async fn history(token: String, cmd: &ArgMatches) {
             } else {
                 Money::zero(currency)
             };
+
+            let dt = op.date.as_ref().unwrap();
+            let dt =
+                DateTime::<Utc>::from_timestamp(dt.seconds, dt.nanos as u32).unwrap_or_default();
             println!(
-                "{:#?} | {} | {} | {}",
-                op.operation_type(),
-                op.quantity,
-                price,
-                payment
+                "{} | {} | {} | {} | {}",
+                dt, op.quantity, price, payment, op.r#type
             );
-        }
-    }
+        });
 }
 
 async fn bonds(token: String) {
