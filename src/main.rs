@@ -88,7 +88,7 @@ async fn history(token: String, cmd: &ArgMatches) {
     };
 
     let mut operations = vec![];
-    for instr in &instruments {
+    for instr in instruments.iter().filter(|i| i.ticker.eq(ticker)) {
         let instr_operaions = client
             .get_operations_until_done(account.id.clone(), instr.figi.clone())
             .await;
