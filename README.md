@@ -19,6 +19,7 @@ Commands:
   e     Get portfolio etfs
   c     Get portfolio currencies
   f     Get portfolio futures
+  hi    Get an instrument history
   help  Print this message or the help of the given subcommand(s)
 
 Options:
