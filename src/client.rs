@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use color_eyre::eyre;
 use iso_currency::Currency;
+use itertools::Itertools;
 use tinkoff_invest_api::{
     tcs::{
         portfolio_request::CurrencyRequest, Account, AccountType, FindInstrumentRequest,
@@ -13,7 +14,7 @@ use tinkoff_invest_api::{
 };
 
 use crate::{
-    domain::{HistoryItem, Instrument, Money, Paper, Position, Profit, Totals},
+    domain::{History, HistoryItem, Instrument, Money, Paper, Position, Profit, Totals},
     to_currency, to_datetime_utc, to_decimal, to_money,
 };
 
@@ -317,7 +318,8 @@ impl TinkoffInvestment {
 
 impl HistoryItem {
     pub fn from(op: &Operation) -> Self {
-        let currency = Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap_or(Currency::RUB);
+        let currency =
+            Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap_or(Currency::RUB);
         let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
             payment
         } else {
@@ -345,5 +347,24 @@ impl HistoryItem {
             description: op.r#type.clone(),
             operation_state: state,
         }
+    }
+}
+
+impl History {
+    pub fn new(operations: Vec<Operation>, instrument: &InstrumentShort) -> Option<Self> {
+        let items = operations
+            .iter()
+            .unique_by(|op| &op.id)
+            .map(HistoryItem::from)
+            .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
+            .collect_vec();
+        let currency = items.first()?.payment.currency;
+        Some(Self {
+            name: instrument.name.clone(),
+            ticker: instrument.ticker.clone(),
+            figi: instrument.figi.clone(),
+            items,
+            currency,
+        })
     }
 }

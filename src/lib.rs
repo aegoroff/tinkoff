@@ -53,7 +53,7 @@ pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
 
 pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
     if let Some(dt) = opt_timespamp {
-        DateTime::<Utc>::from_timestamp(dt.seconds, dt.nanos as u32).unwrap_or_default()
+        DateTime::<Utc>::from_timestamp(dt.seconds, 0).unwrap_or_default()
     } else {
         DateTime::<Utc>::default()
     }

@@ -7,7 +7,7 @@ use itertools::Itertools;
 use tinkoff::{
     client::TinkoffInvestment,
     domain::{
-        Asset, CouponProfit, DivdentProfit, HistoryItem, Instrument, NoneProfit, Paper, Portfolio,
+        Asset, CouponProfit, DivdentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
         Profit,
     },
     progress::{Progress, Progresser},
@@ -81,33 +81,34 @@ async fn history(token: String, cmd: &ArgMatches) {
         client.get_account(AccountType::Tinkoff),
         client.find_instruments_by_ticker(ticker),
     );
-    let account = account.unwrap();
-    let instruments = instruments.unwrap();
+    let Ok(account) = account else {
+        return;
+    };
+
+    let Ok(instruments) = instruments else {
+        return;
+    };
 
     let mut operations = vec![];
-    for instr in instruments {
+    for instr in &instruments {
         let instr_operaions = client
-            .get_operations_until_done(account.id.clone(), instr.figi)
+            .get_operations_until_done(account.id.clone(), instr.figi.clone())
             .await;
 
         operations.extend(instr_operaions.iter().cloned());
     }
-    operations
-        .iter()
-        .unique_by(|op| &op.id)
-        .map(HistoryItem::from)
-        .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
-        .for_each(|item| {
-            println!(
-                "{} | {} | {} | {} | {} | {}",
-                item.datetime,
-                item.quantity,
-                item.price,
-                item.payment,
-                item.description,
-                item.operation_state
-            );
-        });
+
+    let Some(operation) = operations.first() else {
+        return;
+    };
+
+    let Some(instrument) = instruments.iter().find(|i| i.figi == operation.figi) else {
+        return;
+    };
+
+    if let Some(history) = History::new(operations, instrument) {
+        print!("{history}");
+    }
 }
 
 async fn bonds(token: String) {
