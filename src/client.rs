@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use color_eyre::eyre;
+use iso_currency::Currency;
 use tinkoff_invest_api::{
     tcs::{
         portfolio_request::CurrencyRequest, Account, AccountType, FindInstrumentRequest,
@@ -12,8 +13,8 @@ use tinkoff_invest_api::{
 };
 
 use crate::{
-    domain::{Instrument, Money, Paper, Position, Profit, Totals},
-    to_currency, to_decimal, to_money,
+    domain::{HistoryItem, Instrument, Money, Paper, Position, Profit, Totals},
+    to_currency, to_datetime_utc, to_decimal, to_money,
 };
 
 #[derive(Default)]
@@ -310,6 +311,39 @@ impl TinkoffInvestment {
         Totals {
             additional_profit,
             fees,
+        }
+    }
+}
+
+impl HistoryItem {
+    pub fn from(op: &Operation) -> Self {
+        let currency = Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap_or(Currency::RUB);
+        let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
+            payment
+        } else {
+            Money::zero(currency)
+        };
+        let price = if let Some(price) = to_money(op.price.as_ref()) {
+            price
+        } else {
+            Money::zero(currency)
+        };
+        let state = match op.state() {
+            OperationState::Unspecified => "Not specified".to_string(),
+            OperationState::Executed => "Executed".to_string(),
+            OperationState::Canceled => "Canceled".to_string(),
+            OperationState::Progress => "In progress".to_string(),
+        };
+
+        let dt = to_datetime_utc(op.date.as_ref());
+        Self {
+            datetime: dt,
+            quantity: op.quantity,
+            quantity_rest: op.quantity_rest,
+            price,
+            payment,
+            description: op.r#type.clone(),
+            operation_state: state,
         }
     }
 }

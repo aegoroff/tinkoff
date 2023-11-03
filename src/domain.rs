@@ -3,6 +3,7 @@ use std::{
     ops::{self, AddAssign, DivAssign, MulAssign, SubAssign},
 };
 
+use chrono::{DateTime, Utc};
 use comfy_table::{Attribute, Cell, TableComponent};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
@@ -104,6 +105,16 @@ pub struct DivdentProfit;
 pub struct CouponProfit;
 #[derive(Clone, Copy)]
 pub struct NoneProfit;
+
+pub struct HistoryItem {
+    pub datetime: DateTime<Utc>,
+    pub quantity: i64,
+    pub quantity_rest: i64,
+    pub price: Money,
+    pub payment: Money,
+    pub description: String,
+    pub operation_state: String,
+}
 
 impl Profit for DivdentProfit {
     fn applicable() -> bool {

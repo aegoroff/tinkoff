@@ -2,15 +2,16 @@ use std::{collections::HashMap, env};
 
 use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::Result;
-use iso_currency::Currency;
+
 use itertools::Itertools;
 use tinkoff::{
     client::TinkoffInvestment,
     domain::{
-        Asset, CouponProfit, DivdentProfit, Instrument, Money, NoneProfit, Paper, Portfolio, Profit,
+        Asset, CouponProfit, DivdentProfit, HistoryItem, Instrument, NoneProfit, Paper, Portfolio,
+        Profit,
     },
     progress::{Progress, Progresser},
-    to_money, ux, to_datetime_utc,
+    ux,
 };
 use tinkoff_invest_api::tcs::{AccountType, PortfolioPosition};
 
@@ -94,34 +95,17 @@ async fn history(token: String, cmd: &ArgMatches) {
     operations
         .iter()
         .unique_by(|op| &op.id)
-        .sorted_by(|a, b| {
-            let dt_a = to_datetime_utc(a.date.as_ref());
-            let dt_b = to_datetime_utc(b.date.as_ref());
-            Ord::cmp(&dt_a, &dt_b)
-        })
-        .for_each(|op| {
-            let currency = Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap();
-            let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
-                payment
-            } else {
-                Money::zero(currency)
-            };
-            let price = if let Some(price) = to_money(op.price.as_ref()) {
-                price
-            } else {
-                Money::zero(currency)
-            };
-
-            let dt = to_datetime_utc(op.date.as_ref());
-
+        .map(HistoryItem::from)
+        .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
+        .for_each(|item| {
             println!(
-                "{} | {} | {} | {} | {} | {:#?}",
-                dt,
-                op.quantity,
-                price,
-                payment,
-                op.r#type,
-                op.state()
+                "{} | {} | {} | {} | {} | {}",
+                item.datetime,
+                item.quantity,
+                item.price,
+                item.payment,
+                item.description,
+                item.operation_state
             );
         });
 }
