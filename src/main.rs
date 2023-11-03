@@ -72,14 +72,12 @@ async fn all(token: String, output_papers: bool) {
 
 async fn history(token: String, cmd: &ArgMatches) {
     let client = TinkoffInvestment::new(token);
-    let ticker = if let Some(t) = cmd.get_one::<String>("TICKER") {
-        t.clone()
-    } else {
-        String::new()
+    let Some(ticker) = cmd.get_one::<String>("TICKER") else {
+        return;
     };
     let (account, instruments) = tokio::join!(
         client.get_account(AccountType::Tinkoff),
-        client.find_instruments_by_ticker(ticker),
+        client.find_instruments_by_ticker(ticker.clone()),
     );
     let Ok(account) = account else {
         return;
