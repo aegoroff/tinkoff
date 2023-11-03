@@ -51,6 +51,7 @@ pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
     iso_currency::Currency::from_code(&mv.as_ref()?.currency.to_ascii_uppercase())
 }
 
+#[must_use]
 pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
     if let Some(dt) = opt_timespamp {
         DateTime::<Utc>::from_timestamp(dt.seconds, 0).unwrap_or_default()

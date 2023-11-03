@@ -104,7 +104,7 @@ async fn history(token: String, cmd: &ArgMatches) {
         return;
     };
 
-    if let Some(history) = History::new(operations, instrument) {
+    if let Some(history) = History::new(&operations, instrument) {
         print!("{history}");
     }
 }

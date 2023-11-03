@@ -317,6 +317,7 @@ impl TinkoffInvestment {
 }
 
 impl HistoryItem {
+    #[must_use]
     pub fn from(op: &Operation) -> Self {
         let currency =
             Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap_or(Currency::RUB);
@@ -351,7 +352,7 @@ impl HistoryItem {
 }
 
 impl History {
-    pub fn new(operations: Vec<Operation>, instrument: &InstrumentShort) -> Option<Self> {
+    pub fn new(operations: &[Operation], instrument: &InstrumentShort) -> Option<Self> {
         let items = operations
             .iter()
             .unique_by(|op| &op.id)
