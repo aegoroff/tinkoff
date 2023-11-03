@@ -1,6 +1,5 @@
 use std::{collections::HashMap, env};
 
-use chrono::prelude::*;
 use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::Result;
 use iso_currency::Currency;
@@ -11,7 +10,7 @@ use tinkoff::{
         Asset, CouponProfit, DivdentProfit, Instrument, Money, NoneProfit, Paper, Portfolio, Profit,
     },
     progress::{Progress, Progresser},
-    to_money, ux,
+    to_money, ux, to_datetime_utc,
 };
 use tinkoff_invest_api::tcs::{AccountType, PortfolioPosition};
 
@@ -96,12 +95,8 @@ async fn history(token: String, cmd: &ArgMatches) {
         .iter()
         .unique_by(|op| &op.id)
         .sorted_by(|a, b| {
-            let dt_a = a.date.as_ref().unwrap();
-            let dt_a = DateTime::<Utc>::from_timestamp(dt_a.seconds, dt_a.nanos as u32)
-                .unwrap_or_default();
-            let dt_b = b.date.as_ref().unwrap();
-            let dt_b = DateTime::<Utc>::from_timestamp(dt_b.seconds, dt_b.nanos as u32)
-                .unwrap_or_default();
+            let dt_a = to_datetime_utc(a.date.as_ref());
+            let dt_b = to_datetime_utc(b.date.as_ref());
             Ord::cmp(&dt_a, &dt_b)
         })
         .for_each(|op| {
@@ -117,9 +112,7 @@ async fn history(token: String, cmd: &ArgMatches) {
                 Money::zero(currency)
             };
 
-            let dt = op.date.as_ref().unwrap();
-            let dt =
-                DateTime::<Utc>::from_timestamp(dt.seconds, dt.nanos as u32).unwrap_or_default();
+            let dt = to_datetime_utc(op.date.as_ref());
 
             println!(
                 "{} | {} | {} | {} | {} | {:#?}",

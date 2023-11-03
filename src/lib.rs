@@ -1,5 +1,7 @@
+use chrono::{DateTime, Utc};
 use domain::Money;
 use iso_currency::Currency;
+use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
 
@@ -47,6 +49,14 @@ pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
 #[must_use]
 pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
     iso_currency::Currency::from_code(&mv.as_ref()?.currency.to_ascii_uppercase())
+}
+
+pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
+    if let Some(dt) = opt_timespamp {
+        DateTime::<Utc>::from_timestamp(dt.seconds, dt.nanos as u32).unwrap_or_default()
+    } else {
+        DateTime::<Utc>::default()
+    }
 }
 
 #[cfg(test)]
