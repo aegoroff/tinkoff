@@ -757,7 +757,7 @@ impl Display for History {
         for item in &self.items {
             items_table.add_row(vec![
                 Cell::new(item.datetime),
-                Cell::new(item.quantity),
+                Cell::new(item.quantity - item.quantity_rest),
                 Cell::new(item.price),
                 Cell::new(item.payment),
                 Cell::new(&item.description),
