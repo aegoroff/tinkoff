@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env};
 
 use clap::{command, ArgAction, ArgMatches, Command};
-use color_eyre::eyre::{Result, Context};
+use color_eyre::eyre::{Context, Result};
 
 use itertools::Itertools;
 use tinkoff::{
@@ -27,8 +27,9 @@ async fn main() -> Result<()> {
     let token = if let Some(t) = cli.get_one::<String>("token") {
         t.clone()
     } else {
-        env::var("TINKOFF_TOKEN_V2")
-        .wrap_err_with(|| "Tinkoff API token required either from command line or from TINKOFF_TOKEN_V2 environment variable")?
+        env::var("TINKOFF_TOKEN_V2").wrap_err_with(|| {
+            "API token required either from -t option or from TINKOFF_TOKEN_V2 environment variable"
+        })?
     };
 
     match cli.subcommand() {
