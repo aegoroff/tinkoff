@@ -138,7 +138,8 @@ macro_rules! impl_get_instrument_method {
                 let mut instruments = self.service.instruments(channel).await?;
                 let instruments = instruments
                     .$source_method(InstrumentsRequest {
-                        instrument_status: InstrumentStatus::All as i32,
+                        instrument_status: Some(InstrumentStatus::All as i32),
+                        instrument_exchange: None,
                     })
                     .await?;
                 let instruments = collect!(instruments);
@@ -199,7 +200,7 @@ impl TinkoffInvestment {
         let portfolio = operations
             .get_portfolio(PortfolioRequest {
                 account_id: account.id.clone(),
-                currency: CurrencyRequest::Rub as i32,
+                currency: Some(CurrencyRequest::Rub as i32),
             })
             .await?;
         Ok(Portfolio {
@@ -228,9 +229,9 @@ impl TinkoffInvestment {
         let mut insrument_client = self.service.instruments(channel).await?;
         let instrument = insrument_client
             .find_instrument(FindInstrumentRequest {
-                instrument_kind: InstrumentType::Unspecified.into(),
+                instrument_kind: Some(InstrumentType::Unspecified.into()),
                 query: ticker,
-                api_trade_available_flag: false,
+                api_trade_available_flag: Some(false),
             })
             .await?;
         let instrument = instrument.get_ref();
@@ -249,8 +250,8 @@ impl TinkoffInvestment {
                 account_id,
                 from: None,
                 to: None,
-                state: OperationState::Executed as i32,
-                figi,
+                state: Some(OperationState::Executed as i32),
+                figi: Some(figi),
             })
             .await?;
 
