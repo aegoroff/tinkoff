@@ -10,8 +10,30 @@ pub mod domain;
 pub mod progress;
 pub mod ux;
 
-/// Converts `Option<&Quotation>` into `Decimal`
-/// if None passed - zero `Decimal` will be retured
+/// Converts an `Option<&Quotation>` to `Decimal`.
+///
+/// # Arguments
+///
+/// * `val` - An optional reference to a `Quotation` which contains financial data with units and nano fields.
+///
+/// # Returns
+///
+/// * `Decimal` - A decimal representation of the financial data. If the input is `None` or the conversion fails, a default `Decimal` value is returned.
+///
+/// # Examples
+///
+/// ```
+/// use tinkoff::to_decimal;
+/// use rust_decimal::Decimal;
+/// use tinkoff_invest_api::tcs::Quotation;
+///
+/// let q = Quotation { units: 1, nano: 1 };
+/// let decimal = to_decimal(Some(&q));
+/// assert_eq!(decimal.to_string(), "1.1");
+///
+/// let none_decimal = to_decimal(None);
+/// assert!(none_decimal.is_zero());
+/// ```
 #[must_use]
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     if let Some(x) = val {
