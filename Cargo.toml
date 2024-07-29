@@ -14,7 +14,7 @@ version = "0.1.0"
 tinkoff-invest-api = { version = "0.3.0" }
 async-stream = "0.3"
 futures = {version = "0.3", default-features = false, features = ["alloc"]}
-tokio = {version = "1.39.1", features = ["full"]}
+tokio = {version = "1.39.2", features = ["full"]}
 tokio-stream = {version = "0.1", features = ["net"]}
 futures-util = {version = "0.3.30"}
 rust_decimal = "1.35.0"
