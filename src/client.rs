@@ -209,6 +209,15 @@ impl TinkoffInvestment {
         })
     }
 
+    /// Get an account by type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no account get.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if account cannot be get.
     pub async fn get_account(&self, account_type: AccountType) -> TIResult<Account> {
         let channel = self.service.create_channel().await?;
         let mut users = self.service.users(channel).await?;
@@ -221,6 +230,11 @@ impl TinkoffInvestment {
         Ok(account.clone())
     }
 
+    /// Search intsruments by ticker.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if instruments cannot be get from remote server.
     pub async fn find_instruments_by_ticker(
         &self,
         ticker: String,
