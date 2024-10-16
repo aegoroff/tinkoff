@@ -42,11 +42,7 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
         } else {
             format!("{}.{}", x.units, x.nano.abs())
         };
-        if let Ok(d) = Decimal::from_str_exact(&s) {
-            d
-        } else {
-            Decimal::default()
-        }
+        Decimal::from_str_exact(&s).unwrap_or_default()
     } else {
         Decimal::default()
     }
