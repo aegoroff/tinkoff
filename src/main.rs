@@ -91,11 +91,11 @@ async fn history(token: String, cmd: &ArgMatches) {
 
     let mut operations = vec![];
     for instr in instruments.iter().filter(|i| i.ticker.eq(ticker)) {
-        let instr_operaions = client
+        let instr_operations = client
             .get_operations_until_done(account.id.clone(), instr.figi.clone())
             .await;
 
-        operations.extend(instr_operaions.iter().cloned());
+        operations.extend(instr_operations.iter().cloned());
     }
 
     let Some(operation) = operations.first() else {
