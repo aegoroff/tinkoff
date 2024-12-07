@@ -522,15 +522,16 @@ impl Portfolio {
 
     #[must_use]
     pub fn count_not_empty_assets(&self) -> usize {
-        // REMARKS: not very efficient implementation but let it be
-        let empty_assets = [
+        [
             self.bonds.is_empty(),
             self.shares.is_empty(),
             self.currencies.is_empty(),
             self.etfs.is_empty(),
             self.futures.is_empty(),
-        ];
-        empty_assets.into_iter().filter(|x| !x).count()
+        ]
+        .into_iter()
+        .filter(|x| !x)
+        .count()
     }
 }
 
