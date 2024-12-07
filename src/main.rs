@@ -7,7 +7,7 @@ use itertools::Itertools;
 use tinkoff::{
     client::TinkoffInvestment,
     domain::{
-        Asset, CouponProfit, DivdentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
+        Asset, CouponProfit, DividentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
         Profit,
     },
     progress::{Progress, Progresser},
@@ -191,7 +191,7 @@ async fn print_positions(
             }
             "share" => {
                 let paper = client
-                    .create_paper_from_position(instruments, account, p, DivdentProfit)
+                    .create_paper_from_position(instruments, account, p, DividentProfit)
                     .await;
                 add_paper_into_container(&mut container.shares, paper);
             }

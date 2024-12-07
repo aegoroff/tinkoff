@@ -63,7 +63,7 @@ pub struct Paper<P: Profit> {
 /// [`Asset`] is a [`Paper`]'s container
 pub struct Portfolio {
     pub bonds: Asset<CouponProfit>,
-    pub shares: Asset<DivdentProfit>,
+    pub shares: Asset<DividentProfit>,
     pub etfs: Asset<NoneProfit>,
     pub currencies: Asset<NoneProfit>,
     pub futures: Asset<NoneProfit>,
@@ -100,7 +100,7 @@ pub trait Profit: Copy {
 }
 
 #[derive(Clone, Copy)]
-pub struct DivdentProfit;
+pub struct DividentProfit;
 #[derive(Clone, Copy)]
 pub struct CouponProfit;
 #[derive(Clone, Copy)]
@@ -124,7 +124,7 @@ pub struct HistoryItem {
     pub operation_state: String,
 }
 
-impl Profit for DivdentProfit {
+impl Profit for DividentProfit {
     fn applicable() -> bool {
         true
     }
@@ -469,7 +469,7 @@ impl Portfolio {
     pub fn new(output_papers: bool) -> Self {
         Self {
             bonds: Asset::new("Bonds", CouponProfit, output_papers),
-            shares: Asset::new("Shares", DivdentProfit, output_papers),
+            shares: Asset::new("Shares", DividentProfit, output_papers),
             etfs: Asset::new("Etfs", NoneProfit, output_papers),
             currencies: Asset::new("Currencies", NoneProfit, output_papers),
             futures: Asset::new("Futures", NoneProfit, output_papers),
@@ -823,7 +823,7 @@ mod tests {
             },
             profit: CouponProfit,
         });
-        let mut shares = Asset::new("Shares", DivdentProfit, true);
+        let mut shares = Asset::new("Shares", DividentProfit, true);
         shares.add_paper(Paper {
             name: "2".to_string(),
             ticker: "2t".to_string(),
@@ -838,7 +838,7 @@ mod tests {
                 additional_profit: Money::from_value(dec!(50), currency),
                 fees: Money::from_value(dec!(10), currency),
             },
-            profit: DivdentProfit,
+            profit: DividentProfit,
         });
 
         let etfs = Asset::new("Etfs", NoneProfit, true);
