@@ -51,7 +51,7 @@ pub fn new_table() -> Table {
 
 /// Adds row into a table
 pub fn add_row<C1: ToString, C2: ToString>(table: &mut Table, first_column: C1, second_column: C2) {
-    table.add_row(vec![Cell::new(first_column), Cell::new(second_column)]);
+    table.add_row([Cell::new(first_column), Cell::new(second_column)]);
 }
 
 /// Adds row with colorized `second_column` into table. Colorization based on numeric
@@ -61,7 +61,7 @@ pub fn add_row_colorized<C1: ToString, C2: ToString + NumberRange>(
     first_column: C1,
     second_column: C2,
 ) {
-    table.add_row(vec![Cell::new(first_column), colored_cell(second_column)]);
+    table.add_row([Cell::new(first_column), colored_cell(second_column)]);
 }
 
 /// Creates colorized cell based on numeric value.

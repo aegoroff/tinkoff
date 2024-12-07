@@ -617,14 +617,14 @@ impl<P: Profit> Asset<P> {
 impl<P: Profit> Display for Asset<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut asset_table = ux::new_table();
-        asset_table.set_header(vec![Cell::new(self.name)
+        asset_table.set_header([Cell::new(self.name)
             .add_attribute(Attribute::Bold)
             .fg(comfy_table::Color::DarkBlue)]);
         asset_table.set_style(TableComponent::HeaderLines, ' ');
 
         if self.output_papers {
             for p in &self.papers {
-                asset_table.add_row(vec![Cell::new(p)]);
+                asset_table.add_row([Cell::new(p)]);
             }
         }
 
@@ -634,7 +634,7 @@ impl<P: Profit> Display for Asset<P> {
         let title = Cell::new(title)
             .add_attribute(Attribute::Bold)
             .fg(comfy_table::Color::DarkYellow);
-        table.set_header(vec![title, Cell::new("")]);
+        table.set_header([title, Cell::new("")]);
 
         ux::add_row(&mut table, BALANCE_VALUE, self.balance());
         ux::add_row(&mut table, CURRENT_VALUE, self.current());
@@ -646,7 +646,7 @@ impl<P: Profit> Display for Asset<P> {
         }
 
         ux::add_row(&mut table, "Instruments count", self.papers.len());
-        asset_table.add_row(vec![Cell::new(table)]);
+        asset_table.add_row([Cell::new(table)]);
 
         if self.is_empty() {
             Ok(())
@@ -666,7 +666,7 @@ impl<P: Profit> Display for Paper<P> {
             self.name, self.ticker, self.figi, currency
         );
 
-        table.set_header(vec![
+        table.set_header([
             Cell::new(title).add_attribute(Attribute::Bold),
             Cell::new(""),
         ]);
@@ -684,7 +684,7 @@ impl<P: Profit> Display for Paper<P> {
         );
         ux::add_row(&mut table, BALANCE_VALUE, self.balance());
         ux::add_row(&mut table, CURRENT_VALUE, self.current());
-        table.add_row(vec!["", ""]);
+        table.add_row(["", ""]);
 
         ux::add_row_colorized(&mut table, INCOME, self.income());
 
@@ -713,7 +713,7 @@ impl Display for Portfolio {
             let title = Cell::new("Portfolio totals:")
                 .add_attribute(Attribute::Bold)
                 .fg(comfy_table::Color::DarkRed);
-            table.set_header(vec![title, Cell::new("")]);
+            table.set_header([title, Cell::new("")]);
 
             ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
@@ -740,7 +740,7 @@ impl Display for History {
             self.name, self.ticker, self.figi, currency
         );
 
-        history_table.set_header(vec![Cell::new(title)
+        history_table.set_header([Cell::new(title)
             .add_attribute(Attribute::Bold)
             .fg(comfy_table::Color::DarkBlue)]);
         history_table.set_style(TableComponent::HeaderLines, ' ');
@@ -753,10 +753,10 @@ impl Display for History {
         let payment = Cell::new("Payment").add_attribute(Attribute::Bold);
         let description = Cell::new("Description").add_attribute(Attribute::Bold);
         let state = Cell::new("State").add_attribute(Attribute::Bold);
-        items_table.set_header(vec![date, quantity, price, payment, description, state]);
+        items_table.set_header([date, quantity, price, payment, description, state]);
 
         for item in &self.items {
-            items_table.add_row(vec![
+            items_table.add_row([
                 Cell::new(item.datetime),
                 Cell::new(item.quantity - item.quantity_rest),
                 Cell::new(item.price),
@@ -766,7 +766,7 @@ impl Display for History {
             ]);
         }
 
-        history_table.add_row(vec![Cell::new(items_table)]);
+        history_table.add_row([Cell::new(items_table)]);
         write!(f, "{history_table}")
     }
 }
