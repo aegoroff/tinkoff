@@ -361,7 +361,7 @@ impl HistoryItem {
             price,
             payment,
             description: op.r#type.clone(),
-            operation_state: state.to_string(),
+            operation_state: state,
         }
     }
 }

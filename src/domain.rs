@@ -121,7 +121,7 @@ pub struct HistoryItem {
     pub price: Money,
     pub payment: Money,
     pub description: String,
-    pub operation_state: String,
+    pub operation_state: &'static str,
 }
 
 impl Profit for DividentProfit {
@@ -762,7 +762,7 @@ impl Display for History {
                 Cell::new(item.price),
                 Cell::new(item.payment),
                 Cell::new(&item.description),
-                Cell::new(&item.operation_state),
+                Cell::new(item.operation_state),
             ]);
         }
 
