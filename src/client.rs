@@ -347,10 +347,10 @@ impl HistoryItem {
             Money::zero(currency)
         };
         let state = match op.state() {
-            OperationState::Unspecified => "Not specified".to_string(),
-            OperationState::Executed => "Executed".to_string(),
-            OperationState::Canceled => "Canceled".to_string(),
-            OperationState::Progress => "In progress".to_string(),
+            OperationState::Unspecified => "Not specified",
+            OperationState::Executed => "Executed",
+            OperationState::Canceled => "Canceled",
+            OperationState::Progress => "In progress",
         };
 
         let dt = to_datetime_utc(op.date.as_ref());
@@ -361,7 +361,7 @@ impl HistoryItem {
             price,
             payment,
             description: op.r#type.clone(),
-            operation_state: state,
+            operation_state: state.to_string(),
         }
     }
 }
