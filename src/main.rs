@@ -1,4 +1,7 @@
-use std::{collections::HashMap, env};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+};
 
 use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::{Context, Result};
@@ -98,11 +101,12 @@ async fn history(token: String, cmd: &ArgMatches) {
         operations.extend(instr_operations.iter().cloned());
     }
 
-    let Some(operation) = operations.first() else {
-        return;
-    };
+    let operations_figi: HashSet<&String> = operations.iter().map(|o| &o.figi).collect();
 
-    let Some(instrument) = instruments.iter().find(|i| i.figi == operation.figi) else {
+    let Some(instrument) = instruments
+        .iter()
+        .find(|i| operations_figi.contains(&i.figi))
+    else {
         return;
     };
 
