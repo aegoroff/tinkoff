@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    env,
-};
+use std::{collections::HashMap, env};
 
 use clap::{command, ArgAction, ArgMatches, Command};
 use color_eyre::eyre::{Context, Result};
@@ -16,7 +13,7 @@ use tinkoff::{
     progress::{Progress, Progresser},
     ux,
 };
-use tinkoff_invest_api::tcs::{AccountType, PortfolioPosition};
+use tinkoff_invest_api::tcs::{AccountType, InstrumentShort, PortfolioPosition};
 
 #[macro_use]
 extern crate clap;
@@ -92,6 +89,7 @@ async fn history(token: String, cmd: &ArgMatches) {
         return;
     };
 
+    let mut instruments_with_ops: HashMap<&String, &InstrumentShort> = HashMap::new();
     let mut operations = vec![];
     for instr in instruments.iter().filter(|i| i.ticker.eq(ticker)) {
         let instr_operations = client
@@ -99,13 +97,21 @@ async fn history(token: String, cmd: &ArgMatches) {
             .await;
 
         operations.extend(instr_operations.iter().cloned());
+        if !instr_operations.is_empty() {
+            instruments_with_ops.insert(&instr.figi, instr);
+        }
     }
 
-    let operations_figi: HashSet<&String> = operations.iter().map(|o| &o.figi).collect();
-
-    let Some(instrument) = instruments
+    let Some((_, instrument)) = instruments_with_ops
         .iter()
-        .find(|i| operations_figi.contains(&i.figi))
+        .sorted_by(|(a, _), (b, _)| {
+            if a.starts_with("TCS") {
+                std::cmp::Ordering::Greater
+            } else {
+                Ord::cmp(a, b)
+            }
+        })
+        .next()
     else {
         return;
     };
