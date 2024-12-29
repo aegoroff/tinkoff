@@ -767,7 +767,49 @@ impl Display for History {
         }
 
         history_table.add_row([Cell::new(items_table)]);
-        write!(f, "{history_table}")
+        write!(f, "{history_table}")?;
+
+        let mut table = ux::new_table();
+
+        let title = Cell::new("Totals")
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkYellow);
+        table.set_header([title, Cell::new("")]);
+
+        ux::add_row_colorized(&mut table, "Expenses", self.expenses());
+        ux::add_row_colorized(&mut table, "Profit", self.profit());
+        ux::add_row_colorized(&mut table, "Balance", self.balance());
+        write!(f, "{table}")
+    }
+}
+
+impl History {
+    #[must_use]
+    pub fn expenses(&self) -> Money {
+        self.sum(|i| i.payment.is_negative())
+    }
+
+    #[must_use]
+    pub fn profit(&self) -> Money {
+        self.sum(|i| !i.payment.is_negative())
+    }
+
+    #[must_use]
+    pub fn balance(&self) -> Money {
+        self.expenses() + self.profit()
+    }
+
+    fn sum<P>(&self, predicate: P) -> Money
+    where
+        P: FnMut(&&HistoryItem) -> bool,
+    {
+        self.items
+            .iter()
+            .filter(predicate)
+            .fold(Money::zero(self.currency), |mut acc, p| {
+                acc += p.payment;
+                acc
+            })
     }
 }
 
