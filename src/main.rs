@@ -15,6 +15,13 @@ use tinkoff::{
 };
 use tinkoff_invest_api::tcs::{AccountType, InstrumentShort, PortfolioPosition};
 
+#[cfg(target_os = "linux")]
+use mimalloc::MiMalloc;
+
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 #[macro_use]
 extern crate clap;
 
