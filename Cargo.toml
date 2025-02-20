@@ -4,7 +4,7 @@ description = "Tinkoff investments console client"
 repository = "https://github.com/aegoroff/tinkoff"
 homepage = "https://github.com/aegoroff/tinkoff"
 authors = ["egoroff <egoroff@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 version = "0.1.0"
 

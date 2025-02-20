@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env};
 
-use clap::{command, ArgAction, ArgMatches, Command};
+use clap::{ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{Context, Result};
 
 use itertools::Itertools;

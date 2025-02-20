@@ -4,13 +4,13 @@ use color_eyre::eyre;
 use iso_currency::Currency;
 use itertools::Itertools;
 use tinkoff_invest_api::{
-    tcs::{
-        portfolio_request::CurrencyRequest, Account, AccountType, FindInstrumentRequest,
-        GetAccountsRequest, InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest,
-        Operation, OperationState, OperationType, OperationsRequest, PortfolioPosition,
-        PortfolioRequest,
-    },
     TIResult, TinkoffInvestService,
+    tcs::{
+        Account, AccountType, FindInstrumentRequest, GetAccountsRequest, InstrumentShort,
+        InstrumentStatus, InstrumentType, InstrumentsRequest, Operation, OperationState,
+        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
+        portfolio_request::CurrencyRequest,
+    },
 };
 
 use crate::{

@@ -1,8 +1,8 @@
 use std::{fmt::Error, process::Command};
 
-use comfy_table::{presets, Cell, ContentArrangement, Table, TableComponent};
+use comfy_table::{Cell, ContentArrangement, Table, TableComponent, presets};
 use num_format::{Locale, ToFormattedString};
-use rust_decimal::{prelude::ToPrimitive, Decimal};
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 
 use crate::domain::NumberRange;
 
