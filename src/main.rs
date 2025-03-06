@@ -25,6 +25,14 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[macro_use]
 extern crate clap;
 
+const ALL_CMD: &str = "a";
+const SHARES_CMD: &str = "s";
+const BONDS_CMD: &str = "b";
+const ETFS_CMD: &str = "e";
+const CURR_CMD: &str = "c";
+const FUTURES_CMD: &str = "f";
+const HISTORY_CMD: &str = "hi";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -40,13 +48,13 @@ async fn main() -> Result<()> {
     };
 
     match cli.subcommand() {
-        Some(("a", cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await,
-        Some(("s", _)) => shares(token).await,
-        Some(("b", _)) => bonds(token).await,
-        Some(("e", _)) => etfs(token).await,
-        Some(("c", _)) => currencies(token).await,
-        Some(("f", _)) => futures(token).await,
-        Some(("hi", cmd)) => history(token, cmd).await,
+        Some((ALL_CMD, cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await,
+        Some((SHARES_CMD, _)) => shares(token).await,
+        Some((BONDS_CMD, _)) => bonds(token).await,
+        Some((ETFS_CMD, _)) => etfs(token).await,
+        Some((CURR_CMD, _)) => currencies(token).await,
+        Some((FUTURES_CMD, _)) => futures(token).await,
+        Some((HISTORY_CMD, cmd)) => history(token, cmd).await,
         _ => {}
     }
     Ok(())
@@ -259,7 +267,7 @@ fn build_cli() -> Command {
 }
 
 fn all_cmd() -> Command {
-    Command::new("a")
+    Command::new(ALL_CMD)
         .aliases(["all"])
         .about("Get all portfolio")
         .arg(
@@ -271,37 +279,37 @@ fn all_cmd() -> Command {
 }
 
 fn shares_cmd() -> Command {
-    Command::new("s")
+    Command::new(SHARES_CMD)
         .aliases(["shares"])
         .about("Get portfolio shares")
 }
 
 fn bonds_cmd() -> Command {
-    Command::new("b")
+    Command::new(BONDS_CMD)
         .aliases(["bonds"])
         .about("Get portfolio bonds")
 }
 
 fn etfs_cmd() -> Command {
-    Command::new("e")
+    Command::new(ETFS_CMD)
         .aliases(["etfs"])
         .about("Get portfolio etfs")
 }
 
 fn currencies_cmd() -> Command {
-    Command::new("c")
+    Command::new(CURR_CMD)
         .aliases(["currencies"])
         .about("Get portfolio currencies")
 }
 
 fn futures_cmd() -> Command {
-    Command::new("f")
+    Command::new(FUTURES_CMD)
         .aliases(["futures"])
         .about("Get portfolio futures")
 }
 
 fn history_cmd() -> Command {
-    Command::new("hi")
+    Command::new(HISTORY_CMD)
         .aliases(["history"])
         .about("Get an instrument history")
         .arg(arg!([TICKER]).help("Instrument's tiker").required(true))
