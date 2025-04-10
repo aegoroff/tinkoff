@@ -51,17 +51,14 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
 /// `Option<&MoneyValue>` to `Option<Money>`
 #[must_use]
 pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
-    if let Some(x) = val {
-        let s = if x.units == 0 && x.nano < 0 {
-            format!("-{}.{}", x.units, x.nano.abs())
-        } else {
-            format!("{}.{}", x.units, x.nano.abs())
-        };
-        let value = Decimal::from_str_exact(&s).ok()?;
-        Money::new(value, &x.currency)
+    let val = val?;
+    let s = if val.units == 0 && val.nano < 0 {
+        format!("-{}.{}", val.units, val.nano.abs())
     } else {
-        None
-    }
+        format!("{}.{}", val.units, val.nano.abs())
+    };
+    let value = Decimal::from_str_exact(&s).ok()?;
+    Money::new(value, &val.currency)
 }
 
 #[must_use]
