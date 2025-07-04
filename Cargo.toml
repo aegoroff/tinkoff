@@ -17,7 +17,7 @@ rust_decimal = "1.37.1"
 rust_decimal_macros = "1.37.1"
 iso_currency = "0.5.3"
 itertools = "0.14.0"
-indicatif = "0.17.11"
+indicatif = "0.18.0"
 num-format = "0.4.4"
 comfy-table = "7.1.4"
 clap = { version = "4.5.35", features = ["std", "color", "cargo"] }
