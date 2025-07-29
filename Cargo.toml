@@ -29,7 +29,7 @@ prost-types = "0.11.9"
 mimalloc = "0.1.47"
 
 [dev-dependencies]
-rstest = "0.25.0"
+rstest = "0.26.1"
 
 [profile.release]
 lto = true
