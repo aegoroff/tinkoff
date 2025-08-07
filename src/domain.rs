@@ -191,8 +191,9 @@ impl<P: Profit> Paper<P> {
 
     /// Taxes and fees
     #[must_use]
-    pub fn fees(&self) -> Money {
-        self.totals.fees
+    pub fn fees(&self) -> Income {
+        // IMPORTANT: we must add self.totals.fees because their value is negative
+        Income::new(self.balance() + self.totals.fees, self.balance())
     }
 
     #[must_use]
