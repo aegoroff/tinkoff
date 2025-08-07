@@ -164,7 +164,8 @@ impl<P: Profit> Paper<P> {
     /// Total income (income + dividents)
     #[must_use]
     pub fn total_income(&self) -> Income {
-        self.income() + Income::new(self.dividents(), Money::zero(self.currency()))
+        let div = self.dividents();
+        Income::new(self.current() + (div.current - div.balance), self.balance())
     }
 
     /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
@@ -181,8 +182,11 @@ impl<P: Profit> Paper<P> {
 
     /// Dividents and coupons
     #[must_use]
-    pub fn dividents(&self) -> Money {
-        self.totals.additional_profit
+    pub fn dividents(&self) -> Income {
+        Income::new(
+            self.totals.additional_profit + self.balance(),
+            self.balance(),
+        )
     }
 
     /// Taxes and fees
@@ -586,7 +590,9 @@ impl<P: Profit> Asset<P> {
 
     pub fn dividents(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            acc += p.dividents();
+            // IMPORTANT: We need absolute divident value here but current is absolute + balance
+            // so we have to subtract
+            acc += p.dividents().current - p.dividents().balance;
             acc
         })
     }
