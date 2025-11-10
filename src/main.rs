@@ -239,7 +239,7 @@ async fn print_positions(
                 add_paper_into_container(&mut container.futures, paper);
             }
             _ => {}
-        };
+        }
         progresser.progress(progress);
         progress += 1;
     }

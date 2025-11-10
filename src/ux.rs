@@ -79,9 +79,10 @@ pub fn colored_cell<T: NumberRange + ToString>(value: T) -> Cell {
 #[cfg(target_os = "linux")]
 pub fn clear_screen() {
     if let Ok(mut c) = Command::new("clear").spawn()
-        && let Err(e) = c.wait() {
-            println!("{e}");
-        }
+        && let Err(e) = c.wait()
+    {
+        println!("{e}");
+    }
 }
 
 #[cfg(target_os = "windows")]
