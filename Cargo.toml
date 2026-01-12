@@ -23,7 +23,7 @@ comfy-table = "7.2.1"
 clap = { version = "4.5.53", features = ["std", "color", "cargo"] }
 color-eyre = "0.6.5"
 chrono = { version="0.4.42", default-features = false }
-prost-types = "0.11.9"
+prost-types = "0.14.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mimalloc = "0.1.48"
