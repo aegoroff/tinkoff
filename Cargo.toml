@@ -12,17 +12,17 @@ version = "0.1.0"
 
 [dependencies]
 tinkoff-invest-api = { version = "0.3.0" }
-tokio = {version = "1.48.0", features = ["full"]}
-rust_decimal = "1.39.0"
-rust_decimal_macros = "1.39.0"
+tokio = {version = "1.49.0", features = ["full"]}
+rust_decimal = "1.40.0"
+rust_decimal_macros = "1.40.0"
 iso_currency = "0.5.3"
 itertools = "0.14.0"
 indicatif = "0.18.3"
 num-format = "0.4.4"
-comfy-table = "7.2.1"
-clap = { version = "4.5.53", features = ["std", "color", "cargo"] }
+comfy-table = "7.2.2"
+clap = { version = "4.5.54", features = ["std", "color", "cargo"] }
 color-eyre = "0.6.5"
-chrono = { version="0.4.42", default-features = false }
+chrono = { version="0.4.43", default-features = false }
 prost-types = "0.11.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
