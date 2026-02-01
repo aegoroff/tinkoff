@@ -20,7 +20,7 @@ itertools = "0.14.0"
 indicatif = "0.18.3"
 num-format = "0.4.4"
 comfy-table = "7.2.2"
-clap = { version = "4.5.54", features = ["std", "color", "cargo"] }
+clap = { version = "4.5.56", features = ["std", "color", "cargo"] }
 color-eyre = "0.6.5"
 chrono = { version="0.4.43", default-features = false }
 prost-types = "0.11.9"
