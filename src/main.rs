@@ -192,7 +192,7 @@ async fn asset(
 async fn print_positions(
     client: &TinkoffInvestment,
     instruments: &HashMap<String, Instrument>,
-    positions: &Vec<PortfolioPosition>,
+    positions: &[PortfolioPosition],
     account_id: &str,
     output_papers: bool,
 ) {
@@ -203,9 +203,8 @@ async fn print_positions(
     }
     let mut container = Portfolio::new(output_papers);
     let mut progresser = Progresser::new(positions.len() as u64);
-    let mut progress = 1u64;
 
-    for p in positions {
+    for (progress, p) in (1u64..).zip(positions.iter()) {
         let account = account_id.to_owned();
         match p.instrument_type.as_str() {
             "bond" => {
@@ -241,7 +240,6 @@ async fn print_positions(
             _ => {}
         }
         progresser.progress(progress);
-        progress += 1;
     }
     progresser.finish();
     print!("{container}");
