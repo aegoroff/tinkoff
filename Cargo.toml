@@ -12,8 +12,8 @@ version = "0.1.0"
 
 [dependencies]
 tinkoff-invest-api = { version = "0.3.0" }
-tokio = {version = "1.52.1", features = ["full"]}
-rust_decimal = "1.41.0"
+tokio = {version = "1.52.2", features = ["full"]}
+rust_decimal = "1.42.0"
 rust_decimal_macros = "1.40.0"
 iso_currency = "0.5.3"
 itertools = "0.14.0"
