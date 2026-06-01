@@ -17,7 +17,6 @@ pub trait Progress {
 
 pub struct Progresser {
     bar: ProgressBar,
-    items: u64,
 }
 
 impl Progresser {
@@ -38,7 +37,7 @@ impl Progresser {
                 .progress_chars("#>-"),
         );
 
-        Self { bar, items: 0 }
+        Self { bar }
     }
 }
 
@@ -53,11 +52,5 @@ impl Progress for Progresser {
 
     fn message(&self, message: String) {
         self.bar.set_message(message);
-    }
-}
-
-impl Size for Progresser {
-    fn size(&self) -> u64 {
-        self.items
     }
 }
