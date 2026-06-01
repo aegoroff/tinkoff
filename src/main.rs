@@ -113,16 +113,30 @@ async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
     let account = account?;
     let instruments = instruments?;
 
-    let mut instruments_with_ops: HashMap<&String, &InstrumentShort> = HashMap::new();
-    let mut operations = vec![];
-    for instr in instruments.iter().filter(|i| i.ticker.eq(ticker)) {
-        let instr_operations = client
-            .get_operations_until_done(account.id.clone(), instr.figi.clone())
-            .await;
+    let client = Arc::new(client);
+    let account_id = account.id.clone();
 
-        operations.extend(instr_operations.iter().cloned());
-        if !instr_operations.is_empty() {
-            instruments_with_ops.insert(&instr.figi, instr);
+    let mut set = JoinSet::new();
+    for instr in instruments.into_iter().filter(|i| i.ticker.eq(ticker)) {
+        let client = Arc::clone(&client);
+        let account_id = account_id.clone();
+        set.spawn(async move {
+            let ops = client
+                .get_operations_until_done(account_id, instr.figi.clone())
+                .await;
+            (instr, ops)
+        });
+    }
+
+    let mut instruments_with_ops: HashMap<String, InstrumentShort> = HashMap::new();
+    let mut operations = vec![];
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok((instr, ops)) if !ops.is_empty() => {
+                operations.extend(ops);
+                instruments_with_ops.insert(instr.figi.clone(), instr);
+            }
+            _ => {}
         }
     }
 
