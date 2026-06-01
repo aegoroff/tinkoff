@@ -8,7 +8,7 @@ pub trait Size {
 
 pub trait Progress {
     /// Shows progress
-    fn progress(&self, current: u64);
+    fn progress(&self);
     /// Finishes process
     fn finish(&self);
     /// Sets the current message of the progress
@@ -43,8 +43,8 @@ impl Progresser {
 }
 
 impl Progress for Progresser {
-    fn progress(&self, current: u64) {
-        self.bar.set_position(current);
+    fn progress(&self) {
+        self.bar.inc(1);
     }
 
     fn finish(&self) {

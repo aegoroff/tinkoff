@@ -2,10 +2,7 @@ use std::{collections::HashMap, env};
 
 use clap::{ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -195,12 +192,14 @@ async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
     let mut instruments_with_ops: HashMap<String, InstrumentShort> = HashMap::new();
     let mut operations = vec![];
     while let Some(res) = set.join_next().await {
-        if let Ok((instr, ops)) = res {
-            let ops = ops?;
-            if !ops.is_empty() {
+        match res {
+            Ok((instr, Ok(ops))) if !ops.is_empty() => {
                 operations.extend(ops);
                 instruments_with_ops.insert(instr.figi.clone(), instr);
             }
+            Ok((_, Err(e))) => eprintln!("Failed to load operations: {e:?}"),
+            Err(e) => eprintln!("Task panicked: {e}"),
+            _ => {}
         }
     }
 
@@ -245,7 +244,6 @@ async fn print_positions(
     let account_id = account_id.to_string();
 
     let semaphore = Arc::new(Semaphore::new(10));
-    let progress_counter = Arc::new(AtomicU64::new(0));
     let progresser = Arc::new(Progresser::new(positions.len() as u64));
 
     let mut set = JoinSet::new();
@@ -255,7 +253,6 @@ async fn print_positions(
         let instruments = Arc::clone(&instruments);
         let account_id = account_id.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
-        let progress_counter = Arc::clone(&progress_counter);
         let progresser = Arc::clone(&progresser);
         let p = p.clone();
 
@@ -287,8 +284,7 @@ async fn print_positions(
             };
 
             // Atomic progress update
-            let current = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            progresser.progress(current);
+            progresser.progress();
 
             paper
         });

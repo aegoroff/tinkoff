@@ -3,8 +3,6 @@ use iso_currency::Currency;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Duration;
 use tinkoff_invest_api::{
     TIError, TIResult, TinkoffInvestService,
     tcs::{
@@ -14,6 +12,7 @@ use tinkoff_invest_api::{
         portfolio_request::CurrencyRequest,
     },
 };
+use tokio::time::{Duration, sleep};
 
 use crate::{
     domain::{History, HistoryItem, Instrument, Money, Paper, Position, Profit, Totals},
@@ -154,7 +153,7 @@ where
                 return Err(eyre::eyre!("{e:?}"));
             }
             Err(_) => {
-                sleep(delay);
+                sleep(delay).await;
                 delay *= 2;
             }
         }
@@ -313,7 +312,12 @@ impl TinkoffInvestment {
         account_id: String,
         figi: String,
     ) -> color_eyre::Result<Vec<Operation>> {
-        with_retry(|| self.get_operations(account_id.clone(), figi.clone())).await
+        with_retry(move || {
+            let account_id = account_id.clone();
+            let figi = figi.clone();
+            async move { self.get_operations(account_id, figi).await }
+        })
+        .await
     }
 
     pub async fn create_paper_from_position<P: Profit>(
