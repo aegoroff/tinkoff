@@ -3,8 +3,10 @@ use iso_currency::Currency;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
 use tinkoff_invest_api::{
-    TIResult, TinkoffInvestService,
+    TIError, TIResult, TinkoffInvestService,
     tcs::{
         Account, AccountType, FindInstrumentRequest, GetAccountsRequest, InstrumentShort,
         InstrumentStatus, InstrumentType, InstrumentsRequest, Operation, OperationState,
@@ -91,17 +93,6 @@ impl TryFrom<&PortfolioPosition> for Position {
     }
 }
 
-macro_rules! loop_until_success {
-    ($e:expr) => {{
-        loop {
-            match $e {
-                Ok(x) => break x,
-                Err(_) => continue,
-            }
-        }
-    }};
-}
-
 macro_rules! collect {
     ($response:ident) => {{
         $response
@@ -124,8 +115,8 @@ macro_rules! collect {
 macro_rules! impl_get_until_done {
     ($(($target_method:ident, $source_method:ident)),*) => {
         $(
-            pub async fn $target_method(&self) -> HashMap<String, Instrument> {
-                loop_until_success!(self.$source_method().await)
+            pub async fn $target_method(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
+                with_retry(|| self.$source_method()).await
             }
         )*
     };
@@ -148,6 +139,27 @@ macro_rules! impl_get_instrument_method {
             }
         )*
     };
+}
+
+async fn with_retry<T, F, Fut>(f: F) -> color_eyre::Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, TIError>>,
+{
+    let mut delay = Duration::from_millis(100);
+    for attempt in 1..=5 {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt == 5 => {
+                return Err(eyre::eyre!("{e:?}"));
+            }
+            Err(_) => {
+                sleep(delay);
+                delay *= 2;
+            }
+        }
+    }
+    unreachable!()
 }
 
 impl TinkoffInvestment {
@@ -273,8 +285,11 @@ impl TinkoffInvestment {
         Ok(instrument.instruments.clone())
     }
 
-    pub async fn get_portfolio_until_done(&self, account: AccountType) -> AccountPortfolio {
-        loop_until_success!(self.get_portfolio(account).await)
+    pub async fn get_portfolio_until_done(
+        &self,
+        account: AccountType,
+    ) -> color_eyre::Result<AccountPortfolio> {
+        with_retry(|| self.get_portfolio(account)).await
     }
 
     async fn get_operations(&self, account_id: String, figi: String) -> TIResult<Vec<Operation>> {
@@ -297,8 +312,8 @@ impl TinkoffInvestment {
         &self,
         account_id: String,
         figi: String,
-    ) -> Vec<Operation> {
-        loop_until_success!(self.get_operations(account_id.clone(), figi.clone()).await)
+    ) -> color_eyre::Result<Vec<Operation>> {
+        with_retry(|| self.get_operations(account_id.clone(), figi.clone())).await
     }
 
     pub async fn create_paper_from_position<P: Profit>(
@@ -313,6 +328,7 @@ impl TinkoffInvestment {
         let executed_ops = self
             .get_operations_until_done(account_id, portfolio_position.figi.clone())
             .await;
+        let executed_ops = executed_ops.ok()?;
 
         let totals = Self::reduce(&executed_ops, position.currency);
 

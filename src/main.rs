@@ -62,12 +62,12 @@ async fn main() -> Result<()> {
     };
 
     match cli.subcommand() {
-        Some((ALL_CMD, cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await,
-        Some((SHARES_CMD, _)) => asset(token, AssetType::Shares).await,
-        Some((BONDS_CMD, _)) => asset(token, AssetType::Bonds).await,
-        Some((ETFS_CMD, _)) => asset(token, AssetType::Etfs).await,
-        Some((CURR_CMD, _)) => asset(token, AssetType::Currencies).await,
-        Some((FUTURES_CMD, _)) => asset(token, AssetType::Futures).await,
+        Some((ALL_CMD, cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await?,
+        Some((SHARES_CMD, _)) => asset(token, AssetType::Shares).await?,
+        Some((BONDS_CMD, _)) => asset(token, AssetType::Bonds).await?,
+        Some((ETFS_CMD, _)) => asset(token, AssetType::Etfs).await?,
+        Some((CURR_CMD, _)) => asset(token, AssetType::Currencies).await?,
+        Some((FUTURES_CMD, _)) => asset(token, AssetType::Futures).await?,
         Some((HISTORY_CMD, cmd)) => history(token, cmd).await?,
         _ => {}
     }
@@ -93,7 +93,10 @@ impl AssetType {
         }
     }
 
-    async fn fetch_instruments(&self, client: &TinkoffInvestment) -> HashMap<String, Instrument> {
+    async fn fetch_instruments(
+        &self,
+        client: &TinkoffInvestment,
+    ) -> Result<HashMap<String, Instrument>> {
         match self {
             AssetType::Bonds => client.get_all_bonds_until_done().await,
             AssetType::Shares => client.get_all_shares_until_done().await,
@@ -104,10 +107,12 @@ impl AssetType {
     }
 }
 
-async fn asset(token: String, asset_type: AssetType) {
+async fn asset(token: String, asset_type: AssetType) -> Result<()> {
     let client = TinkoffInvestment::new(token);
-    let instruments = asset_type.fetch_instruments(&client).await;
-    let portfolio = client.get_portfolio_until_done(AccountType::Tinkoff).await;
+    let instruments = asset_type.fetch_instruments(&client).await?;
+    let portfolio = client
+        .get_portfolio_until_done(AccountType::Tinkoff)
+        .await?;
 
     let positions = portfolio
         .positions
@@ -123,12 +128,13 @@ async fn asset(token: String, asset_type: AssetType) {
         true,
     )
     .await;
+    Ok(())
 }
 
-async fn all(token: String, output_papers: bool) {
+async fn all(token: String, output_papers: bool) -> Result<()> {
     let client = TinkoffInvestment::new(token);
 
-    let (mut all, shares, etfs, currencies, futures, portfolio) = tokio::join!(
+    let (all, shares, etfs, currencies, futures, portfolio) = tokio::join!(
         client.get_all_bonds_until_done(),
         client.get_all_shares_until_done(),
         client.get_all_etfs_until_done(),
@@ -136,12 +142,18 @@ async fn all(token: String, output_papers: bool) {
         client.get_all_futures_until_done(),
         client.get_portfolio_until_done(AccountType::Tinkoff),
     );
+    let mut all = all?;
+    let shares = shares?;
+    let etfs = etfs?;
+    let currencies = currencies?;
+    let futures = futures?;
 
     all.extend(shares);
     all.extend(etfs);
     all.extend(currencies);
     all.extend(futures);
 
+    let portfolio = portfolio?;
     print_positions(
         &client,
         &all,
@@ -150,6 +162,7 @@ async fn all(token: String, output_papers: bool) {
         output_papers,
     )
     .await;
+    Ok(())
 }
 
 async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
@@ -182,12 +195,12 @@ async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
     let mut instruments_with_ops: HashMap<String, InstrumentShort> = HashMap::new();
     let mut operations = vec![];
     while let Some(res) = set.join_next().await {
-        match res {
-            Ok((instr, ops)) if !ops.is_empty() => {
+        if let Ok((instr, ops)) = res {
+            let ops = ops?;
+            if !ops.is_empty() {
                 operations.extend(ops);
                 instruments_with_ops.insert(instr.figi.clone(), instr);
             }
-            _ => {}
         }
     }
 
