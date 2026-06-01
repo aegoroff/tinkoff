@@ -2,10 +2,6 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 extern crate indicatif;
 
-pub trait Size {
-    fn size(&self) -> u64;
-}
-
 pub trait Progress {
     /// Shows progress
     fn progress(&self);
