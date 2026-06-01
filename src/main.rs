@@ -35,6 +35,7 @@ const ETFS_CMD: &str = "e";
 const CURR_CMD: &str = "c";
 const FUTURES_CMD: &str = "f";
 const HISTORY_CMD: &str = "hi";
+const DIVIDENDS_CMD: &str = "d";
 
 const MAX_CONCURRENT_REQUESTS: usize = 10;
 
@@ -68,6 +69,7 @@ async fn main() -> Result<()> {
         Some((CURR_CMD, _)) => asset(token, AssetType::Currencies).await?,
         Some((FUTURES_CMD, _)) => asset(token, AssetType::Futures).await?,
         Some((HISTORY_CMD, cmd)) => history(token, cmd).await?,
+        Some((DIVIDENDS_CMD, _)) => dividends(token).await?,
         _ => {}
     }
     Ok(())
@@ -334,6 +336,7 @@ fn build_cli() -> Command {
         .subcommand(currencies_cmd())
         .subcommand(futures_cmd())
         .subcommand(history_cmd())
+        .subcommand(dividends_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -383,4 +386,42 @@ fn history_cmd() -> Command {
         .aliases(["history"])
         .about("Get an instrument history")
         .arg(arg!([TICKER]).help("Instrument's tiker").required(true))
+}
+
+fn dividends_cmd() -> Command {
+    Command::new(DIVIDENDS_CMD)
+        .aliases(["dividends"])
+        .about("Get dividend calendar for portfolio")
+}
+
+async fn dividends(token: String) -> Result<()> {
+    let client = TinkoffInvestment::new(token);
+
+    let portfolio = client
+        .get_portfolio_until_done(AccountType::Tinkoff)
+        .await?;
+
+    // Get all instruments for portfolio positions
+    let mut all_instruments = HashMap::new();
+
+    // Fetch instruments for all positions
+    let (shares, bonds, etfs, currencies, futures) = tokio::join!(
+        client.get_all_shares_until_done(),
+        client.get_all_bonds_until_done(),
+        client.get_all_etfs_until_done(),
+        client.get_all_currencies_until_done(),
+        client.get_all_futures_until_done(),
+    );
+
+    let iter = [shares, bonds, etfs, currencies, futures].into_iter();
+    for instrs in iter.flatten() {
+        all_instruments.extend(instrs);
+    }
+
+    let calendar = client
+        .get_dividend_calendar(portfolio.account_id, &portfolio.positions, &all_instruments)
+        .await?;
+
+    println!("{calendar}");
+    Ok(())
 }

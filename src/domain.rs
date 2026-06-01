@@ -3,7 +3,7 @@ use std::{
     ops::{self, AddAssign, DivAssign, MulAssign, SubAssign},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, Datelike, Timelike};
 use comfy_table::{Attribute, Cell, TableComponent};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
@@ -123,6 +123,109 @@ pub struct HistoryItem {
     pub payment: Money,
     pub description: String,
     pub operation_state: &'static str,
+}
+
+/// Dividend payment information
+#[derive(Clone)]
+pub struct DividendPayment {
+    pub figi: String,
+    pub ticker: String,
+    pub name: String,
+    pub currency: Currency,
+    pub dividend_per_share: Money,
+    pub total_dividend: Money,
+    pub quantity: Decimal,
+    pub ex_dividend_date: DateTime<Utc>,
+    pub payment_date: Option<DateTime<Utc>>,
+    pub dividend_type: String,
+}
+
+/// Dividend calendar with upcoming payments
+pub struct DividendCalendar {
+    pub upcoming: Vec<DividendPayment>,
+}
+
+impl Display for DividendPayment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({} | {} | {})",
+            self.name,
+            self.ticker,
+            self.figi,
+            self.currency.code()
+        )
+    }
+}
+
+fn format_datetime(dt: DateTime<Utc>) -> String {
+    format!("{:04}-{:02}-{:02} {:02}:{:02}",
+        dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute())
+}
+
+fn format_date(dt: DateTime<Utc>) -> String {
+    format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day())
+}
+
+impl Display for DividendCalendar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut table = ux::new_table();
+
+        let title = Cell::new("Dividend Calendar")
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkBlue);
+        table.set_header([title]);
+
+        // Upcoming payments
+        if !self.upcoming.is_empty() {
+            let upcoming_header = Cell::new("Upcoming Payments")
+                .add_attribute(Attribute::Bold)
+                .fg(comfy_table::Color::DarkGreen);
+            table.add_row([upcoming_header]);
+
+            for payment in &self.upcoming {
+                let mut inner_table = ux::new_table();
+                
+                // Company info in single line
+                inner_table.add_row([
+                    Cell::new("Company"),
+                    Cell::new(payment.to_string()),
+                ]);
+                
+                inner_table.add_row([
+                    Cell::new("Ex-Dividend Date"),
+                    Cell::new(format_datetime(payment.ex_dividend_date)),
+                ]);
+                if let Some(payment_date) = payment.payment_date {
+                    inner_table.add_row([
+                        Cell::new("Payment Date"),
+                        Cell::new(format_date(payment_date)),
+                    ]);
+                }
+                inner_table.add_row([
+                    Cell::new("Dividend per Share"),
+                    Cell::new(payment.dividend_per_share.to_string()),
+                ]);
+                inner_table.add_row([
+                    Cell::new("Quantity"),
+                    Cell::new(payment.quantity.round_dp(2).to_string()),
+                ]);
+                inner_table.add_row([
+                    Cell::new("Total Dividend"),
+                    Cell::new(payment.total_dividend.to_string()),
+                ]);
+                inner_table.add_row([
+                    Cell::new("Type"),
+                    Cell::new(&payment.dividend_type),
+                ]);
+                table.add_row([Cell::new(inner_table)]);
+            }
+        } else {
+            table.add_row([Cell::new("No upcoming payments")]);
+        }
+
+        write!(f, "{table}")
+    }
 }
 
 impl Profit for DividentProfit {

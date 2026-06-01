@@ -6,16 +6,19 @@ use std::sync::Arc;
 use tinkoff_invest_api::{
     TIError, TIResult, TinkoffInvestService,
     tcs::{
-        Account, AccountType, FindInstrumentRequest, GetAccountsRequest, InstrumentShort,
-        InstrumentStatus, InstrumentType, InstrumentsRequest, Operation, OperationState,
-        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
-        portfolio_request::CurrencyRequest,
+        Account, AccountType, Dividend, FindInstrumentRequest, GetAccountsRequest,
+        GetDividendsRequest, InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest,
+        Operation, OperationState, OperationType, OperationsRequest, PortfolioPosition,
+        PortfolioRequest, portfolio_request::CurrencyRequest,
     },
 };
 use tokio::time::{Duration, sleep};
 
 use crate::{
-    domain::{History, HistoryItem, Instrument, Money, Paper, Position, Profit, Totals},
+    domain::{
+        DividendCalendar, DividendPayment, History, HistoryItem, Instrument, Money, Paper,
+        Position, Profit, Totals,
+    },
     to_currency, to_datetime_utc, to_decimal, to_money,
 };
 
@@ -375,6 +378,111 @@ impl TinkoffInvestment {
             additional_profit,
             fees,
         }
+    }
+
+    /// Get dividend calendar for the portfolio
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if dividends cannot be retrieved from remote server.
+    pub async fn get_dividend_calendar(
+        &self,
+        _account_id: String,
+        positions: &[PortfolioPosition],
+        instruments: &HashMap<String, Instrument>,
+    ) -> color_eyre::Result<DividendCalendar> {
+        let mut upcoming = Vec::new();
+
+        let now = chrono::Utc::now();
+
+        for position in positions {
+            // Get dividends for each position
+            let dividends = self
+                .get_dividends_for_figi(position.figi.clone())
+                .await
+                .unwrap_or_default();
+
+            for dividend in dividends {
+                let Some(instrument) = instruments.get(&position.figi) else {
+                    continue;
+                };
+
+                let dividend_per_share = dividend
+                    .dividend_net
+                    .as_ref()
+                    .and_then(|d| to_money(Some(d)))
+                    .unwrap_or_else(|| Money::zero(Currency::RUB));
+
+                // Use record_date as ex-dividend date (ex_dividend_date not available)
+                let ex_dividend_date = dividend
+                    .record_date
+                    .as_ref()
+                    .map(|d| to_datetime_utc(Some(d)))
+                    .unwrap_or(now);
+
+                let payment_date = dividend
+                    .payment_date
+                    .as_ref()
+                    .map(|d| to_datetime_utc(Some(d)));
+
+                // Get quantity from portfolio position
+                let quantity = to_decimal(position.quantity.as_ref());
+
+                // Calculate total dividend = dividend_per_share * quantity
+                let total_dividend = dividend_per_share * quantity;
+
+                let dividend_payment = DividendPayment {
+                    figi: position.figi.clone(),
+                    ticker: instrument.ticker.clone(),
+                    name: instrument.name.clone(),
+                    currency: dividend_per_share.currency,
+                    dividend_per_share,
+                    total_dividend,
+                    quantity,
+                    ex_dividend_date,
+                    payment_date,
+                    dividend_type: dividend.dividend_type,
+                };
+
+                // Only include upcoming payments
+                if ex_dividend_date > now {
+                    upcoming.push(dividend_payment);
+                }
+            }
+        }
+
+        // Sort by date
+        upcoming.sort_by_key(|a| a.ex_dividend_date);
+
+        Ok(DividendCalendar { upcoming })
+    }
+
+    /// Get dividends for a specific FIGI
+    async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
+        let channel = self
+            .service
+            .create_channel()
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let mut instruments = self
+            .service
+            .instruments(channel)
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+
+        let request = GetDividendsRequest {
+            instrument_id: figi,
+            from: None,
+            to: None,
+            ..Default::default()
+        };
+        let response = instruments
+            .get_dividends(request)
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let response = response.into_inner();
+
+        Ok(response.dividends)
     }
 }
 
