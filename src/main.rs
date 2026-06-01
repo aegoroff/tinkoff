@@ -2,6 +2,12 @@ use std::{collections::HashMap, env};
 
 use clap::{ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{Context, Result};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
@@ -32,6 +38,14 @@ const ETFS_CMD: &str = "e";
 const CURR_CMD: &str = "c";
 const FUTURES_CMD: &str = "f";
 const HISTORY_CMD: &str = "hi";
+
+enum AssetPaper {
+    Bond(Paper<CouponProfit>),
+    Share(Paper<DividentProfit>),
+    Etf(Paper<NoneProfit>),
+    Currency(Paper<NoneProfit>),
+    Future(Paper<NoneProfit>),
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -201,46 +215,85 @@ async fn print_positions(
             asset.add_paper(p);
         }
     }
-    let mut container = Portfolio::new(output_papers);
-    let mut progresser = Progresser::new(positions.len() as u64);
 
-    for (progress, p) in (1u64..).zip(positions.iter()) {
-        let account = account_id.to_owned();
-        match p.instrument_type.as_str() {
-            "bond" => {
-                let paper = client
-                    .create_paper_from_position(instruments, account, p, CouponProfit)
-                    .await;
-                add_paper_into_container(&mut container.bonds, paper);
-            }
-            "share" => {
-                let paper = client
-                    .create_paper_from_position(instruments, account, p, DividentProfit)
-                    .await;
-                add_paper_into_container(&mut container.shares, paper);
-            }
-            "etf" => {
-                let paper = client
-                    .create_paper_from_position(instruments, account, p, NoneProfit)
-                    .await;
-                add_paper_into_container(&mut container.etfs, paper);
-            }
-            "currency" => {
-                let paper = client
-                    .create_paper_from_position(instruments, account, p, NoneProfit)
-                    .await;
-                add_paper_into_container(&mut container.currencies, paper);
-            }
-            "futures" => {
-                let paper = client
-                    .create_paper_from_position(instruments, account, p, NoneProfit)
-                    .await;
-                add_paper_into_container(&mut container.futures, paper);
-            }
-            _ => {}
-        }
-        progresser.progress(progress);
+    let mut container = Portfolio::new(output_papers);
+
+    // To avoid borrow errors
+    let client = Arc::new(client.clone());
+    let instruments = Arc::new(instruments.clone());
+    let account_id = account_id.to_string();
+
+    let semaphore = Arc::new(Semaphore::new(10));
+    let progress_counter = Arc::new(AtomicU64::new(0));
+    let progresser = Arc::new(Progresser::new(positions.len() as u64));
+
+    let mut set = JoinSet::new();
+
+    for p in positions {
+        let client = Arc::clone(&client);
+        let instruments = Arc::clone(&instruments);
+        let account_id = account_id.clone();
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let progress_counter = Arc::clone(&progress_counter);
+        let progresser = Arc::clone(&progresser);
+        let p = p.clone();
+
+        set.spawn(async move {
+            let _permit = permit;
+
+            let paper = match p.instrument_type.as_str() {
+                "bond" => client
+                    .create_paper_from_position(&instruments, account_id, &p, CouponProfit)
+                    .await
+                    .map(AssetPaper::Bond),
+                "share" => client
+                    .create_paper_from_position(&instruments, account_id, &p, DividentProfit)
+                    .await
+                    .map(AssetPaper::Share),
+                "etf" => client
+                    .create_paper_from_position(&instruments, account_id, &p, NoneProfit)
+                    .await
+                    .map(AssetPaper::Etf),
+                "currency" => client
+                    .create_paper_from_position(&instruments, account_id, &p, NoneProfit)
+                    .await
+                    .map(AssetPaper::Currency),
+                "futures" => client
+                    .create_paper_from_position(&instruments, account_id, &p, NoneProfit)
+                    .await
+                    .map(AssetPaper::Future),
+                _ => None,
+            };
+
+            // Atomic progress update
+            let current = progress_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            progresser.progress(current);
+
+            paper
+        });
     }
+
+    // Collect results
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Some(AssetPaper::Bond(p))) => {
+                add_paper_into_container(&mut container.bonds, Some(p));
+            }
+            Ok(Some(AssetPaper::Share(p))) => {
+                add_paper_into_container(&mut container.shares, Some(p));
+            }
+            Ok(Some(AssetPaper::Etf(p))) => add_paper_into_container(&mut container.etfs, Some(p)),
+            Ok(Some(AssetPaper::Currency(p))) => {
+                add_paper_into_container(&mut container.currencies, Some(p));
+            }
+            Ok(Some(AssetPaper::Future(p))) => {
+                add_paper_into_container(&mut container.futures, Some(p));
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+        }
+    }
+
     progresser.finish();
     print!("{container}");
 }

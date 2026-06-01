@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
 use color_eyre::eyre;
 use iso_currency::Currency;
 use itertools::Itertools;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tinkoff_invest_api::{
     TIResult, TinkoffInvestService,
     tcs::{
@@ -24,8 +24,9 @@ pub struct Portfolio {
     pub positions: Vec<PortfolioPosition>,
 }
 
+#[derive(Clone)] // <-- добавить
 pub struct TinkoffInvestment {
-    service: TinkoffInvestService,
+    service: Arc<TinkoffInvestService>, // <-- обернуть в Arc
 }
 
 enum OperationInfluence {
@@ -153,7 +154,7 @@ impl TinkoffInvestment {
     #[must_use]
     pub fn new(token: String) -> Self {
         Self {
-            service: TinkoffInvestService::new(token),
+            service: Arc::new(TinkoffInvestService::new(token)),
         }
     }
     impl_get_instrument_method!(

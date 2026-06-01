@@ -24,6 +24,7 @@ pub struct Money {
     pub currency: Currency,
 }
 
+#[derive(Clone)]
 pub struct Instrument {
     pub name: String,
     pub ticker: String,
