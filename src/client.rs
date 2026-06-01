@@ -219,15 +219,27 @@ impl TinkoffInvestment {
     /// # Errors
     ///
     /// This function will return an error if account cannot be get.
-    pub async fn get_account(&self, account_type: AccountType) -> TIResult<Account> {
-        let channel = self.service.create_channel().await?;
-        let mut users = self.service.users(channel).await?;
-        let accounts = users.get_accounts(GetAccountsRequest {}).await?;
+    pub async fn get_account(&self, account_type: AccountType) -> color_eyre::Result<Account> {
+        let channel = self
+            .service
+            .create_channel()
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let mut users = self
+            .service
+            .users(channel)
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let accounts = users
+            .get_accounts(GetAccountsRequest {})
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
         let all_accounts = &accounts.get_ref().accounts;
         let account = all_accounts
             .iter()
             .find(|a| a.r#type() == account_type)
-            .unwrap_or(all_accounts.first().unwrap());
+            .or_else(|| all_accounts.first())
+            .ok_or_else(|| eyre::eyre!("No accounts found"))?;
         Ok(account.clone())
     }
 
@@ -239,9 +251,17 @@ impl TinkoffInvestment {
     pub async fn find_instruments_by_ticker(
         &self,
         ticker: String,
-    ) -> TIResult<Vec<InstrumentShort>> {
-        let channel = self.service.create_channel().await?;
-        let mut insrument_client = self.service.instruments(channel).await?;
+    ) -> color_eyre::Result<Vec<InstrumentShort>> {
+        let channel = self
+            .service
+            .create_channel()
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let mut insrument_client = self
+            .service
+            .instruments(channel)
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
         let instrument = insrument_client
             .find_instrument(FindInstrumentRequest {
                 instrument_kind: Some(InstrumentType::Unspecified.into()),

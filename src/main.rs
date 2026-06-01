@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env};
 
 use clap::{ArgAction, ArgMatches, Command, command};
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{self, Context, Result};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
         Some((ETFS_CMD, _)) => etfs(token).await,
         Some((CURR_CMD, _)) => currencies(token).await,
         Some((FUTURES_CMD, _)) => futures(token).await,
-        Some((HISTORY_CMD, cmd)) => history(token, cmd).await,
+        Some((HISTORY_CMD, cmd)) => history(token, cmd).await?,
         _ => {}
     }
     Ok(())
@@ -101,22 +101,17 @@ async fn all(token: String, output_papers: bool) {
     .await;
 }
 
-async fn history(token: String, cmd: &ArgMatches) {
+async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
     let client = TinkoffInvestment::new(token);
-    let Some(ticker) = cmd.get_one::<String>("TICKER") else {
-        return;
-    };
+    let ticker = cmd
+        .get_one::<String>("TICKER")
+        .ok_or_else(|| eyre::eyre!("No ticker passed"))?;
     let (account, instruments) = tokio::join!(
         client.get_account(AccountType::Tinkoff),
         client.find_instruments_by_ticker(ticker.clone()),
     );
-    let Ok(account) = account else {
-        return;
-    };
-
-    let Ok(instruments) = instruments else {
-        return;
-    };
+    let account = account?;
+    let instruments = instruments?;
 
     let mut instruments_with_ops: HashMap<&String, &InstrumentShort> = HashMap::new();
     let mut operations = vec![];
@@ -142,12 +137,13 @@ async fn history(token: String, cmd: &ArgMatches) {
         })
         .next()
     else {
-        return;
+        return Ok(());
     };
 
     if let Some(history) = History::new(&operations, instrument) {
         println!("{history}");
     }
+    Ok(())
 }
 
 async fn bonds(token: String) {
