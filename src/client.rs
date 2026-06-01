@@ -19,7 +19,7 @@ use crate::{
 };
 
 #[derive(Default)]
-pub struct Portfolio {
+pub struct AccountPortfolio {
     pub account_id: String,
     pub positions: Vec<PortfolioPosition>,
 }
@@ -173,7 +173,7 @@ impl TinkoffInvestment {
         (get_all_futures_until_done, get_all_futures)
     );
 
-    async fn get_portfolio(&self, account: AccountType) -> TIResult<Portfolio> {
+    async fn get_portfolio(&self, account: AccountType) -> TIResult<AccountPortfolio> {
         let (channel, users_channel) =
             tokio::join!(self.service.create_channel(), self.service.create_channel());
         let channel = channel?;
@@ -195,7 +195,7 @@ impl TinkoffInvestment {
             .iter()
             .find(|a| a.r#type() == account)
         else {
-            return Ok(Portfolio::default());
+            return Ok(AccountPortfolio::default());
         };
 
         let portfolio = operations
@@ -204,7 +204,7 @@ impl TinkoffInvestment {
                 currency: Some(CurrencyRequest::Rub as i32),
             })
             .await?;
-        Ok(Portfolio {
+        Ok(AccountPortfolio {
             account_id: account.id.clone(),
             positions: portfolio.into_inner().positions,
         })
@@ -273,7 +273,7 @@ impl TinkoffInvestment {
         Ok(instrument.instruments.clone())
     }
 
-    pub async fn get_portfolio_until_done(&self, account: AccountType) -> Portfolio {
+    pub async fn get_portfolio_until_done(&self, account: AccountType) -> AccountPortfolio {
         loop_until_success!(self.get_portfolio(account).await)
     }
 
