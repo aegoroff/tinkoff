@@ -63,15 +63,66 @@ async fn main() -> Result<()> {
 
     match cli.subcommand() {
         Some((ALL_CMD, cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await,
-        Some((SHARES_CMD, _)) => shares(token).await,
-        Some((BONDS_CMD, _)) => bonds(token).await,
-        Some((ETFS_CMD, _)) => etfs(token).await,
-        Some((CURR_CMD, _)) => currencies(token).await,
-        Some((FUTURES_CMD, _)) => futures(token).await,
+        Some((SHARES_CMD, _)) => asset(token, AssetType::Shares).await,
+        Some((BONDS_CMD, _)) => asset(token, AssetType::Bonds).await,
+        Some((ETFS_CMD, _)) => asset(token, AssetType::Etfs).await,
+        Some((CURR_CMD, _)) => asset(token, AssetType::Currencies).await,
+        Some((FUTURES_CMD, _)) => asset(token, AssetType::Futures).await,
         Some((HISTORY_CMD, cmd)) => history(token, cmd).await?,
         _ => {}
     }
     Ok(())
+}
+
+enum AssetType {
+    Bonds,
+    Shares,
+    Etfs,
+    Futures,
+    Currencies,
+}
+
+impl AssetType {
+    fn instrument_type(&self) -> &'static str {
+        match self {
+            AssetType::Bonds => "bond",
+            AssetType::Shares => "share",
+            AssetType::Etfs => "etf",
+            AssetType::Futures => "futures",
+            AssetType::Currencies => "currency",
+        }
+    }
+
+    async fn fetch_instruments(&self, client: &TinkoffInvestment) -> HashMap<String, Instrument> {
+        match self {
+            AssetType::Bonds => client.get_all_bonds_until_done().await,
+            AssetType::Shares => client.get_all_shares_until_done().await,
+            AssetType::Etfs => client.get_all_etfs_until_done().await,
+            AssetType::Futures => client.get_all_futures_until_done().await,
+            AssetType::Currencies => client.get_all_currencies_until_done().await,
+        }
+    }
+}
+
+async fn asset(token: String, asset_type: AssetType) {
+    let client = TinkoffInvestment::new(token);
+    let instruments = asset_type.fetch_instruments(&client).await;
+    let portfolio = client.get_portfolio_until_done(AccountType::Tinkoff).await;
+
+    let positions = portfolio
+        .positions
+        .into_iter()
+        .filter(|p| p.instrument_type == asset_type.instrument_type())
+        .collect_vec();
+
+    print_positions(
+        &client,
+        &instruments,
+        &positions,
+        &portfolio.account_id,
+        true,
+    )
+    .await;
 }
 
 async fn all(token: String, output_papers: bool) {
@@ -158,59 +209,6 @@ async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
         println!("{history}");
     }
     Ok(())
-}
-
-async fn bonds(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let instruments = client.get_all_bonds_until_done().await;
-    asset(client, instruments, "bond").await;
-}
-
-async fn shares(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let instruments = client.get_all_shares_until_done().await;
-    asset(client, instruments, "share").await;
-}
-
-async fn etfs(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let instruments = client.get_all_etfs_until_done().await;
-    asset(client, instruments, "etf").await;
-}
-
-async fn futures(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let instruments = client.get_all_futures_until_done().await;
-    asset(client, instruments, "futures").await;
-}
-
-async fn currencies(token: String) {
-    let client = TinkoffInvestment::new(token);
-    let instruments = client.get_all_currencies_until_done().await;
-    asset(client, instruments, "currency").await;
-}
-
-async fn asset(
-    client: TinkoffInvestment,
-    instruments: HashMap<String, Instrument>,
-    instrument_type: &str,
-) {
-    let portfolio = client.get_portfolio_until_done(AccountType::Tinkoff).await;
-
-    let positions = portfolio
-        .positions
-        .into_iter()
-        .filter(|p| p.instrument_type == instrument_type)
-        .collect_vec();
-
-    print_positions(
-        &client,
-        &instruments,
-        &positions,
-        &portfolio.account_id,
-        true,
-    )
-    .await;
 }
 
 async fn print_positions(
