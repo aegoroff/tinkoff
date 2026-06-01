@@ -114,6 +114,7 @@ macro_rules! collect {
 macro_rules! impl_get_until_done {
     ($(($target_method:ident, $source_method:ident)),*) => {
         $(
+            #[allow(clippy::missing_errors_doc)]
             pub async fn $target_method(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
                 with_retry(|| self.$source_method()).await
             }
@@ -284,6 +285,11 @@ impl TinkoffInvestment {
         Ok(instrument.instruments.clone())
     }
 
+    /// Get portfolio until done with retry logic.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if portfolio cannot be retrieved after multiple retries.
     pub async fn get_portfolio_until_done(
         &self,
         account: AccountType,
@@ -307,6 +313,11 @@ impl TinkoffInvestment {
         Ok(operations.into_inner().operations)
     }
 
+    /// Get operations until done with retry logic.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if operations cannot be retrieved after multiple retries.
     pub async fn get_operations_until_done(
         &self,
         account_id: String,

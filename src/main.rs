@@ -36,6 +36,8 @@ const CURR_CMD: &str = "c";
 const FUTURES_CMD: &str = "f";
 const HISTORY_CMD: &str = "hi";
 
+const MAX_CONCURRENT_REQUESTS: usize = 10;
+
 enum AssetPaper {
     Bond(Paper<CouponProfit>),
     Share(Paper<DividentProfit>),
@@ -243,7 +245,7 @@ async fn print_positions(
     let instruments = Arc::new(instruments.clone());
     let account_id = account_id.to_string();
 
-    let semaphore = Arc::new(Semaphore::new(10));
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
     let progresser = Arc::new(Progresser::new(positions.len() as u64));
 
     let mut set = JoinSet::new();
