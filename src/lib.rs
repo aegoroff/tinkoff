@@ -3,6 +3,7 @@ use domain::Money;
 use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
 
 pub mod client;
@@ -36,28 +37,17 @@ pub mod ux;
 /// ```
 #[must_use]
 pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
-    if let Some(x) = val {
-        let s = if x.units == 0 && x.nano < 0 {
-            format!("-{}.{}", x.units, x.nano.abs())
-        } else {
-            format!("{}.{}", x.units, x.nano.abs())
-        };
-        Decimal::from_str_exact(&s).unwrap_or_default()
-    } else {
-        Decimal::default()
-    }
+    let Some(x) = val else {
+        return Decimal::default();
+    };
+    Decimal::from(x.units) + Decimal::from(x.nano) / dec!(1_000_000_000)
 }
 
 /// `Option<&MoneyValue>` to `Option<Money>`
 #[must_use]
 pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
     let val = val?;
-    let s = if val.units == 0 && val.nano < 0 {
-        format!("-{}.{}", val.units, val.nano.abs())
-    } else {
-        format!("{}.{}", val.units, val.nano.abs())
-    };
-    let value = Decimal::from_str_exact(&s).ok()?;
+    let value = Decimal::from(val.units) + Decimal::from(val.nano) / dec!(1_000_000_000);
     Money::new(value, &val.currency)
 }
 
@@ -95,25 +85,46 @@ mod tests {
     #[test]
     fn to_decimal_positive_above_one() {
         // Arrange
-        let q = Quotation { units: 1, nano: 1 };
+        let q = Quotation {
+            units: 1,
+            nano: 100_000_000,
+        };
 
         // Act
         let r = to_decimal(Some(&q));
 
         // Assert
-        assert_eq!(r.to_string(), String::from("1.1"));
+        assert_eq!(r.to_string(), String::from("1.10"));
     }
 
     #[test]
     fn to_decimal_positive_above_zero() {
         // Arrange
-        let q = Quotation { units: 0, nano: 1 };
+        let q = Quotation {
+            units: 0,
+            nano: 100_000_000,
+        };
 
         // Act
         let r = to_decimal(Some(&q));
 
         // Assert
-        assert_eq!(r.to_string(), String::from("0.1"));
+        assert_eq!(r.to_string(), String::from("0.10"));
+    }
+
+    #[test]
+    fn to_decimal_two_decimal_places() {
+        // Arrange
+        let q = Quotation {
+            units: 1,
+            nano: 10_000_000,
+        };
+
+        // Act
+        let r = to_decimal(Some(&q));
+
+        // Assert
+        assert_eq!(r.to_string(), "1.01");
     }
 
     #[test]
@@ -121,26 +132,29 @@ mod tests {
         // Arrange
         let q = Quotation {
             units: -1,
-            nano: -1,
+            nano: -100_000_000,
         };
 
         // Act
         let r = to_decimal(Some(&q));
 
         // Assert
-        assert_eq!(r.to_string(), String::from("-1.1"));
+        assert_eq!(r.to_string(), String::from("-1.10"));
     }
 
     #[test]
     fn to_decimal_negative_above_minus_one() {
         // Arrange
-        let q = Quotation { units: 0, nano: -1 };
+        let q = Quotation {
+            units: 0,
+            nano: -100_000_000,
+        };
 
         // Act
         let r = to_decimal(Some(&q));
 
         // Assert
-        assert_eq!(r.to_string(), String::from("-0.1"));
+        assert_eq!(r.to_string(), String::from("-0.10"));
     }
 
     #[test]
@@ -159,7 +173,7 @@ mod tests {
         // Arrange
         let q = MoneyValue {
             units: 1,
-            nano: 1,
+            nano: 100_000_000,
             currency: "rub".to_string(),
         };
 
@@ -168,7 +182,7 @@ mod tests {
 
         // Assert
         let m = r.unwrap();
-        assert_eq!(m.value.to_string(), String::from("1.1"));
+        assert_eq!(m.value.to_string(), String::from("1.10"));
         assert_eq!(m.currency, Currency::RUB);
     }
 
@@ -177,7 +191,7 @@ mod tests {
         // Arrange
         let q = MoneyValue {
             units: 0,
-            nano: 1,
+            nano: 100_000_000,
             currency: "rub".to_string(),
         };
 
@@ -185,7 +199,7 @@ mod tests {
         let r = to_money(Some(&q));
 
         // Assert
-        assert_eq!(r.unwrap().value.to_string(), String::from("0.1"));
+        assert_eq!(r.unwrap().value.to_string(), String::from("0.10"));
     }
 
     #[test]
@@ -193,7 +207,7 @@ mod tests {
         // Arrange
         let q = MoneyValue {
             units: -1,
-            nano: -1,
+            nano: -100_000_000,
             currency: "rub".to_string(),
         };
 
@@ -201,7 +215,7 @@ mod tests {
         let r = to_money(Some(&q));
 
         // Assert
-        assert_eq!(r.unwrap().value.to_string(), String::from("-1.1"));
+        assert_eq!(r.unwrap().value.to_string(), String::from("-1.10"));
     }
 
     #[test]
@@ -209,7 +223,7 @@ mod tests {
         // Arrange
         let q = MoneyValue {
             units: 0,
-            nano: -1,
+            nano: -100_000_000,
             currency: "rub".to_string(),
         };
 
@@ -217,6 +231,6 @@ mod tests {
         let r = to_money(Some(&q));
 
         // Assert
-        assert_eq!(r.unwrap().value.to_string(), String::from("-0.1"));
+        assert_eq!(r.unwrap().value.to_string(), String::from("-0.10"));
     }
 }
