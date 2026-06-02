@@ -856,6 +856,19 @@ impl NumberRange for Income {
     }
 }
 
+/// Macro to generate Portfolio aggregation methods
+macro_rules! impl_portfolio_aggregator {
+    ($method:ident, $asset_method:ident, $return_type:ty, $zero:expr) => {
+        #[must_use]
+        pub fn $method(&self) -> $return_type {
+            self.assets()
+                .iter()
+                .map(|a| a.$asset_method())
+                .fold($zero, |acc, x| acc + x)
+        }
+    };
+}
+
 impl Portfolio {
     #[must_use]
     pub fn new(output_papers: bool) -> Self {
@@ -868,62 +881,63 @@ impl Portfolio {
         }
     }
 
+    /// Returns a slice of all assets
     #[must_use]
-    pub fn income(&self) -> Income {
-        self.bonds.income()
-            + self.shares.income()
-            + self.currencies.income()
-            + self.etfs.income()
-            + self.futures.income()
+    fn assets(&self) -> [&dyn PortfolioAsset; 5] {
+        [
+            &self.bonds as &dyn PortfolioAsset,
+            &self.shares as &dyn PortfolioAsset,
+            &self.etfs as &dyn PortfolioAsset,
+            &self.currencies as &dyn PortfolioAsset,
+            &self.futures as &dyn PortfolioAsset,
+        ]
     }
 
-    #[must_use]
-    pub fn total_income(&self) -> Income {
-        self.bonds.total_income()
-            + self.shares.total_income()
-            + self.currencies.total_income()
-            + self.etfs.total_income()
-            + self.futures.total_income()
-    }
-
-    #[must_use]
-    pub fn balance(&self) -> Money {
-        self.bonds.balance()
-            + self.shares.balance()
-            + self.currencies.balance()
-            + self.etfs.balance()
-            + self.futures.balance()
-    }
-
-    #[must_use]
-    pub fn current(&self) -> Money {
-        self.bonds.current()
-            + self.shares.current()
-            + self.currencies.current()
-            + self.etfs.current()
-            + self.futures.current()
-    }
-
-    #[must_use]
-    pub fn dividents(&self) -> Money {
-        self.bonds.dividents()
-            + self.shares.dividents()
-            + self.etfs.dividents()
-            + self.futures.dividents()
-    }
+    impl_portfolio_aggregator!(income, income, Income, Income::zero(Currency::RUB));
+    impl_portfolio_aggregator!(total_income, total_income, Income, Income::zero(Currency::RUB));
+    impl_portfolio_aggregator!(balance, balance, Money, Money::zero(Currency::RUB));
+    impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
+    impl_portfolio_aggregator!(dividents, dividents, Money, Money::zero(Currency::RUB));
 
     #[must_use]
     pub fn count_not_empty_assets(&self) -> usize {
-        [
-            self.bonds.is_empty(),
-            self.shares.is_empty(),
-            self.currencies.is_empty(),
-            self.etfs.is_empty(),
-            self.futures.is_empty(),
-        ]
-        .into_iter()
-        .filter(|x| !x)
-        .count()
+        self.assets().iter().filter(|a| !a.is_asset_empty()).count()
+    }
+}
+
+/// Trait for portfolio assets to enable iteration
+trait PortfolioAsset {
+    fn income(&self) -> Income;
+    fn total_income(&self) -> Income;
+    fn balance(&self) -> Money;
+    fn current(&self) -> Money;
+    fn dividents(&self) -> Money;
+    fn is_asset_empty(&self) -> bool;
+}
+
+impl<P: Profit> PortfolioAsset for Asset<P> {
+    fn income(&self) -> Income {
+        Asset::income(self)
+    }
+
+    fn total_income(&self) -> Income {
+        Asset::total_income(self)
+    }
+
+    fn balance(&self) -> Money {
+        Asset::balance(self)
+    }
+
+    fn current(&self) -> Money {
+        Asset::current(self)
+    }
+
+    fn dividents(&self) -> Money {
+        Asset::dividents(self)
+    }
+
+    fn is_asset_empty(&self) -> bool {
+        Asset::is_empty(self)
     }
 }
 
