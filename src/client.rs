@@ -28,9 +28,9 @@ pub struct AccountPortfolio {
     pub positions: Vec<PortfolioPosition>,
 }
 
-#[derive(Clone)] // <-- добавить
+#[derive(Clone)]
 pub struct TinkoffInvestment {
-    service: Arc<TinkoffInvestService>, // <-- обернуть в Arc
+    service: Arc<TinkoffInvestService>,
 }
 
 enum OperationInfluence {
@@ -172,6 +172,7 @@ impl TinkoffInvestment {
             service: Arc::new(TinkoffInvestService::new(token)),
         }
     }
+
     impl_get_instrument_method!(
         (get_all_bonds, bonds),
         (get_all_shares, shares),
@@ -187,6 +188,54 @@ impl TinkoffInvestment {
         (get_all_currencies_until_done, get_all_currencies),
         (get_all_futures_until_done, get_all_futures)
     );
+
+    /// Fetches data for each position in parallel,
+    /// limiting concurrent requests with a semaphore.
+    ///
+    /// Returns pairs of (position, list of items). Positions with errors
+    /// are skipped (empty vector), and task panics are logged to stderr.
+    async fn fetch_parallel<T, F, Fut>(
+        &self,
+        positions: &[PortfolioPosition],
+        fetch: F,
+    ) -> Vec<(PortfolioPosition, Vec<T>)>
+    where
+        T: Send + 'static,
+        F: Fn(Self, String) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = color_eyre::Result<Vec<T>>> + Send,
+    {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+        let fetch = Arc::new(fetch);
+        let mut set = JoinSet::new();
+
+        for position in positions {
+            let client = self.clone();
+            let figi = position.figi.clone();
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let position_clone = position.clone();
+            let fetch = Arc::clone(&fetch);
+
+            set.spawn(async move {
+                let _permit = permit;
+                let items = fetch(client, figi).await.unwrap_or_default();
+                (position_clone, items)
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(pair) => results.push(pair),
+                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+            }
+        }
+        results
+    }
 
     async fn get_portfolio(&self, account: AccountType) -> TIResult<AccountPortfolio> {
         let (channel, users_channel) =
@@ -258,7 +307,7 @@ impl TinkoffInvestment {
         Ok(account.clone())
     }
 
-    /// Search intsruments by ticker.
+    /// Search instruments by ticker.
     ///
     /// # Errors
     ///
@@ -272,20 +321,19 @@ impl TinkoffInvestment {
             .create_channel()
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-        let mut insrument_client = self
+        let mut instruments = self
             .service
             .instruments(channel)
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-        let instrument = insrument_client
+        let instrument = instruments
             .find_instrument(FindInstrumentRequest {
                 instrument_kind: Some(InstrumentType::Unspecified.into()),
                 query: ticker,
                 api_trade_available_flag: Some(false),
             })
             .await?;
-        let instrument = instrument.get_ref();
-        Ok(instrument.instruments.clone())
+        Ok(instrument.get_ref().instruments.clone())
     }
 
     /// Get portfolio until done with retry logic.
@@ -391,99 +439,59 @@ impl TinkoffInvestment {
         positions: &[PortfolioPosition],
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<DividendCalendar> {
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
-
-        const MAX_CONCURRENT_REQUESTS: usize = 10;
-
-        let mut upcoming = Vec::new();
         let now = chrono::Utc::now();
-
-        // Use JoinSet for parallel dividend loading
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
-        let mut set = JoinSet::new();
         let instruments = Arc::new(instruments.clone());
 
-        for position in positions {
-            let client = self.clone();
-            let figi = position.figi.clone();
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let position_clone = position.clone();
+        let pairs = self
+            .fetch_parallel(positions, |client, figi| {
+                Box::pin(async move { client.get_dividends_for_figi(figi).await })
+            })
+            .await;
 
-            set.spawn(async move {
-                let _permit = permit;
-                let dividends = client
-                    .get_dividends_for_figi(figi.clone())
-                    .await
-                    .unwrap_or_default();
+        let mut upcoming = Vec::new();
+        for (position, dividends) in pairs {
+            let Some(instrument) = instruments.get(&position.figi) else {
+                continue;
+            };
+            for dividend in dividends {
+                let dividend_per_share = dividend
+                    .dividend_net
+                    .as_ref()
+                    .and_then(|d| to_money(Some(d)))
+                    .unwrap_or_else(|| Money::zero(Currency::RUB));
 
-                (position_clone, dividends)
-            });
-        }
+                let ex_dividend_date = dividend
+                    .record_date
+                    .as_ref()
+                    .map_or(now, |d| to_datetime_utc(Some(d)));
 
-        // Collect results
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((position, dividends)) => {
-                    for dividend in dividends {
-                        let Some(instrument) = instruments.get(&position.figi) else {
-                            continue;
-                        };
-
-                        let dividend_per_share = dividend
-                            .dividend_net
-                            .as_ref()
-                            .and_then(|d| to_money(Some(d)))
-                            .unwrap_or_else(|| Money::zero(Currency::RUB));
-
-                        // Use record_date as ex-dividend date (ex_dividend_date not available)
-                        let ex_dividend_date = dividend
-                            .record_date
-                            .as_ref()
-                            .map_or(now, |d| to_datetime_utc(Some(d)));
-
-                        let payment_date = dividend
-                            .payment_date
-                            .as_ref()
-                            .map(|d| to_datetime_utc(Some(d)));
-
-                        // Get quantity from portfolio position
-                        let quantity = to_decimal(position.quantity.as_ref());
-
-                        // Calculate total dividend = dividend_per_share * quantity
-                        let total_dividend = dividend_per_share * quantity;
-
-                        let dividend_payment = DividendPayment {
-                            figi: position.figi.clone(),
-                            ticker: instrument.ticker.clone(),
-                            name: instrument.name.clone(),
-                            currency: dividend_per_share.currency,
-                            dividend_per_share,
-                            total_dividend,
-                            quantity,
-                            ex_dividend_date,
-                            payment_date,
-                            dividend_type: dividend.dividend_type,
-                        };
-
-                        // Only include upcoming payments
-                        if ex_dividend_date > now {
-                            upcoming.push(dividend_payment);
-                        }
-                    }
+                if ex_dividend_date <= now {
+                    continue;
                 }
-                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+
+                let quantity = to_decimal(position.quantity.as_ref());
+                upcoming.push(DividendPayment {
+                    figi: position.figi.clone(),
+                    ticker: instrument.ticker.clone(),
+                    name: instrument.name.clone(),
+                    currency: dividend_per_share.currency,
+                    dividend_per_share,
+                    total_dividend: dividend_per_share * quantity,
+                    quantity,
+                    ex_dividend_date,
+                    payment_date: dividend
+                        .payment_date
+                        .as_ref()
+                        .map(|d| to_datetime_utc(Some(d))),
+                    dividend_type: dividend.dividend_type,
+                });
             }
         }
 
-        // Sort by date
         upcoming.sort_by_key(|a| a.ex_dividend_date);
-
         Ok(DividendCalendar { upcoming })
     }
 
-    /// Get dividends for a specific FIGI
     async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
         let channel = self
             .service
@@ -495,20 +503,16 @@ impl TinkoffInvestment {
             .instruments(channel)
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-
-        let request = GetDividendsRequest {
-            instrument_id: figi,
-            from: None,
-            to: None,
-            ..Default::default()
-        };
         let response = instruments
-            .get_dividends(request)
+            .get_dividends(GetDividendsRequest {
+                instrument_id: figi,
+                from: None,
+                to: None,
+                ..Default::default()
+            })
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-        let response = response.into_inner();
-
-        Ok(response.dividends)
+        Ok(response.into_inner().dividends)
     }
 
     /// Get coupon calendar for the portfolio
@@ -522,113 +526,62 @@ impl TinkoffInvestment {
         positions: &[PortfolioPosition],
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<CouponCalendar> {
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
-
-        const MAX_CONCURRENT_REQUESTS: usize = 10;
-
-        let mut upcoming = Vec::new();
         let now = chrono::Utc::now();
-
-        // Use JoinSet for parallel coupon loading
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
-        let mut set = JoinSet::new();
         let instruments = Arc::new(instruments.clone());
 
-        // Filter only bond positions
-        let bond_positions: Vec<_> = positions
+        // Filter only bonds before launching parallel tasks
+        let bond_positions: Vec<PortfolioPosition> = positions
             .iter()
             .filter(|p| p.instrument_type == "bond")
             .cloned()
             .collect();
 
-        for position in bond_positions {
-            let client = self.clone();
-            let figi = position.figi.clone();
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let position_clone = position.clone();
+        let pairs = self
+            .fetch_parallel(&bond_positions, |client, figi| {
+                Box::pin(async move { client.get_coupons_for_figi(figi).await })
+            })
+            .await;
 
-            set.spawn(async move {
-                let _permit = permit;
-                let coupons = client
-                    .get_coupons_for_figi(figi.clone())
-                    .await
-                    .unwrap_or_default();
+        let mut upcoming = Vec::new();
+        for (position, coupons) in pairs {
+            let Some(instrument) = instruments.get(&position.figi) else {
+                continue;
+            };
+            for coupon in coupons {
+                let coupon_value = coupon
+                    .pay_one_bond
+                    .as_ref()
+                    .and_then(|d| to_money(Some(d)))
+                    .unwrap_or_else(|| Money::zero(Currency::RUB));
 
-                (position_clone, coupons)
-            });
-        }
+                let coupon_date = coupon
+                    .coupon_date
+                    .as_ref()
+                    .map_or(now, |d| to_datetime_utc(Some(d)));
 
-        // Collect results
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((position, coupons)) => {
-                    for coupon in coupons {
-                        let Some(instrument) = instruments.get(&position.figi) else {
-                            continue;
-                        };
-
-                        // Get coupon value from pay_one_bond
-                        let coupon_value = coupon
-                            .pay_one_bond
-                            .as_ref()
-                            .and_then(|d| to_money(Some(d)))
-                            .unwrap_or_else(|| Money::zero(Currency::RUB));
-
-                        // Get coupon date
-                        let coupon_date = coupon
-                            .coupon_date
-                            .as_ref()
-                            .map_or(now, |d| to_datetime_utc(Some(d)));
-
-                        // Get quantity from portfolio position
-                        let quantity = to_decimal(position.quantity.as_ref());
-
-                        // Calculate total coupon = coupon_value * quantity
-                        let total_coupon = coupon_value * quantity;
-
-                        // Get coupon type as string
-                        let coupon_type = match coupon.coupon_type() {
-                            tinkoff_invest_api::tcs::CouponType::Unspecified => "Unspecified",
-                            tinkoff_invest_api::tcs::CouponType::Constant => "Constant",
-                            tinkoff_invest_api::tcs::CouponType::Floating => "Floating",
-                            tinkoff_invest_api::tcs::CouponType::Discount => "Discount",
-                            tinkoff_invest_api::tcs::CouponType::Mortgage => "Mortgage",
-                            tinkoff_invest_api::tcs::CouponType::Fix => "Fix",
-                            tinkoff_invest_api::tcs::CouponType::Variable => "Variable",
-                            tinkoff_invest_api::tcs::CouponType::Other => "Other",
-                        };
-
-                        let coupon_payment = CouponPayment {
-                            figi: position.figi.clone(),
-                            ticker: instrument.ticker.clone(),
-                            name: instrument.name.clone(),
-                            currency: coupon_value.currency,
-                            coupon_per_bond: coupon_value,
-                            total_coupon,
-                            quantity,
-                            coupon_date,
-                            coupon_type: coupon_type.to_string(),
-                        };
-
-                        // Only include upcoming payments
-                        if coupon_date > now {
-                            upcoming.push(coupon_payment);
-                        }
-                    }
+                if coupon_date <= now {
+                    continue;
                 }
-                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+
+                let quantity = to_decimal(position.quantity.as_ref());
+                upcoming.push(CouponPayment {
+                    figi: position.figi.clone(),
+                    ticker: instrument.ticker.clone(),
+                    name: instrument.name.clone(),
+                    currency: coupon_value.currency,
+                    coupon_per_bond: coupon_value,
+                    total_coupon: coupon_value * quantity,
+                    quantity,
+                    coupon_date,
+                    coupon_type: coupon_type_to_str(coupon.coupon_type()).to_string(),
+                });
             }
         }
 
-        // Sort by date
         upcoming.sort_by_key(|a| a.coupon_date);
-
         Ok(CouponCalendar { upcoming })
     }
 
-    /// Get coupons for a specific FIGI
     async fn get_coupons_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Coupon>> {
         let channel = self
             .service
@@ -640,20 +593,30 @@ impl TinkoffInvestment {
             .instruments(channel)
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-
-        let request = GetBondCouponsRequest {
-            instrument_id: figi,
-            from: None,
-            to: None,
-            ..Default::default()
-        };
         let response = instruments
-            .get_bond_coupons(request)
+            .get_bond_coupons(GetBondCouponsRequest {
+                instrument_id: figi,
+                from: None,
+                to: None,
+                ..Default::default()
+            })
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-        let response = response.into_inner();
+        Ok(response.into_inner().events)
+    }
+}
 
-        Ok(response.events)
+#[must_use]
+fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'static str {
+    match coupon_type {
+        tinkoff_invest_api::tcs::CouponType::Unspecified => "Unspecified",
+        tinkoff_invest_api::tcs::CouponType::Constant => "Constant",
+        tinkoff_invest_api::tcs::CouponType::Floating => "Floating",
+        tinkoff_invest_api::tcs::CouponType::Discount => "Discount",
+        tinkoff_invest_api::tcs::CouponType::Mortgage => "Mortgage",
+        tinkoff_invest_api::tcs::CouponType::Fix => "Fix",
+        tinkoff_invest_api::tcs::CouponType::Variable => "Variable",
+        tinkoff_invest_api::tcs::CouponType::Other => "Other",
     }
 }
 
