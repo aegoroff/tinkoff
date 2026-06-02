@@ -8,7 +8,9 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 
 - 📊 **Portfolio Analysis**: View all your investment positions with detailed profit/loss calculations
 - 📈 **Asset Categories**: Separate views for shares, bonds, ETFs, currencies, and futures
-- 💰 **Income Tracking**: Track dividends, coupons, and other income sources
+- 💰 **Income Tracking**: Track dividends and coupons with dedicated calendar views
+- 📅 **Dividend Calendar**: View upcoming dividend payments for your portfolio
+- 📋 **Coupon Calendar**: Track bond coupon payments
 - 📋 **Trading History**: Detailed history of all trading operations
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
 - ⚡ **High Performance**: Optimized with MiMalloc for Linux systems
@@ -67,6 +69,12 @@ tinkoff f
 
 # Get trading history for a specific instrument
 tinkoff hi <TICKER>
+
+# Get dividend calendar
+tinkoff d
+
+# Get coupon calendar
+tinkoff p
 ```
 
 ### Command Line Options
@@ -82,6 +90,8 @@ Commands:
   c     Get portfolio currencies
   f     Get portfolio futures
   hi    Get trading history for an instrument
+  d     Get dividend calendar for portfolio
+  p     Get coupon calendar for portfolio bonds
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -102,6 +112,12 @@ tinkoff a --aggregate
 # Get trading history for Sberbank shares
 tinkoff hi SBER
 
+# View dividend calendar
+tinkoff d
+
+# View coupon calendar
+tinkoff p
+
 # Use custom token
 tinkoff -t "your_token" a
 ```
@@ -115,6 +131,8 @@ The application provides rich, formatted output including:
 - **Profit/Loss**: Current profit/loss with percentage calculations
 - **Income Sources**: Dividends, coupons, and other income
 - **Trading History**: Detailed operation history with dates, prices, and quantities
+- **Dividend Calendar**: Upcoming dividend payments for portfolio instruments
+- **Coupon Calendar**: Bond coupon payment schedule
 
 ## Project Structure
 
