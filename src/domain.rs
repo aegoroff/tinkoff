@@ -354,7 +354,6 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
         .fg(comfy_table::Color::DarkBlue);
     table.set_header([title]);
 
-    // Main table headers
     let (payment_date_hdr, ex_date_hdr, company_hdr, per_unit_hdr, total_hdr) = P::column_headers();
     let payment_date = Cell::new(payment_date_hdr).add_attribute(Attribute::Bold);
     let ex_date = Cell::new(ex_date_hdr).add_attribute(Attribute::Bold);
@@ -363,7 +362,6 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
     let total = Cell::new(total_hdr).add_attribute(Attribute::Bold);
     table.add_row([payment_date, ex_date, company, per_unit, total]);
 
-    // Upcoming payments
     if upcoming.is_empty() {
         table.add_row([
             Cell::new(P::empty_message()),
@@ -372,56 +370,46 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
             Cell::new(""),
             Cell::new(""),
         ]);
-    } else {
-        // Group by year and month based on payment date
-        let mut grouped: HashMap<(i32, u32), Vec<&P>> = HashMap::new();
+        return table.to_string();
+    }
 
-        for payment in upcoming {
-            let date = payment.payment_date();
-            let year = date.year();
-            let month = date.month();
-            grouped.entry((year, month)).or_default().push(payment);
-        }
+    let mut grouped: HashMap<(i32, u32), Vec<&P>> = HashMap::new();
+    for payment in upcoming {
+        let date = payment.payment_date();
+        grouped
+            .entry((date.year(), date.month()))
+            .or_default()
+            .push(payment);
+    }
 
-        // Sort keys by year and month
-        let mut keys: Vec<_> = grouped.keys().copied().collect();
-        keys.sort_by(|a, b| {
-            let year_cmp = a.0.cmp(&b.0);
-            if year_cmp == std::cmp::Ordering::Equal {
-                a.1.cmp(&b.1)
-            } else {
-                year_cmp
-            }
-        });
+    let mut keys: Vec<_> = grouped.keys().copied().collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-        let mut grand_total = Money::zero(iso_currency::Currency::RUB);
+    let mut grand_total = Money::zero(iso_currency::Currency::RUB);
 
-        // Group by year
-        let mut by_year: HashMap<i32, Vec<u32>> = HashMap::new();
-        for (year, month) in &keys {
-            by_year.entry(*year).or_default().push(*month);
-        }
+    let mut by_year: HashMap<i32, Vec<u32>> = HashMap::new();
+    for (year, month) in &keys {
+        by_year.entry(*year).or_default().push(*month);
+    }
 
-        let mut year_keys: Vec<_> = by_year.keys().copied().collect();
-        year_keys.sort_unstable();
+    let mut year_keys: Vec<_> = by_year.keys().copied().collect();
+    year_keys.sort_unstable();
 
-        for year in year_keys {
-            // Year header
-            table.add_row([
-                Cell::new(format!("=== {year} ==="))
-                    .add_attribute(Attribute::Bold)
-                    .fg(comfy_table::Color::DarkCyan),
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-            ]);
+    for year in year_keys {
+        table.add_row([
+            Cell::new(format!("=== {year} ==="))
+                .add_attribute(Attribute::Bold)
+                .fg(comfy_table::Color::DarkCyan),
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
+        ]);
 
-            let mut year_total = Money::zero(iso_currency::Currency::RUB);
-            let months = by_year.get(&year).unwrap();
+        let mut year_total = Money::zero(iso_currency::Currency::RUB);
 
+        if let Some(months) = by_year.get(&year) {
             for month in months {
-                // Month header
                 let month_name_str = month_name(*month);
                 table.add_row([
                     Cell::new(format!("--- {month_name_str} ---")),
@@ -432,24 +420,20 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
                 ]);
 
                 let mut month_total = Money::zero(iso_currency::Currency::RUB);
-                let payments = grouped.get(&(year, *month)).unwrap();
 
-                for payment in payments {
-                    let payment_date_str = format_date(payment.payment_date());
-                    let ex_date_str = format_date(payment.ex_date());
-
-                    table.add_row([
-                        Cell::new(payment_date_str),
-                        Cell::new(ex_date_str),
-                        Cell::new(payment.name().to_string()),
-                        Cell::new(payment.payment_per_unit().to_string()),
-                        Cell::new(payment.total_payment().to_string()),
-                    ]);
-
-                    month_total += payment.total_payment();
+                if let Some(payments) = grouped.get(&(year, *month)) {
+                    for payment in payments {
+                        table.add_row([
+                            Cell::new(format_date(payment.payment_date())),
+                            Cell::new(format_date(payment.ex_date())),
+                            Cell::new(payment.name().to_string()),
+                            Cell::new(payment.payment_per_unit().to_string()),
+                            Cell::new(payment.total_payment().to_string()),
+                        ]);
+                        month_total += payment.total_payment();
+                    }
                 }
 
-                // Month total
                 table.add_row([
                     Cell::new(""),
                     Cell::new(""),
@@ -461,40 +445,38 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
                 year_total += month_total;
                 grand_total += month_total;
             }
-
-            // Year total
-            table.add_row([
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(P::year_label(year))
-                    .add_attribute(Attribute::Bold)
-                    .fg(comfy_table::Color::DarkYellow),
-                Cell::new(""),
-                Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
-            ]);
-
-            table.add_row([
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-            ]);
         }
 
-        // Grand total row
         table.add_row([
             Cell::new(""),
             Cell::new(""),
-            Cell::new("Grand Total")
+            Cell::new(P::year_label(year))
                 .add_attribute(Attribute::Bold)
-                .fg(comfy_table::Color::DarkRed),
+                .fg(comfy_table::Color::DarkYellow),
             Cell::new(""),
-            Cell::new(grand_total.to_string())
-                .add_attribute(Attribute::Bold)
-                .fg(comfy_table::Color::DarkGreen),
+            Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
+        ]);
+
+        table.add_row([
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
         ]);
     }
+
+    table.add_row([
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new("Grand Total")
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkRed),
+        Cell::new(""),
+        Cell::new(grand_total.to_string())
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkGreen),
+    ]);
 
     table.to_string()
 }
@@ -894,7 +876,12 @@ impl Portfolio {
     }
 
     impl_portfolio_aggregator!(income, income, Income, Income::zero(Currency::RUB));
-    impl_portfolio_aggregator!(total_income, total_income, Income, Income::zero(Currency::RUB));
+    impl_portfolio_aggregator!(
+        total_income,
+        total_income,
+        Income,
+        Income::zero(Currency::RUB)
+    );
     impl_portfolio_aggregator!(balance, balance, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(dividents, dividents, Money, Money::zero(Currency::RUB));
