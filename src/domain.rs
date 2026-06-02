@@ -232,8 +232,10 @@ impl Display for DividendCalendar {
                 std::collections::HashMap::new();
 
             for payment in &self.upcoming {
-                let year = payment.ex_dividend_date.year();
-                let month = payment.ex_dividend_date.month();
+                // Use payment_date if available, otherwise fall back to ex_dividend_date
+                let date = payment.payment_date.unwrap_or(payment.ex_dividend_date);
+                let year = date.year();
+                let month = date.month();
                 grouped.entry((year, month)).or_default().push(payment);
             }
 
