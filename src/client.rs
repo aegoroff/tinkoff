@@ -236,20 +236,23 @@ impl TinkoffInvestment {
     pub async fn get_all_instruments_until_done(
         &self,
     ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        let (bonds, shares, etfs, currencies, futures) = tokio::join!(
-            self.get_all_bonds_until_done(),
-            self.get_all_shares_until_done(),
-            self.get_all_etfs_until_done(),
-            self.get_all_currencies_until_done(),
-            self.get_all_futures_until_done(),
-        );
+        Box::pin(async {
+            let (bonds, shares, etfs, currencies, futures) = tokio::join!(
+                self.get_all_bonds_until_done(),
+                self.get_all_shares_until_done(),
+                self.get_all_etfs_until_done(),
+                self.get_all_currencies_until_done(),
+                self.get_all_futures_until_done(),
+            );
 
-        let mut all = bonds?;
-        all.extend(shares?);
-        all.extend(etfs?);
-        all.extend(currencies?);
-        all.extend(futures?);
-        Ok(all)
+            let mut all = bonds?;
+            all.extend(shares?);
+            all.extend(etfs?);
+            all.extend(currencies?);
+            all.extend(futures?);
+            Ok(all)
+        })
+        .await
     }
 
     /// Loads the portfolio and all instrument catalogs concurrently.
@@ -261,11 +264,14 @@ impl TinkoffInvestment {
         &self,
         account: AccountType,
     ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
-        let (instruments, portfolio) = tokio::join!(
-            self.get_all_instruments_until_done(),
-            self.get_portfolio_until_done(account),
-        );
-        Ok((portfolio?, instruments?))
+        Box::pin(async {
+            let (instruments, portfolio) = tokio::join!(
+                self.get_all_instruments_until_done(),
+                self.get_portfolio_until_done(account),
+            );
+            Ok((portfolio?, instruments?))
+        })
+        .await
     }
 
     /// Loads the portfolio and one instrument catalog concurrently.

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env};
+use std::{collections::HashMap, env, future::Future, pin::Pin};
 
 use clap::{ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
@@ -81,19 +81,28 @@ async fn main() -> Result<()> {
 
     let config = AppConfig::from_matches(&cli)?;
 
-    match cli.subcommand() {
-        Some((ALL_CMD, cmd)) => all(&config, !cmd.get_flag("aggregate")).await?,
-        Some((SHARES_CMD, _)) => asset(&config, InstrumentCatalog::Shares).await?,
-        Some((BONDS_CMD, _)) => asset(&config, InstrumentCatalog::Bonds).await?,
-        Some((ETFS_CMD, _)) => asset(&config, InstrumentCatalog::Etfs).await?,
-        Some((CURR_CMD, _)) => asset(&config, InstrumentCatalog::Currencies).await?,
-        Some((FUTURES_CMD, _)) => asset(&config, InstrumentCatalog::Futures).await?,
-        Some((HISTORY_CMD, cmd)) => history(&config, cmd).await?,
-        Some((DIVIDENDS_CMD, _)) => dividends(&config).await?,
-        Some((COUPONS_CMD, _)) => coupons(&config).await?,
-        _ => {}
+    if let Some(sub) = cli.subcommand() {
+        run_subcommand(&config, sub).await?;
     }
     Ok(())
+}
+
+fn run_subcommand<'a>(
+    config: &'a AppConfig,
+    (name, matches): (&'a str, &'a ArgMatches),
+) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+    match name {
+        ALL_CMD => Box::pin(all(config, !matches.get_flag("aggregate"))),
+        SHARES_CMD => Box::pin(asset(config, InstrumentCatalog::Shares)),
+        BONDS_CMD => Box::pin(asset(config, InstrumentCatalog::Bonds)),
+        ETFS_CMD => Box::pin(asset(config, InstrumentCatalog::Etfs)),
+        CURR_CMD => Box::pin(asset(config, InstrumentCatalog::Currencies)),
+        FUTURES_CMD => Box::pin(asset(config, InstrumentCatalog::Futures)),
+        HISTORY_CMD => Box::pin(history(config, matches)),
+        DIVIDENDS_CMD => Box::pin(dividends(config)),
+        COUPONS_CMD => Box::pin(coupons(config)),
+        _ => Box::pin(async { Ok(()) }),
+    }
 }
 
 async fn asset(config: &AppConfig, catalog: InstrumentCatalog) -> Result<()> {
@@ -395,7 +404,7 @@ async fn portfolio_with_instruments(
 }
 
 async fn dividends(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = portfolio_with_instruments(config).await?;
+    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
         .get_dividend_calendar(&portfolio, &instruments)
         .await?;
@@ -404,7 +413,7 @@ async fn dividends(config: &AppConfig) -> Result<()> {
 }
 
 async fn coupons(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = portfolio_with_instruments(config).await?;
+    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
         .get_coupon_calendar(&portfolio, &instruments)
         .await?;
