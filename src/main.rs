@@ -15,10 +15,35 @@ use tinkoff::{
         Asset, CouponProfit, DividentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
         Profit,
     },
+    parse_account_type,
     progress::{Progress, Progresser},
     ux,
 };
 use tinkoff_invest_api::tcs::{AccountType, InstrumentShort, PortfolioPosition};
+
+struct AppConfig {
+    token: String,
+    account: AccountType,
+}
+
+impl AppConfig {
+    fn from_matches(matches: &ArgMatches) -> Result<Self> {
+        let token = if let Some(t) = matches.get_one::<String>("token") {
+            t.clone()
+        } else {
+            env::var("TINKOFF_TOKEN_V2").wrap_err_with(|| {
+                "API token required either from -t option or from TINKOFF_TOKEN_V2 environment variable"
+            })?
+        };
+
+        let account = matches
+            .get_one::<AccountType>("account")
+            .copied()
+            .expect("account has a default value");
+
+        Ok(Self { token, account })
+    }
+}
 
 #[cfg(target_os = "linux")]
 use mimalloc::MiMalloc;
@@ -54,33 +79,27 @@ async fn main() -> Result<()> {
     ux::clear_screen();
     let cli = build_cli().get_matches();
 
-    let token = if let Some(t) = cli.get_one::<String>("token") {
-        t.clone()
-    } else {
-        env::var("TINKOFF_TOKEN_V2").wrap_err_with(|| {
-            "API token required either from -t option or from TINKOFF_TOKEN_V2 environment variable"
-        })?
-    };
+    let config = AppConfig::from_matches(&cli)?;
 
     match cli.subcommand() {
-        Some((ALL_CMD, cmd)) => all(token, !cmd.get_flag("aggregate")).await?,
-        Some((SHARES_CMD, _)) => asset(token, InstrumentCatalog::Shares).await?,
-        Some((BONDS_CMD, _)) => asset(token, InstrumentCatalog::Bonds).await?,
-        Some((ETFS_CMD, _)) => asset(token, InstrumentCatalog::Etfs).await?,
-        Some((CURR_CMD, _)) => asset(token, InstrumentCatalog::Currencies).await?,
-        Some((FUTURES_CMD, _)) => asset(token, InstrumentCatalog::Futures).await?,
-        Some((HISTORY_CMD, cmd)) => history(token, cmd).await?,
-        Some((DIVIDENDS_CMD, _)) => dividends(token).await?,
-        Some((COUPONS_CMD, _)) => coupons(token).await?,
+        Some((ALL_CMD, cmd)) => all(&config, !cmd.get_flag("aggregate")).await?,
+        Some((SHARES_CMD, _)) => asset(&config, InstrumentCatalog::Shares).await?,
+        Some((BONDS_CMD, _)) => asset(&config, InstrumentCatalog::Bonds).await?,
+        Some((ETFS_CMD, _)) => asset(&config, InstrumentCatalog::Etfs).await?,
+        Some((CURR_CMD, _)) => asset(&config, InstrumentCatalog::Currencies).await?,
+        Some((FUTURES_CMD, _)) => asset(&config, InstrumentCatalog::Futures).await?,
+        Some((HISTORY_CMD, cmd)) => history(&config, cmd).await?,
+        Some((DIVIDENDS_CMD, _)) => dividends(&config).await?,
+        Some((COUPONS_CMD, _)) => coupons(&config).await?,
         _ => {}
     }
     Ok(())
 }
 
-async fn asset(token: String, catalog: InstrumentCatalog) -> Result<()> {
-    let client = TinkoffInvestment::new(token);
+async fn asset(config: &AppConfig, catalog: InstrumentCatalog) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio, instruments) = client
-        .get_portfolio_and_catalog(AccountType::Tinkoff, catalog)
+        .get_portfolio_and_catalog(config.account, catalog)
         .await?;
 
     let positions = portfolio
@@ -100,10 +119,10 @@ async fn asset(token: String, catalog: InstrumentCatalog) -> Result<()> {
     Ok(())
 }
 
-async fn all(token: String, output_papers: bool) -> Result<()> {
-    let client = TinkoffInvestment::new(token);
+async fn all(config: &AppConfig, output_papers: bool) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio, instruments) = client
-        .get_portfolio_and_instruments(AccountType::Tinkoff)
+        .get_portfolio_and_instruments(config.account)
         .await?;
 
     print_positions(
@@ -117,13 +136,13 @@ async fn all(token: String, output_papers: bool) -> Result<()> {
     Ok(())
 }
 
-async fn history(token: String, cmd: &ArgMatches) -> Result<()> {
-    let client = TinkoffInvestment::new(token);
+async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
     let ticker = cmd
         .get_one::<String>("TICKER")
         .ok_or_else(|| eyre::eyre!("No ticker passed"))?;
     let (account, instruments) = tokio::join!(
-        client.get_account(AccountType::Tinkoff),
+        client.get_account(config.account),
         client.find_instruments_by_ticker(ticker.clone()),
     );
     let account = account?;
@@ -286,6 +305,13 @@ fn build_cli() -> Command {
         .arg(arg!(-t --token <VALUE>).required(false).help(
             "Tinkoff API v2 token. If not set TINKOFF_TOKEN_V2 environment variable will be used",
         ))
+        .arg(
+            arg!(--account <TYPE>)
+                .required(false)
+                .default_value("tinkoff")
+                .value_parser(parse_account_type)
+                .help("Account type: tinkoff (broker, default), iis, invest-box, invest-fund"),
+        )
         .subcommand(all_cmd())
         .subcommand(shares_cmd())
         .subcommand(bonds_cmd())
@@ -359,28 +385,28 @@ fn coupons_cmd() -> Command {
 }
 
 async fn portfolio_with_instruments(
-    token: String,
+    config: &AppConfig,
 ) -> Result<(TinkoffInvestment, AccountPortfolio, HashMap<String, Instrument>)> {
-    let client = TinkoffInvestment::new(token);
+    let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio, instruments) = client
-        .get_portfolio_and_instruments(AccountType::Tinkoff)
+        .get_portfolio_and_instruments(config.account)
         .await?;
     Ok((client, portfolio, instruments))
 }
 
-async fn dividends(token: String) -> Result<()> {
-    let (client, portfolio, instruments) = portfolio_with_instruments(token).await?;
+async fn dividends(config: &AppConfig) -> Result<()> {
+    let (client, portfolio, instruments) = portfolio_with_instruments(config).await?;
     let calendar = client
-        .get_dividend_calendar(portfolio.account_id, &portfolio.positions, &instruments)
+        .get_dividend_calendar(&portfolio, &instruments)
         .await?;
     println!("{calendar}");
     Ok(())
 }
 
-async fn coupons(token: String) -> Result<()> {
-    let (client, portfolio, instruments) = portfolio_with_instruments(token).await?;
+async fn coupons(config: &AppConfig) -> Result<()> {
+    let (client, portfolio, instruments) = portfolio_with_instruments(config).await?;
     let calendar = client
-        .get_coupon_calendar(portfolio.account_id, &portfolio.positions, &instruments)
+        .get_coupon_calendar(&portfolio, &instruments)
         .await?;
     println!("{calendar}");
     Ok(())

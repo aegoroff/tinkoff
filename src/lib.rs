@@ -4,12 +4,42 @@ use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
+use tinkoff_invest_api::tcs::{AccountType, MoneyValue, Quotation};
 
 pub mod client;
 pub mod domain;
 pub mod progress;
 pub mod ux;
+
+/// Default account type when `--account` is not specified.
+pub const DEFAULT_ACCOUNT_TYPE: AccountType = AccountType::Tinkoff;
+
+const ACCOUNT_TYPE_HELP: &str =
+    "tinkoff (broker, default), iis, invest-box, invest-fund";
+
+/// Parses a CLI account type name into [`AccountType`].
+///
+/// # Errors
+///
+/// Returns an error if `value` is not a known account type name.
+pub fn parse_account_type(value: &str) -> Result<AccountType, String> {
+    if value.eq_ignore_ascii_case("tinkoff") || value.eq_ignore_ascii_case("broker") {
+        return Ok(AccountType::Tinkoff);
+    }
+    if value.eq_ignore_ascii_case("iis") || value.eq_ignore_ascii_case("tinkoff-iis") {
+        return Ok(AccountType::TinkoffIis);
+    }
+    if value.eq_ignore_ascii_case("invest-box") || value.eq_ignore_ascii_case("investbox") {
+        return Ok(AccountType::InvestBox);
+    }
+    if value.eq_ignore_ascii_case("invest-fund") || value.eq_ignore_ascii_case("investfund") {
+        return Ok(AccountType::InvestFund);
+    }
+
+    Err(format!(
+        "unknown account type '{value}'; expected one of: {ACCOUNT_TYPE_HELP}"
+    ))
+}
 
 /// Converts an `Option<&Quotation>` to `Decimal`.
 ///
@@ -68,8 +98,27 @@ pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
+    use tinkoff_invest_api::tcs::AccountType;
 
     use super::*;
+
+    #[test]
+    fn parse_account_type_defaults() {
+        assert_eq!(
+            parse_account_type("tinkoff").unwrap(),
+            AccountType::Tinkoff
+        );
+        assert_eq!(parse_account_type("iis").unwrap(), AccountType::TinkoffIis);
+        assert_eq!(
+            parse_account_type("invest-box").unwrap(),
+            AccountType::InvestBox
+        );
+    }
+
+    #[test]
+    fn parse_account_type_unknown() {
+        assert!(parse_account_type("savings").is_err());
+    }
 
     #[test]
     fn to_decimal_from_none() {

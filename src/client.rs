@@ -528,22 +528,24 @@ impl TinkoffInvestment {
         }
     }
 
-    /// Get dividend calendar for the portfolio
+    /// Upcoming dividend calendar for portfolio positions.
+    ///
+    /// The account is defined by `portfolio` (positions and quantities). Dividend schedules
+    /// are fetched per instrument via the Instruments API and do not take `account_id`.
     ///
     /// # Errors
     ///
     /// This function will return an error if dividends cannot be retrieved from remote server.
     pub async fn get_dividend_calendar(
         &self,
-        _account_id: String,
-        positions: &[PortfolioPosition],
+        portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<DividendCalendar> {
         let now = chrono::Utc::now();
         let instruments = Arc::new(instruments.clone());
 
         let pairs = self
-            .fetch_parallel(positions, |client, figi| {
+            .fetch_parallel(&portfolio.positions, |client, figi| {
                 Box::pin(async move { client.get_dividends_for_figi(figi).await })
             })
             .await;
@@ -615,22 +617,25 @@ impl TinkoffInvestment {
         Ok(response.into_inner().dividends)
     }
 
-    /// Get coupon calendar for the portfolio
+    /// Upcoming coupon calendar for bond positions in the portfolio.
+    ///
+    /// The account is defined by `portfolio` (positions and quantities). Coupon schedules
+    /// are fetched per instrument via the Instruments API and do not take `account_id`.
     ///
     /// # Errors
     ///
     /// This function will return an error if coupons cannot be retrieved from remote server.
     pub async fn get_coupon_calendar(
         &self,
-        _account_id: String,
-        positions: &[PortfolioPosition],
+        portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<CouponCalendar> {
         let now = chrono::Utc::now();
         let instruments = Arc::new(instruments.clone());
 
         // Filter only bonds before launching parallel tasks
-        let bond_positions: Vec<PortfolioPosition> = positions
+        let bond_positions: Vec<PortfolioPosition> = portfolio
+            .positions
             .iter()
             .filter(|p| p.instrument_type == "bond")
             .cloned()
