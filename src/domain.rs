@@ -3,7 +3,7 @@ use std::{
     ops::{self, AddAssign, DivAssign, MulAssign, SubAssign},
 };
 
-use chrono::{DateTime, Utc, Datelike, Timelike};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use comfy_table::{Attribute, Cell, TableComponent};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
@@ -158,11 +158,6 @@ impl Display for DividendPayment {
     }
 }
 
-fn format_datetime(dt: DateTime<Utc>) -> String {
-    format!("{:04}-{:02}-{:02} {:02}:{:02}",
-        dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute())
-}
-
 fn format_date(dt: DateTime<Utc>) -> String {
     format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day())
 }
@@ -185,16 +180,13 @@ impl Display for DividendCalendar {
 
             for payment in &self.upcoming {
                 let mut inner_table = ux::new_table();
-                
+
                 // Company info in single line
-                inner_table.add_row([
-                    Cell::new("Company"),
-                    Cell::new(payment.to_string()),
-                ]);
-                
+                inner_table.add_row([Cell::new("Company"), Cell::new(payment.to_string())]);
+
                 inner_table.add_row([
                     Cell::new("Ex-Dividend Date"),
-                    Cell::new(format_datetime(payment.ex_dividend_date)),
+                    Cell::new(format_date(payment.ex_dividend_date)),
                 ]);
                 if let Some(payment_date) = payment.payment_date {
                     inner_table.add_row([
@@ -214,10 +206,7 @@ impl Display for DividendCalendar {
                     Cell::new("Total Dividend"),
                     Cell::new(payment.total_dividend.to_string()),
                 ]);
-                inner_table.add_row([
-                    Cell::new("Type"),
-                    Cell::new(&payment.dividend_type),
-                ]);
+                inner_table.add_row([Cell::new("Type"), Cell::new(&payment.dividend_type)]);
                 table.add_row([Cell::new(inner_table)]);
             }
         } else {
