@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     };
 
     match cli.subcommand() {
-        Some((ALL_CMD, cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await?,
+        Some((ALL_CMD, cmd)) => all(token, !cmd.get_flag("aggregate")).await?,
         Some((SHARES_CMD, _)) => asset(token, InstrumentCatalog::Shares).await?,
         Some((BONDS_CMD, _)) => asset(token, InstrumentCatalog::Bonds).await?,
         Some((ETFS_CMD, _)) => asset(token, InstrumentCatalog::Etfs).await?,
