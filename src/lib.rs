@@ -28,9 +28,9 @@ pub mod ux;
 /// use rust_decimal::Decimal;
 /// use tinkoff_invest_api::tcs::Quotation;
 ///
-/// let q = Quotation { units: 1, nano: 1 };
+/// let q = Quotation { units: 1, nano: 100_000_000 };
 /// let decimal = to_decimal(Some(&q));
-/// assert_eq!(decimal.to_string(), "1.1");
+/// assert_eq!(decimal.to_string(), "1.10");
 ///
 /// let none_decimal = to_decimal(None);
 /// assert!(none_decimal.is_zero());
