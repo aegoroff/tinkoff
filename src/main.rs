@@ -8,7 +8,9 @@ use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
-    client::TinkoffInvestment,
+    client::{
+        AccountPortfolio, InstrumentCatalog, TinkoffInvestment, MAX_CONCURRENT_REQUESTS,
+    },
     domain::{
         Asset, CouponProfit, DividentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
         Profit,
@@ -38,8 +40,6 @@ const HISTORY_CMD: &str = "hi";
 const DIVIDENDS_CMD: &str = "d";
 const COUPONS_CMD: &str = "p";
 
-const MAX_CONCURRENT_REQUESTS: usize = 10;
-
 enum AssetPaper {
     Bond(Paper<CouponProfit>),
     Share(Paper<DividentProfit>),
@@ -64,11 +64,11 @@ async fn main() -> Result<()> {
 
     match cli.subcommand() {
         Some((ALL_CMD, cmd)) => Box::pin(all(token, !cmd.get_flag("aggregate"))).await?,
-        Some((SHARES_CMD, _)) => asset(token, AssetType::Shares).await?,
-        Some((BONDS_CMD, _)) => asset(token, AssetType::Bonds).await?,
-        Some((ETFS_CMD, _)) => asset(token, AssetType::Etfs).await?,
-        Some((CURR_CMD, _)) => asset(token, AssetType::Currencies).await?,
-        Some((FUTURES_CMD, _)) => asset(token, AssetType::Futures).await?,
+        Some((SHARES_CMD, _)) => asset(token, InstrumentCatalog::Shares).await?,
+        Some((BONDS_CMD, _)) => asset(token, InstrumentCatalog::Bonds).await?,
+        Some((ETFS_CMD, _)) => asset(token, InstrumentCatalog::Etfs).await?,
+        Some((CURR_CMD, _)) => asset(token, InstrumentCatalog::Currencies).await?,
+        Some((FUTURES_CMD, _)) => asset(token, InstrumentCatalog::Futures).await?,
         Some((HISTORY_CMD, cmd)) => history(token, cmd).await?,
         Some((DIVIDENDS_CMD, _)) => dividends(token).await?,
         Some((COUPONS_CMD, _)) => coupons(token).await?,
@@ -77,50 +77,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-enum AssetType {
-    Bonds,
-    Shares,
-    Etfs,
-    Futures,
-    Currencies,
-}
-
-impl AssetType {
-    fn instrument_type(&self) -> &'static str {
-        match self {
-            AssetType::Bonds => "bond",
-            AssetType::Shares => "share",
-            AssetType::Etfs => "etf",
-            AssetType::Futures => "futures",
-            AssetType::Currencies => "currency",
-        }
-    }
-
-    async fn fetch_instruments(
-        &self,
-        client: &TinkoffInvestment,
-    ) -> Result<HashMap<String, Instrument>> {
-        match self {
-            AssetType::Bonds => client.get_all_bonds_until_done().await,
-            AssetType::Shares => client.get_all_shares_until_done().await,
-            AssetType::Etfs => client.get_all_etfs_until_done().await,
-            AssetType::Futures => client.get_all_futures_until_done().await,
-            AssetType::Currencies => client.get_all_currencies_until_done().await,
-        }
-    }
-}
-
-async fn asset(token: String, asset_type: AssetType) -> Result<()> {
+async fn asset(token: String, catalog: InstrumentCatalog) -> Result<()> {
     let client = TinkoffInvestment::new(token);
-    let instruments = asset_type.fetch_instruments(&client).await?;
-    let portfolio = client
-        .get_portfolio_until_done(AccountType::Tinkoff)
+    let (portfolio, instruments) = client
+        .get_portfolio_and_catalog(AccountType::Tinkoff, catalog)
         .await?;
 
     let positions = portfolio
         .positions
         .into_iter()
-        .filter(|p| p.instrument_type == asset_type.instrument_type())
+        .filter(|p| p.instrument_type == catalog.instrument_type())
         .collect_vec();
 
     print_positions(
@@ -136,30 +102,13 @@ async fn asset(token: String, asset_type: AssetType) -> Result<()> {
 
 async fn all(token: String, output_papers: bool) -> Result<()> {
     let client = TinkoffInvestment::new(token);
+    let (portfolio, instruments) = client
+        .get_portfolio_and_instruments(AccountType::Tinkoff)
+        .await?;
 
-    let (all, shares, etfs, currencies, futures, portfolio) = tokio::join!(
-        client.get_all_bonds_until_done(),
-        client.get_all_shares_until_done(),
-        client.get_all_etfs_until_done(),
-        client.get_all_currencies_until_done(),
-        client.get_all_futures_until_done(),
-        client.get_portfolio_until_done(AccountType::Tinkoff),
-    );
-    let mut all = all?;
-    let shares = shares?;
-    let etfs = etfs?;
-    let currencies = currencies?;
-    let futures = futures?;
-
-    all.extend(shares);
-    all.extend(etfs);
-    all.extend(currencies);
-    all.extend(futures);
-
-    let portfolio = portfolio?;
     print_positions(
         &client,
-        &all,
+        &instruments,
         &portfolio.positions,
         &portfolio.account_id,
         output_papers,
@@ -409,64 +358,30 @@ fn coupons_cmd() -> Command {
         .about("Get coupon calendar for portfolio bonds")
 }
 
-/// Fetch all instruments for portfolio positions
-async fn fetch_all_instruments(client: &TinkoffInvestment) -> Result<HashMap<String, Instrument>> {
-    let (shares, bonds, etfs, currencies, futures) = tokio::join!(
-        client.get_all_shares_until_done(),
-        client.get_all_bonds_until_done(),
-        client.get_all_etfs_until_done(),
-        client.get_all_currencies_until_done(),
-        client.get_all_futures_until_done(),
-    );
-
-    let mut all = shares?;
-    all.extend(bonds?);
-    all.extend(etfs?);
-    all.extend(currencies?);
-    all.extend(futures?);
-    Ok(all)
-}
-
-/// Get portfolio and print calendar for dividends
-async fn print_dividend_calendar(token: String) -> Result<()> {
+async fn portfolio_with_instruments(
+    token: String,
+) -> Result<(TinkoffInvestment, AccountPortfolio, HashMap<String, Instrument>)> {
     let client = TinkoffInvestment::new(token);
-
-    let portfolio = client
-        .get_portfolio_until_done(AccountType::Tinkoff)
+    let (portfolio, instruments) = client
+        .get_portfolio_and_instruments(AccountType::Tinkoff)
         .await?;
-
-    let all_instruments = fetch_all_instruments(&client).await?;
-
-    let calendar = client
-        .get_dividend_calendar(portfolio.account_id, &portfolio.positions, &all_instruments)
-        .await?;
-
-    println!("{calendar}");
-    Ok(())
-}
-
-/// Get portfolio and print calendar for coupons
-async fn print_coupon_calendar(token: String) -> Result<()> {
-    let client = TinkoffInvestment::new(token);
-
-    let portfolio = client
-        .get_portfolio_until_done(AccountType::Tinkoff)
-        .await?;
-
-    let all_instruments = fetch_all_instruments(&client).await?;
-
-    let calendar = client
-        .get_coupon_calendar(portfolio.account_id, &portfolio.positions, &all_instruments)
-        .await?;
-
-    println!("{calendar}");
-    Ok(())
+    Ok((client, portfolio, instruments))
 }
 
 async fn dividends(token: String) -> Result<()> {
-    print_dividend_calendar(token).await
+    let (client, portfolio, instruments) = portfolio_with_instruments(token).await?;
+    let calendar = client
+        .get_dividend_calendar(portfolio.account_id, &portfolio.positions, &instruments)
+        .await?;
+    println!("{calendar}");
+    Ok(())
 }
 
 async fn coupons(token: String) -> Result<()> {
-    print_coupon_calendar(token).await
+    let (client, portfolio, instruments) = portfolio_with_instruments(token).await?;
+    let calendar = client
+        .get_coupon_calendar(portfolio.account_id, &portfolio.positions, &instruments)
+        .await?;
+    println!("{calendar}");
+    Ok(())
 }

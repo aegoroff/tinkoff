@@ -22,6 +22,45 @@ use crate::{
     to_currency, to_datetime_utc, to_decimal, to_money,
 };
 
+/// Maximum number of concurrent API requests when loading portfolio positions or calendars.
+pub const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+/// Instrument catalog slice returned by the Instruments API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstrumentCatalog {
+    Bonds,
+    Shares,
+    Etfs,
+    Futures,
+    Currencies,
+}
+
+impl InstrumentCatalog {
+    #[must_use]
+    pub const fn instrument_type(self) -> &'static str {
+        match self {
+            Self::Bonds => "bond",
+            Self::Shares => "share",
+            Self::Etfs => "etf",
+            Self::Futures => "futures",
+            Self::Currencies => "currency",
+        }
+    }
+
+    async fn fetch_until_done(
+        self,
+        client: &TinkoffInvestment,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        match self {
+            Self::Bonds => client.get_all_bonds_until_done().await,
+            Self::Shares => client.get_all_shares_until_done().await,
+            Self::Etfs => client.get_all_etfs_until_done().await,
+            Self::Futures => client.get_all_futures_until_done().await,
+            Self::Currencies => client.get_all_currencies_until_done().await,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AccountPortfolio {
     pub account_id: String,
@@ -189,6 +228,63 @@ impl TinkoffInvestment {
         (get_all_futures_until_done, get_all_futures)
     );
 
+    /// Fetches all instrument catalogs in parallel and merges them by FIGI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any catalog request fails after retries.
+    pub async fn get_all_instruments_until_done(
+        &self,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        let (bonds, shares, etfs, currencies, futures) = tokio::join!(
+            self.get_all_bonds_until_done(),
+            self.get_all_shares_until_done(),
+            self.get_all_etfs_until_done(),
+            self.get_all_currencies_until_done(),
+            self.get_all_futures_until_done(),
+        );
+
+        let mut all = bonds?;
+        all.extend(shares?);
+        all.extend(etfs?);
+        all.extend(currencies?);
+        all.extend(futures?);
+        Ok(all)
+    }
+
+    /// Loads the portfolio and all instrument catalogs concurrently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the portfolio or any catalog request fails after retries.
+    pub async fn get_portfolio_and_instruments(
+        &self,
+        account: AccountType,
+    ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
+        let (instruments, portfolio) = tokio::join!(
+            self.get_all_instruments_until_done(),
+            self.get_portfolio_until_done(account),
+        );
+        Ok((portfolio?, instruments?))
+    }
+
+    /// Loads the portfolio and one instrument catalog concurrently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the portfolio or catalog request fails after retries.
+    pub async fn get_portfolio_and_catalog(
+        &self,
+        account: AccountType,
+        catalog: InstrumentCatalog,
+    ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
+        let (instruments, portfolio) = tokio::join!(
+            catalog.fetch_until_done(self),
+            self.get_portfolio_until_done(account),
+        );
+        Ok((portfolio?, instruments?))
+    }
+
     /// Fetches data for each position in parallel,
     /// limiting concurrent requests with a semaphore.
     ///
@@ -206,8 +302,6 @@ impl TinkoffInvestment {
     {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
-
-        const MAX_CONCURRENT_REQUESTS: usize = 10;
 
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
         let fetch = Arc::new(fetch);
