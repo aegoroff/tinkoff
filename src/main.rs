@@ -403,17 +403,12 @@ fn coupons_cmd() -> Command {
         .about("Get coupon calendar for portfolio bonds")
 }
 
-async fn dividends(token: String) -> Result<()> {
-    let client = TinkoffInvestment::new(token);
-
-    let portfolio = client
-        .get_portfolio_until_done(AccountType::Tinkoff)
-        .await?;
-
-    // Get all instruments for portfolio positions
+/// Fetch all instruments for portfolio positions
+async fn fetch_all_instruments(
+    client: &TinkoffInvestment,
+) -> Result<HashMap<String, Instrument>> {
     let mut all_instruments = HashMap::new();
 
-    // Fetch instruments for all positions
     let (shares, bonds, etfs, currencies, futures) = tokio::join!(
         client.get_all_shares_until_done(),
         client.get_all_bonds_until_done(),
@@ -426,6 +421,19 @@ async fn dividends(token: String) -> Result<()> {
     for instrs in iter.flatten() {
         all_instruments.extend(instrs);
     }
+
+    Ok(all_instruments)
+}
+
+/// Get portfolio and print calendar for dividends
+async fn print_dividend_calendar(token: String) -> Result<()> {
+    let client = TinkoffInvestment::new(token);
+
+    let portfolio = client
+        .get_portfolio_until_done(AccountType::Tinkoff)
+        .await?;
+
+    let all_instruments = fetch_all_instruments(&client).await?;
 
     let calendar = client
         .get_dividend_calendar(portfolio.account_id, &portfolio.positions, &all_instruments)
@@ -435,29 +443,15 @@ async fn dividends(token: String) -> Result<()> {
     Ok(())
 }
 
-async fn coupons(token: String) -> Result<()> {
+/// Get portfolio and print calendar for coupons
+async fn print_coupon_calendar(token: String) -> Result<()> {
     let client = TinkoffInvestment::new(token);
 
     let portfolio = client
         .get_portfolio_until_done(AccountType::Tinkoff)
         .await?;
 
-    // Get all instruments for portfolio positions
-    let mut all_instruments = HashMap::new();
-
-    // Fetch instruments for all positions
-    let (shares, bonds, etfs, currencies, futures) = tokio::join!(
-        client.get_all_shares_until_done(),
-        client.get_all_bonds_until_done(),
-        client.get_all_etfs_until_done(),
-        client.get_all_currencies_until_done(),
-        client.get_all_futures_until_done(),
-    );
-
-    let iter = [shares, bonds, etfs, currencies, futures].into_iter();
-    for instrs in iter.flatten() {
-        all_instruments.extend(instrs);
-    }
+    let all_instruments = fetch_all_instruments(&client).await?;
 
     let calendar = client
         .get_coupon_calendar(portfolio.account_id, &portfolio.positions, &all_instruments)
@@ -465,4 +459,12 @@ async fn coupons(token: String) -> Result<()> {
 
     println!("{calendar}");
     Ok(())
+}
+
+async fn dividends(token: String) -> Result<()> {
+    print_dividend_calendar(token).await
+}
+
+async fn coupons(token: String) -> Result<()> {
+    print_coupon_calendar(token).await
 }
