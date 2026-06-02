@@ -3,7 +3,7 @@ use std::{
     ops::{self, AddAssign, DivAssign, MulAssign, SubAssign},
 };
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use comfy_table::{Attribute, Cell, TableComponent};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
@@ -171,46 +171,56 @@ impl Display for DividendCalendar {
             .fg(comfy_table::Color::DarkBlue);
         table.set_header([title]);
 
+        // Main table headers
+        let payment_date = Cell::new("Payment Date").add_attribute(Attribute::Bold);
+        let ex_dividend_date = Cell::new("Ex-Dividend Date").add_attribute(Attribute::Bold);
+        let company = Cell::new("Company").add_attribute(Attribute::Bold);
+        let dividend_per_share = Cell::new("Dividend per Share").add_attribute(Attribute::Bold);
+        let total_dividend = Cell::new("Total Dividend").add_attribute(Attribute::Bold);
+        table.add_row([
+            payment_date,
+            ex_dividend_date,
+            company,
+            dividend_per_share,
+            total_dividend,
+        ]);
+
+        let mut total_sum = Money::zero(iso_currency::Currency::RUB);
+
         // Upcoming payments
-        if !self.upcoming.is_empty() {
-            let upcoming_header = Cell::new("Upcoming Payments")
-                .add_attribute(Attribute::Bold)
-                .fg(comfy_table::Color::DarkGreen);
-            table.add_row([upcoming_header]);
-
+        if self.upcoming.is_empty() {
+            table.add_row([
+                Cell::new("No upcoming payments"),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+            ]);
+        } else {
             for payment in &self.upcoming {
-                let mut inner_table = ux::new_table();
+                let payment_date_str = payment
+                    .payment_date
+                    .map_or_else(|| "-".to_string(), format_date);
 
-                // Company info in single line
-                inner_table.add_row([Cell::new("Company"), Cell::new(payment.to_string())]);
-
-                inner_table.add_row([
-                    Cell::new("Ex-Dividend Date"),
+                table.add_row([
+                    Cell::new(payment_date_str),
                     Cell::new(format_date(payment.ex_dividend_date)),
-                ]);
-                if let Some(payment_date) = payment.payment_date {
-                    inner_table.add_row([
-                        Cell::new("Payment Date"),
-                        Cell::new(format_date(payment_date)),
-                    ]);
-                }
-                inner_table.add_row([
-                    Cell::new("Dividend per Share"),
+                    Cell::new(payment.name.clone()),
                     Cell::new(payment.dividend_per_share.to_string()),
-                ]);
-                inner_table.add_row([
-                    Cell::new("Quantity"),
-                    Cell::new(payment.quantity.round_dp(2).to_string()),
-                ]);
-                inner_table.add_row([
-                    Cell::new("Total Dividend"),
                     Cell::new(payment.total_dividend.to_string()),
                 ]);
-                inner_table.add_row([Cell::new("Type"), Cell::new(&payment.dividend_type)]);
-                table.add_row([Cell::new(inner_table)]);
+
+                total_sum += payment.total_dividend;
             }
-        } else {
-            table.add_row([Cell::new("No upcoming payments")]);
+
+            // Total row
+            table.add_row([
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new("Total").add_attribute(Attribute::Bold),
+                Cell::new(""),
+                Cell::new(total_sum.to_string()).add_attribute(Attribute::Bold),
+            ]);
         }
 
         write!(f, "{table}")

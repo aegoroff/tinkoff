@@ -417,8 +417,7 @@ impl TinkoffInvestment {
                 let ex_dividend_date = dividend
                     .record_date
                     .as_ref()
-                    .map(|d| to_datetime_utc(Some(d)))
-                    .unwrap_or(now);
+                    .map_or(now, |d| to_datetime_utc(Some(d)));
 
                 let payment_date = dividend
                     .payment_date
