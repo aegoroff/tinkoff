@@ -217,8 +217,6 @@ impl Display for DividendCalendar {
             total_dividend,
         ]);
 
-        let mut total_sum = Money::zero(iso_currency::Currency::RUB);
-
         // Upcoming payments
         if self.upcoming.is_empty() {
             table.add_row([
@@ -229,29 +227,143 @@ impl Display for DividendCalendar {
                 Cell::new(""),
             ]);
         } else {
+            // Group by year and month
+            let mut grouped: std::collections::HashMap<(i32, u32), Vec<&DividendPayment>> =
+                std::collections::HashMap::new();
+
             for payment in &self.upcoming {
-                let payment_date_str = payment
-                    .payment_date
-                    .map_or_else(|| "-".to_string(), format_date);
-
-                table.add_row([
-                    Cell::new(payment_date_str),
-                    Cell::new(format_date(payment.ex_dividend_date)),
-                    Cell::new(payment.name.clone()),
-                    Cell::new(payment.dividend_per_share.to_string()),
-                    Cell::new(payment.total_dividend.to_string()),
-                ]);
-
-                total_sum += payment.total_dividend;
+                let year = payment.ex_dividend_date.year();
+                let month = payment.ex_dividend_date.month();
+                grouped.entry((year, month)).or_default().push(payment);
             }
 
-            // Total row
+            // Sort keys by year and month
+            let mut keys: Vec<_> = grouped.keys().copied().collect();
+            keys.sort_by(|a, b| {
+                let year_cmp = a.0.cmp(&b.0);
+                if year_cmp == std::cmp::Ordering::Equal {
+                    a.1.cmp(&b.1)
+                } else {
+                    year_cmp
+                }
+            });
+
+            let mut grand_total = Money::zero(iso_currency::Currency::RUB);
+
+            // Group by year
+            let mut by_year: std::collections::HashMap<i32, Vec<u32>> =
+                std::collections::HashMap::new();
+            for (year, month) in &keys {
+                by_year.entry(*year).or_default().push(*month);
+            }
+
+            let mut year_keys: Vec<_> = by_year.keys().copied().collect();
+            year_keys.sort_unstable();
+
+            for year in year_keys {
+                // Year header
+                table.add_row([
+                    Cell::new(format!("=== {year} ==="))
+                        .add_attribute(Attribute::Bold)
+                        .fg(comfy_table::Color::DarkCyan),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                ]);
+
+                let mut year_total = Money::zero(iso_currency::Currency::RUB);
+                let months = by_year.get(&year).unwrap();
+
+                for month in months {
+                    // Month header
+                    let month_name = match month {
+                        1 => "January",
+                        2 => "February",
+                        3 => "March",
+                        4 => "April",
+                        5 => "May",
+                        6 => "June",
+                        7 => "July",
+                        8 => "August",
+                        9 => "September",
+                        10 => "October",
+                        11 => "November",
+                        12 => "December",
+                        _ => "Unknown",
+                    };
+                    table.add_row([
+                        Cell::new(format!("--- {month_name} ---")),
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(""),
+                    ]);
+
+                    let mut month_total = Money::zero(iso_currency::Currency::RUB);
+                    let payments = grouped.get(&(year, *month)).unwrap();
+
+                    for payment in payments {
+                        let payment_date_str = payment
+                            .payment_date
+                            .map_or_else(|| "-".to_string(), format_date);
+
+                        table.add_row([
+                            Cell::new(payment_date_str),
+                            Cell::new(format_date(payment.ex_dividend_date)),
+                            Cell::new(payment.name.clone()),
+                            Cell::new(payment.dividend_per_share.to_string()),
+                            Cell::new(payment.total_dividend.to_string()),
+                        ]);
+
+                        month_total += payment.total_dividend;
+                    }
+
+                    // Month total
+                    table.add_row([
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(format!("Month {month_name} Total:"))
+                            .add_attribute(Attribute::Bold),
+                        Cell::new(""),
+                        Cell::new(month_total.to_string()).add_attribute(Attribute::Bold),
+                    ]);
+
+                    year_total += month_total;
+                    grand_total += month_total;
+                }
+
+                // Year total
+                table.add_row([
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(format!("Year {year} Total:"))
+                        .add_attribute(Attribute::Bold)
+                        .fg(comfy_table::Color::DarkYellow),
+                    Cell::new(""),
+                    Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
+                ]);
+
+                table.add_row([
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                ]);
+            }
+
+            // Grand total row
             table.add_row([
                 Cell::new(""),
                 Cell::new(""),
-                Cell::new("Total").add_attribute(Attribute::Bold),
+                Cell::new("Grand Total")
+                    .add_attribute(Attribute::Bold)
+                    .fg(comfy_table::Color::DarkRed),
                 Cell::new(""),
-                Cell::new(total_sum.to_string()).add_attribute(Attribute::Bold),
+                Cell::new(grand_total.to_string())
+                    .add_attribute(Attribute::Bold)
+                    .fg(comfy_table::Color::DarkGreen),
             ]);
         }
 
@@ -282,8 +394,6 @@ impl Display for CouponCalendar {
             total_coupon,
         ]);
 
-        let mut total_sum = Money::zero(iso_currency::Currency::RUB);
-
         // Upcoming payments
         if self.upcoming.is_empty() {
             table.add_row([
@@ -294,27 +404,141 @@ impl Display for CouponCalendar {
                 Cell::new(""),
             ]);
         } else {
+            // Group by year and month
+            let mut grouped: std::collections::HashMap<(i32, u32), Vec<&CouponPayment>> =
+                std::collections::HashMap::new();
+
             for payment in &self.upcoming {
-                let payment_date_str = format_date(payment.coupon_date);
-
-                table.add_row([
-                    Cell::new(payment_date_str),
-                    Cell::new(format_date(payment.coupon_date)),
-                    Cell::new(payment.name.clone()),
-                    Cell::new(payment.coupon_per_bond.to_string()),
-                    Cell::new(payment.total_coupon.to_string()),
-                ]);
-
-                total_sum += payment.total_coupon;
+                let year = payment.coupon_date.year();
+                let month = payment.coupon_date.month();
+                grouped.entry((year, month)).or_default().push(payment);
             }
 
-            // Total row
+            // Sort keys by year and month
+            let mut keys: Vec<_> = grouped.keys().copied().collect();
+            keys.sort_by(|a, b| {
+                let year_cmp = a.0.cmp(&b.0);
+                if year_cmp == std::cmp::Ordering::Equal {
+                    a.1.cmp(&b.1)
+                } else {
+                    year_cmp
+                }
+            });
+
+            let mut grand_total = Money::zero(iso_currency::Currency::RUB);
+
+            // Group by year
+            let mut by_year: std::collections::HashMap<i32, Vec<u32>> =
+                std::collections::HashMap::new();
+            for (year, month) in &keys {
+                by_year.entry(*year).or_default().push(*month);
+            }
+
+            let mut year_keys: Vec<_> = by_year.keys().copied().collect();
+            year_keys.sort_unstable();
+
+            for year in year_keys {
+                // Year header
+                table.add_row([
+                    Cell::new(format!("=== {year} ==="))
+                        .add_attribute(Attribute::Bold)
+                        .fg(comfy_table::Color::DarkCyan),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                ]);
+
+                let mut year_total = Money::zero(iso_currency::Currency::RUB);
+                let months = by_year.get(&year).unwrap();
+
+                for month in months {
+                    // Month header
+                    let month_name = match month {
+                        1 => "January",
+                        2 => "February",
+                        3 => "March",
+                        4 => "April",
+                        5 => "May",
+                        6 => "June",
+                        7 => "July",
+                        8 => "August",
+                        9 => "September",
+                        10 => "October",
+                        11 => "November",
+                        12 => "December",
+                        _ => "Unknown",
+                    };
+                    table.add_row([
+                        Cell::new(format!("--- {month_name} ---")),
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(""),
+                    ]);
+
+                    let mut month_total = Money::zero(iso_currency::Currency::RUB);
+                    let payments = grouped.get(&(year, *month)).unwrap();
+
+                    for payment in payments {
+                        let payment_date_str = format_date(payment.coupon_date);
+
+                        table.add_row([
+                            Cell::new(payment_date_str),
+                            Cell::new(format_date(payment.coupon_date)),
+                            Cell::new(payment.name.clone()),
+                            Cell::new(payment.coupon_per_bond.to_string()),
+                            Cell::new(payment.total_coupon.to_string()),
+                        ]);
+
+                        month_total += payment.total_coupon;
+                    }
+
+                    // Month total
+                    table.add_row([
+                        Cell::new(""),
+                        Cell::new(""),
+                        Cell::new(format!("Month {month_name} Total:"))
+                            .add_attribute(Attribute::Bold),
+                        Cell::new(""),
+                        Cell::new(month_total.to_string()).add_attribute(Attribute::Bold),
+                    ]);
+
+                    year_total += month_total;
+                    grand_total += month_total;
+                }
+
+                // Year total
+                table.add_row([
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(format!("Year {year} Total:"))
+                        .add_attribute(Attribute::Bold)
+                        .fg(comfy_table::Color::DarkYellow),
+                    Cell::new(""),
+                    Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
+                ]);
+
+                table.add_row([
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                ]);
+            }
+
+            // Grand total row
             table.add_row([
                 Cell::new(""),
                 Cell::new(""),
-                Cell::new("Total").add_attribute(Attribute::Bold),
+                Cell::new("Grand Total")
+                    .add_attribute(Attribute::Bold)
+                    .fg(comfy_table::Color::DarkRed),
                 Cell::new(""),
-                Cell::new(total_sum.to_string()).add_attribute(Attribute::Bold),
+                Cell::new(grand_total.to_string())
+                    .add_attribute(Attribute::Bold)
+                    .fg(comfy_table::Color::DarkGreen),
             ]);
         }
 
