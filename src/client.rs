@@ -6,18 +6,18 @@ use std::sync::Arc;
 use tinkoff_invest_api::{
     TIError, TIResult, TinkoffInvestService,
     tcs::{
-        Account, AccountType, Dividend, FindInstrumentRequest, GetAccountsRequest,
-        GetDividendsRequest, InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest,
-        Operation, OperationState, OperationType, OperationsRequest, PortfolioPosition,
-        PortfolioRequest, portfolio_request::CurrencyRequest,
+        Account, AccountType, Coupon, Dividend, FindInstrumentRequest, GetAccountsRequest,
+        GetBondCouponsRequest, GetDividendsRequest, InstrumentShort, InstrumentStatus,
+        InstrumentType, InstrumentsRequest, Operation, OperationState, OperationType,
+        OperationsRequest, PortfolioPosition, PortfolioRequest, portfolio_request::CurrencyRequest,
     },
 };
 use tokio::time::{Duration, sleep};
 
 use crate::{
     domain::{
-        DividendCalendar, DividendPayment, History, HistoryItem, Instrument, Money, Paper,
-        Position, Profit, Totals,
+        CouponCalendar, CouponPayment, DividendCalendar, DividendPayment, History, HistoryItem,
+        Instrument, Money, Paper, Position, Profit, Totals,
     },
     to_currency, to_datetime_utc, to_decimal, to_money,
 };
@@ -509,6 +509,151 @@ impl TinkoffInvestment {
         let response = response.into_inner();
 
         Ok(response.dividends)
+    }
+
+    /// Get coupon calendar for the portfolio
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if coupons cannot be retrieved from remote server.
+    pub async fn get_coupon_calendar(
+        &self,
+        _account_id: String,
+        positions: &[PortfolioPosition],
+        instruments: &HashMap<String, Instrument>,
+    ) -> color_eyre::Result<CouponCalendar> {
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+        let mut upcoming = Vec::new();
+        let now = chrono::Utc::now();
+
+        // Use JoinSet for parallel coupon loading
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+        let mut set = JoinSet::new();
+        let instruments = Arc::new(instruments.clone());
+
+        // Filter only bond positions
+        let bond_positions: Vec<_> = positions
+            .iter()
+            .filter(|p| p.instrument_type == "bond")
+            .cloned()
+            .collect();
+
+        for position in bond_positions {
+            let client = self.clone();
+            let figi = position.figi.clone();
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let position_clone = position.clone();
+
+            set.spawn(async move {
+                let _permit = permit;
+                let coupons = client
+                    .get_coupons_for_figi(figi.clone())
+                    .await
+                    .unwrap_or_default();
+
+                (position_clone, coupons)
+            });
+        }
+
+        // Collect results
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((position, coupons)) => {
+                    for coupon in coupons {
+                        let Some(instrument) = instruments.get(&position.figi) else {
+                            continue;
+                        };
+
+                        // Get coupon value from pay_one_bond
+                        let coupon_value = coupon
+                            .pay_one_bond
+                            .as_ref()
+                            .and_then(|d| to_money(Some(d)))
+                            .unwrap_or_else(|| Money::zero(Currency::RUB));
+
+                        // Get coupon date
+                        let coupon_date = coupon
+                            .coupon_date
+                            .as_ref()
+                            .map_or(now, |d| to_datetime_utc(Some(d)));
+
+                        // Get quantity from portfolio position
+                        let quantity = to_decimal(position.quantity.as_ref());
+
+                        // Calculate total coupon = coupon_value * quantity
+                        let total_coupon = coupon_value * quantity;
+
+                        // Get coupon type as string
+                        let coupon_type = match coupon.coupon_type() {
+                            tinkoff_invest_api::tcs::CouponType::Unspecified => "Unspecified",
+                            tinkoff_invest_api::tcs::CouponType::Constant => "Constant",
+                            tinkoff_invest_api::tcs::CouponType::Floating => "Floating",
+                            tinkoff_invest_api::tcs::CouponType::Discount => "Discount",
+                            tinkoff_invest_api::tcs::CouponType::Mortgage => "Mortgage",
+                            tinkoff_invest_api::tcs::CouponType::Fix => "Fix",
+                            tinkoff_invest_api::tcs::CouponType::Variable => "Variable",
+                            tinkoff_invest_api::tcs::CouponType::Other => "Other",
+                        };
+
+                        let coupon_payment = CouponPayment {
+                            figi: position.figi.clone(),
+                            ticker: instrument.ticker.clone(),
+                            name: instrument.name.clone(),
+                            currency: coupon_value.currency,
+                            coupon_per_bond: coupon_value,
+                            total_coupon,
+                            quantity,
+                            coupon_date,
+                            coupon_type: coupon_type.to_string(),
+                        };
+
+                        // Only include upcoming payments
+                        if coupon_date > now {
+                            upcoming.push(coupon_payment);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+            }
+        }
+
+        // Sort by date
+        upcoming.sort_by_key(|a| a.coupon_date);
+
+        Ok(CouponCalendar { upcoming })
+    }
+
+    /// Get coupons for a specific FIGI
+    async fn get_coupons_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Coupon>> {
+        let channel = self
+            .service
+            .create_channel()
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let mut instruments = self
+            .service
+            .instruments(channel)
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+
+        let request = GetBondCouponsRequest {
+            instrument_id: figi,
+            from: None,
+            to: None,
+            ..Default::default()
+        };
+        let response = instruments
+            .get_bond_coupons(request)
+            .await
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let response = response.into_inner();
+
+        Ok(response.events)
     }
 }
 

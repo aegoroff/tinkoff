@@ -145,6 +145,38 @@ pub struct DividendCalendar {
     pub upcoming: Vec<DividendPayment>,
 }
 
+/// Coupon payment information
+#[derive(Clone)]
+pub struct CouponPayment {
+    pub figi: String,
+    pub ticker: String,
+    pub name: String,
+    pub currency: Currency,
+    pub coupon_per_bond: Money,
+    pub total_coupon: Money,
+    pub quantity: Decimal,
+    pub coupon_date: DateTime<Utc>,
+    pub coupon_type: String,
+}
+
+/// Coupon calendar with upcoming payments
+pub struct CouponCalendar {
+    pub upcoming: Vec<CouponPayment>,
+}
+
+impl Display for CouponPayment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({} | {} | {})",
+            self.name,
+            self.ticker,
+            self.figi,
+            self.currency.code()
+        )
+    }
+}
+
 impl Display for DividendPayment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -211,6 +243,69 @@ impl Display for DividendCalendar {
                 ]);
 
                 total_sum += payment.total_dividend;
+            }
+
+            // Total row
+            table.add_row([
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new("Total").add_attribute(Attribute::Bold),
+                Cell::new(""),
+                Cell::new(total_sum.to_string()).add_attribute(Attribute::Bold),
+            ]);
+        }
+
+        write!(f, "{table}")
+    }
+}
+
+impl Display for CouponCalendar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut table = ux::new_table();
+
+        let title = Cell::new("Coupon Calendar")
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkBlue);
+        table.set_header([title]);
+
+        // Main table headers
+        let payment_date = Cell::new("Payment Date").add_attribute(Attribute::Bold);
+        let coupon_date = Cell::new("Coupon Date").add_attribute(Attribute::Bold);
+        let company = Cell::new("Company").add_attribute(Attribute::Bold);
+        let coupon_per_bond = Cell::new("Coupon per Bond").add_attribute(Attribute::Bold);
+        let total_coupon = Cell::new("Total Coupon").add_attribute(Attribute::Bold);
+        table.add_row([
+            payment_date,
+            coupon_date,
+            company,
+            coupon_per_bond,
+            total_coupon,
+        ]);
+
+        let mut total_sum = Money::zero(iso_currency::Currency::RUB);
+
+        // Upcoming payments
+        if self.upcoming.is_empty() {
+            table.add_row([
+                Cell::new("No upcoming payments"),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+            ]);
+        } else {
+            for payment in &self.upcoming {
+                let payment_date_str = format_date(payment.coupon_date);
+
+                table.add_row([
+                    Cell::new(payment_date_str),
+                    Cell::new(format_date(payment.coupon_date)),
+                    Cell::new(payment.name.clone()),
+                    Cell::new(payment.coupon_per_bond.to_string()),
+                    Cell::new(payment.total_coupon.to_string()),
+                ]);
+
+                total_sum += payment.total_coupon;
             }
 
             // Total row
