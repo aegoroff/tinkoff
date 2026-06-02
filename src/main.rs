@@ -411,8 +411,6 @@ fn coupons_cmd() -> Command {
 
 /// Fetch all instruments for portfolio positions
 async fn fetch_all_instruments(client: &TinkoffInvestment) -> Result<HashMap<String, Instrument>> {
-    let mut all_instruments = HashMap::new();
-
     let (shares, bonds, etfs, currencies, futures) = tokio::join!(
         client.get_all_shares_until_done(),
         client.get_all_bonds_until_done(),
@@ -421,12 +419,12 @@ async fn fetch_all_instruments(client: &TinkoffInvestment) -> Result<HashMap<Str
         client.get_all_futures_until_done(),
     );
 
-    let iter = [shares, bonds, etfs, currencies, futures].into_iter();
-    for instrs in iter.flatten() {
-        all_instruments.extend(instrs);
-    }
-
-    Ok(all_instruments)
+    let mut all = shares?;
+    all.extend(bonds?);
+    all.extend(etfs?);
+    all.extend(currencies?);
+    all.extend(futures?);
+    Ok(all)
 }
 
 /// Get portfolio and print calendar for dividends
