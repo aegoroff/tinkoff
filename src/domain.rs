@@ -1211,7 +1211,63 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use rstest::{fixture, rstest};
+
+    #[test]
+    fn money_add_same_currency_ok() {
+        let m1 = Money::from_value(dec!(100), Currency::RUB);
+        let m2 = Money::from_value(dec!(50), Currency::RUB);
+        let result = m1 + m2;
+        assert_eq!(result.value, dec!(150));
+        assert_eq!(result.currency, Currency::RUB);
+    }
+
+    #[test]
+    fn income_percent_zero_balance() {
+        let income = Income::new(
+            Money::from_value(dec!(100), Currency::RUB),
+            Money::from_value(dec!(0), Currency::RUB),
+        );
+        assert!(income.percent().is_zero());
+    }
+
+    #[test]
+    fn calendar_grouping_sorts_correctly() {
+        // Test that format_calendar sorts by year then month
+        let payments = vec![
+            DividendPayment {
+                figi: "1".to_string(),
+                ticker: "A".to_string(),
+                name: "A".to_string(),
+                currency: Currency::RUB,
+                dividend_per_share: Money::from_value(dec!(1), Currency::RUB),
+                total_dividend: Money::from_value(dec!(10), Currency::RUB),
+                quantity: dec!(10),
+                ex_dividend_date: Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).unwrap(),
+                payment_date: None,
+                dividend_type: "type".to_string(),
+            },
+            DividendPayment {
+                figi: "2".to_string(),
+                ticker: "B".to_string(),
+                name: "B".to_string(),
+                currency: Currency::RUB,
+                dividend_per_share: Money::from_value(dec!(2), Currency::RUB),
+                total_dividend: Money::from_value(dec!(20), Currency::RUB),
+                quantity: dec!(10),
+                ex_dividend_date: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                payment_date: None,
+                dividend_type: "type".to_string(),
+            },
+        ];
+        let calendar = DividendCalendar { upcoming: payments };
+        let output = format!("{calendar}");
+        // 2024 should appear before 2025
+        let pos_2024 = output.find("=== 2024 ===").unwrap();
+        let pos_2025 = output.find("=== 2025 ===").unwrap();
+        assert!(pos_2024 < pos_2025);
+    }
 
     #[rstest]
     fn portfolio_balance(test_portfolio: Portfolio) {
