@@ -391,62 +391,89 @@ impl TinkoffInvestment {
         positions: &[PortfolioPosition],
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<DividendCalendar> {
-        let mut upcoming = Vec::new();
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
 
+        const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+        let mut upcoming = Vec::new();
         let now = chrono::Utc::now();
 
+        // Use JoinSet for parallel dividend loading
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+        let mut set = JoinSet::new();
+        let instruments = Arc::new(instruments.clone());
+
         for position in positions {
-            // Get dividends for each position
-            let dividends = self
-                .get_dividends_for_figi(position.figi.clone())
-                .await
-                .unwrap_or_default();
+            let client = self.clone();
+            let figi = position.figi.clone();
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let position_clone = position.clone();
 
-            for dividend in dividends {
-                let Some(instrument) = instruments.get(&position.figi) else {
-                    continue;
-                };
+            set.spawn(async move {
+                let _permit = permit;
+                let dividends = client
+                    .get_dividends_for_figi(figi.clone())
+                    .await
+                    .unwrap_or_default();
 
-                let dividend_per_share = dividend
-                    .dividend_net
-                    .as_ref()
-                    .and_then(|d| to_money(Some(d)))
-                    .unwrap_or_else(|| Money::zero(Currency::RUB));
+                (position_clone, dividends)
+            });
+        }
 
-                // Use record_date as ex-dividend date (ex_dividend_date not available)
-                let ex_dividend_date = dividend
-                    .record_date
-                    .as_ref()
-                    .map_or(now, |d| to_datetime_utc(Some(d)));
+        // Collect results
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((position, dividends)) => {
+                    for dividend in dividends {
+                        let Some(instrument) = instruments.get(&position.figi) else {
+                            continue;
+                        };
 
-                let payment_date = dividend
-                    .payment_date
-                    .as_ref()
-                    .map(|d| to_datetime_utc(Some(d)));
+                        let dividend_per_share = dividend
+                            .dividend_net
+                            .as_ref()
+                            .and_then(|d| to_money(Some(d)))
+                            .unwrap_or_else(|| Money::zero(Currency::RUB));
 
-                // Get quantity from portfolio position
-                let quantity = to_decimal(position.quantity.as_ref());
+                        // Use record_date as ex-dividend date (ex_dividend_date not available)
+                        let ex_dividend_date = dividend
+                            .record_date
+                            .as_ref()
+                            .map_or(now, |d| to_datetime_utc(Some(d)));
 
-                // Calculate total dividend = dividend_per_share * quantity
-                let total_dividend = dividend_per_share * quantity;
+                        let payment_date = dividend
+                            .payment_date
+                            .as_ref()
+                            .map(|d| to_datetime_utc(Some(d)));
 
-                let dividend_payment = DividendPayment {
-                    figi: position.figi.clone(),
-                    ticker: instrument.ticker.clone(),
-                    name: instrument.name.clone(),
-                    currency: dividend_per_share.currency,
-                    dividend_per_share,
-                    total_dividend,
-                    quantity,
-                    ex_dividend_date,
-                    payment_date,
-                    dividend_type: dividend.dividend_type,
-                };
+                        // Get quantity from portfolio position
+                        let quantity = to_decimal(position.quantity.as_ref());
 
-                // Only include upcoming payments
-                if ex_dividend_date > now {
-                    upcoming.push(dividend_payment);
+                        // Calculate total dividend = dividend_per_share * quantity
+                        let total_dividend = dividend_per_share * quantity;
+
+                        let dividend_payment = DividendPayment {
+                            figi: position.figi.clone(),
+                            ticker: instrument.ticker.clone(),
+                            name: instrument.name.clone(),
+                            currency: dividend_per_share.currency,
+                            dividend_per_share,
+                            total_dividend,
+                            quantity,
+                            ex_dividend_date,
+                            payment_date,
+                            dividend_type: dividend.dividend_type,
+                        };
+
+                        // Only include upcoming payments
+                        if ex_dividend_date > now {
+                            upcoming.push(dividend_payment);
+                        }
+                    }
                 }
+                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
             }
         }
 
