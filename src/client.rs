@@ -216,7 +216,13 @@ impl TinkoffInvestment {
         for position in positions {
             let client = self.clone();
             let figi = position.figi.clone();
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Failed to acquire semaphore: {e}");
+                    continue;
+                }
+            };
             let position_clone = position.clone();
             let fetch = Arc::clone(&fetch);
 

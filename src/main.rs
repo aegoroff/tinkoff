@@ -258,7 +258,13 @@ async fn print_positions(
         let client = Arc::clone(&client);
         let instruments = Arc::clone(&instruments);
         let account_id = account_id.clone();
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to acquire semaphore: {e}");
+                continue;
+            }
+        };
         let progresser = Arc::clone(&progresser);
         let p = p.clone();
 
@@ -404,9 +410,7 @@ fn coupons_cmd() -> Command {
 }
 
 /// Fetch all instruments for portfolio positions
-async fn fetch_all_instruments(
-    client: &TinkoffInvestment,
-) -> Result<HashMap<String, Instrument>> {
+async fn fetch_all_instruments(client: &TinkoffInvestment) -> Result<HashMap<String, Instrument>> {
     let mut all_instruments = HashMap::new();
 
     let (shares, bonds, etfs, currencies, futures) = tokio::join!(
