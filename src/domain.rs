@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::Display,
     ops::{self, AddAssign, DivAssign, MulAssign, SubAssign},
 };
@@ -164,6 +165,138 @@ pub struct CouponCalendar {
     pub upcoming: Vec<CouponPayment>,
 }
 
+/// Trait for calendar payment items (dividends, coupons, etc.)
+pub trait CalendarPayment: Clone {
+    /// Get the payment date for grouping (used for sorting in calendar)
+    fn payment_date(&self) -> DateTime<Utc>;
+
+    /// Get the ex-date / coupon date for display
+    fn ex_date(&self) -> DateTime<Utc>;
+
+    /// Get the instrument name
+    fn name(&self) -> &str;
+
+    /// Get the payment amount per unit (dividend per share, coupon per bond)
+    fn payment_per_unit(&self) -> Money;
+
+    /// Get the total payment amount
+    fn total_payment(&self) -> Money;
+
+    /// Get the calendar title (e.g., "Dividend Calendar", "Coupon Calendar")
+    fn calendar_title() -> &'static str;
+
+    /// Get the column headers for the table
+    fn column_headers() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    );
+
+    /// Get the empty message
+    #[must_use]
+    fn empty_message() -> &'static str {
+        "No upcoming payments"
+    }
+
+    /// Get month label
+    #[must_use]
+    fn month_label(month_name: &str) -> String {
+        format!("Month {month_name} Total:")
+    }
+
+    /// Get year label
+    #[must_use]
+    fn year_label(year: i32) -> String {
+        format!("Year {year} Total:")
+    }
+}
+
+impl CalendarPayment for DividendPayment {
+    fn payment_date(&self) -> DateTime<Utc> {
+        self.payment_date.unwrap_or(self.ex_dividend_date)
+    }
+
+    fn ex_date(&self) -> DateTime<Utc> {
+        self.ex_dividend_date
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn payment_per_unit(&self) -> Money {
+        self.dividend_per_share
+    }
+
+    fn total_payment(&self) -> Money {
+        self.total_dividend
+    }
+
+    fn calendar_title() -> &'static str {
+        "Dividend Calendar"
+    }
+
+    fn column_headers() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        (
+            "Payment Date",
+            "Ex-Dividend Date",
+            "Company",
+            "Dividend per Share",
+            "Total Dividend",
+        )
+    }
+}
+
+impl CalendarPayment for CouponPayment {
+    fn payment_date(&self) -> DateTime<Utc> {
+        self.coupon_date
+    }
+
+    fn ex_date(&self) -> DateTime<Utc> {
+        self.coupon_date
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn payment_per_unit(&self) -> Money {
+        self.coupon_per_bond
+    }
+
+    fn total_payment(&self) -> Money {
+        self.total_coupon
+    }
+
+    fn calendar_title() -> &'static str {
+        "Coupon Calendar"
+    }
+
+    fn column_headers() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        (
+            "Payment Date",
+            "Coupon Date",
+            "Company",
+            "Coupon per Bond",
+            "Total Coupon",
+        )
+    }
+}
+
 impl Display for CouponPayment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -194,357 +327,187 @@ fn format_date(dt: DateTime<Utc>) -> String {
     format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day())
 }
 
-impl Display for DividendCalendar {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut table = ux::new_table();
+fn month_name(month: u32) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "Unknown",
+    }
+}
 
-        let title = Cell::new("Dividend Calendar")
-            .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::DarkBlue);
-        table.set_header([title]);
+/// Generic calendar Display implementation for any [`CalendarPayment`] type
+fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
+    let mut table = ux::new_table();
 
-        // Main table headers
-        let payment_date = Cell::new("Payment Date").add_attribute(Attribute::Bold);
-        let ex_dividend_date = Cell::new("Ex-Dividend Date").add_attribute(Attribute::Bold);
-        let company = Cell::new("Company").add_attribute(Attribute::Bold);
-        let dividend_per_share = Cell::new("Dividend per Share").add_attribute(Attribute::Bold);
-        let total_dividend = Cell::new("Total Dividend").add_attribute(Attribute::Bold);
+    let title = Cell::new(P::calendar_title())
+        .add_attribute(Attribute::Bold)
+        .fg(comfy_table::Color::DarkBlue);
+    table.set_header([title]);
+
+    // Main table headers
+    let (payment_date_hdr, ex_date_hdr, company_hdr, per_unit_hdr, total_hdr) = P::column_headers();
+    let payment_date = Cell::new(payment_date_hdr).add_attribute(Attribute::Bold);
+    let ex_date = Cell::new(ex_date_hdr).add_attribute(Attribute::Bold);
+    let company = Cell::new(company_hdr).add_attribute(Attribute::Bold);
+    let per_unit = Cell::new(per_unit_hdr).add_attribute(Attribute::Bold);
+    let total = Cell::new(total_hdr).add_attribute(Attribute::Bold);
+    table.add_row([payment_date, ex_date, company, per_unit, total]);
+
+    // Upcoming payments
+    if upcoming.is_empty() {
         table.add_row([
-            payment_date,
-            ex_dividend_date,
-            company,
-            dividend_per_share,
-            total_dividend,
+            Cell::new(P::empty_message()),
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new(""),
         ]);
+    } else {
+        // Group by year and month based on payment date
+        let mut grouped: HashMap<(i32, u32), Vec<&P>> = HashMap::new();
 
-        // Upcoming payments
-        if self.upcoming.is_empty() {
+        for payment in upcoming {
+            let date = payment.payment_date();
+            let year = date.year();
+            let month = date.month();
+            grouped.entry((year, month)).or_default().push(payment);
+        }
+
+        // Sort keys by year and month
+        let mut keys: Vec<_> = grouped.keys().copied().collect();
+        keys.sort_by(|a, b| {
+            let year_cmp = a.0.cmp(&b.0);
+            if year_cmp == std::cmp::Ordering::Equal {
+                a.1.cmp(&b.1)
+            } else {
+                year_cmp
+            }
+        });
+
+        let mut grand_total = Money::zero(iso_currency::Currency::RUB);
+
+        // Group by year
+        let mut by_year: HashMap<i32, Vec<u32>> = HashMap::new();
+        for (year, month) in &keys {
+            by_year.entry(*year).or_default().push(*month);
+        }
+
+        let mut year_keys: Vec<_> = by_year.keys().copied().collect();
+        year_keys.sort_unstable();
+
+        for year in year_keys {
+            // Year header
             table.add_row([
-                Cell::new("No upcoming payments"),
+                Cell::new(format!("=== {year} ==="))
+                    .add_attribute(Attribute::Bold)
+                    .fg(comfy_table::Color::DarkCyan),
                 Cell::new(""),
                 Cell::new(""),
                 Cell::new(""),
                 Cell::new(""),
             ]);
-        } else {
-            // Group by year and month
-            let mut grouped: std::collections::HashMap<(i32, u32), Vec<&DividendPayment>> =
-                std::collections::HashMap::new();
 
-            for payment in &self.upcoming {
-                // Use payment_date if available, otherwise fall back to ex_dividend_date
-                let date = payment.payment_date.unwrap_or(payment.ex_dividend_date);
-                let year = date.year();
-                let month = date.month();
-                grouped.entry((year, month)).or_default().push(payment);
-            }
+            let mut year_total = Money::zero(iso_currency::Currency::RUB);
+            let months = by_year.get(&year).unwrap();
 
-            // Sort keys by year and month
-            let mut keys: Vec<_> = grouped.keys().copied().collect();
-            keys.sort_by(|a, b| {
-                let year_cmp = a.0.cmp(&b.0);
-                if year_cmp == std::cmp::Ordering::Equal {
-                    a.1.cmp(&b.1)
-                } else {
-                    year_cmp
-                }
-            });
-
-            let mut grand_total = Money::zero(iso_currency::Currency::RUB);
-
-            // Group by year
-            let mut by_year: std::collections::HashMap<i32, Vec<u32>> =
-                std::collections::HashMap::new();
-            for (year, month) in &keys {
-                by_year.entry(*year).or_default().push(*month);
-            }
-
-            let mut year_keys: Vec<_> = by_year.keys().copied().collect();
-            year_keys.sort_unstable();
-
-            for year in year_keys {
-                // Year header
+            for month in months {
+                // Month header
+                let month_name_str = month_name(*month);
                 table.add_row([
-                    Cell::new(format!("=== {year} ==="))
-                        .add_attribute(Attribute::Bold)
-                        .fg(comfy_table::Color::DarkCyan),
+                    Cell::new(format!("--- {month_name_str} ---")),
                     Cell::new(""),
                     Cell::new(""),
                     Cell::new(""),
                     Cell::new(""),
                 ]);
 
-                let mut year_total = Money::zero(iso_currency::Currency::RUB);
-                let months = by_year.get(&year).unwrap();
+                let mut month_total = Money::zero(iso_currency::Currency::RUB);
+                let payments = grouped.get(&(year, *month)).unwrap();
 
-                for month in months {
-                    // Month header
-                    let month_name = match month {
-                        1 => "January",
-                        2 => "February",
-                        3 => "March",
-                        4 => "April",
-                        5 => "May",
-                        6 => "June",
-                        7 => "July",
-                        8 => "August",
-                        9 => "September",
-                        10 => "October",
-                        11 => "November",
-                        12 => "December",
-                        _ => "Unknown",
-                    };
+                for payment in payments {
+                    let payment_date_str = format_date(payment.payment_date());
+                    let ex_date_str = format_date(payment.ex_date());
+
                     table.add_row([
-                        Cell::new(format!("--- {month_name} ---")),
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(""),
+                        Cell::new(payment_date_str),
+                        Cell::new(ex_date_str),
+                        Cell::new(payment.name().to_string()),
+                        Cell::new(payment.payment_per_unit().to_string()),
+                        Cell::new(payment.total_payment().to_string()),
                     ]);
 
-                    let mut month_total = Money::zero(iso_currency::Currency::RUB);
-                    let payments = grouped.get(&(year, *month)).unwrap();
-
-                    for payment in payments {
-                        let payment_date_str = payment
-                            .payment_date
-                            .map_or_else(|| "-".to_string(), format_date);
-
-                        table.add_row([
-                            Cell::new(payment_date_str),
-                            Cell::new(format_date(payment.ex_dividend_date)),
-                            Cell::new(payment.name.clone()),
-                            Cell::new(payment.dividend_per_share.to_string()),
-                            Cell::new(payment.total_dividend.to_string()),
-                        ]);
-
-                        month_total += payment.total_dividend;
-                    }
-
-                    // Month total
-                    table.add_row([
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(format!("Month {month_name} Total:"))
-                            .add_attribute(Attribute::Bold),
-                        Cell::new(""),
-                        Cell::new(month_total.to_string()).add_attribute(Attribute::Bold),
-                    ]);
-
-                    year_total += month_total;
-                    grand_total += month_total;
+                    month_total += payment.total_payment();
                 }
 
-                // Year total
+                // Month total
                 table.add_row([
                     Cell::new(""),
                     Cell::new(""),
-                    Cell::new(format!("Year {year} Total:"))
-                        .add_attribute(Attribute::Bold)
-                        .fg(comfy_table::Color::DarkYellow),
+                    Cell::new(P::month_label(month_name_str)).add_attribute(Attribute::Bold),
                     Cell::new(""),
-                    Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
+                    Cell::new(month_total.to_string()).add_attribute(Attribute::Bold),
                 ]);
 
-                table.add_row([
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                ]);
+                year_total += month_total;
+                grand_total += month_total;
             }
 
-            // Grand total row
+            // Year total
             table.add_row([
                 Cell::new(""),
                 Cell::new(""),
-                Cell::new("Grand Total")
+                Cell::new(P::year_label(year))
                     .add_attribute(Attribute::Bold)
-                    .fg(comfy_table::Color::DarkRed),
+                    .fg(comfy_table::Color::DarkYellow),
                 Cell::new(""),
-                Cell::new(grand_total.to_string())
-                    .add_attribute(Attribute::Bold)
-                    .fg(comfy_table::Color::DarkGreen),
+                Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
+            ]);
+
+            table.add_row([
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
+                Cell::new(""),
             ]);
         }
 
-        write!(f, "{table}")
+        // Grand total row
+        table.add_row([
+            Cell::new(""),
+            Cell::new(""),
+            Cell::new("Grand Total")
+                .add_attribute(Attribute::Bold)
+                .fg(comfy_table::Color::DarkRed),
+            Cell::new(""),
+            Cell::new(grand_total.to_string())
+                .add_attribute(Attribute::Bold)
+                .fg(comfy_table::Color::DarkGreen),
+        ]);
+    }
+
+    table.to_string()
+}
+
+impl Display for DividendCalendar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", format_calendar(&self.upcoming))
     }
 }
 
 impl Display for CouponCalendar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut table = ux::new_table();
-
-        let title = Cell::new("Coupon Calendar")
-            .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::DarkBlue);
-        table.set_header([title]);
-
-        // Main table headers
-        let payment_date = Cell::new("Payment Date").add_attribute(Attribute::Bold);
-        let coupon_date = Cell::new("Coupon Date").add_attribute(Attribute::Bold);
-        let company = Cell::new("Company").add_attribute(Attribute::Bold);
-        let coupon_per_bond = Cell::new("Coupon per Bond").add_attribute(Attribute::Bold);
-        let total_coupon = Cell::new("Total Coupon").add_attribute(Attribute::Bold);
-        table.add_row([
-            payment_date,
-            coupon_date,
-            company,
-            coupon_per_bond,
-            total_coupon,
-        ]);
-
-        // Upcoming payments
-        if self.upcoming.is_empty() {
-            table.add_row([
-                Cell::new("No upcoming payments"),
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new(""),
-            ]);
-        } else {
-            // Group by year and month
-            let mut grouped: std::collections::HashMap<(i32, u32), Vec<&CouponPayment>> =
-                std::collections::HashMap::new();
-
-            for payment in &self.upcoming {
-                let year = payment.coupon_date.year();
-                let month = payment.coupon_date.month();
-                grouped.entry((year, month)).or_default().push(payment);
-            }
-
-            // Sort keys by year and month
-            let mut keys: Vec<_> = grouped.keys().copied().collect();
-            keys.sort_by(|a, b| {
-                let year_cmp = a.0.cmp(&b.0);
-                if year_cmp == std::cmp::Ordering::Equal {
-                    a.1.cmp(&b.1)
-                } else {
-                    year_cmp
-                }
-            });
-
-            let mut grand_total = Money::zero(iso_currency::Currency::RUB);
-
-            // Group by year
-            let mut by_year: std::collections::HashMap<i32, Vec<u32>> =
-                std::collections::HashMap::new();
-            for (year, month) in &keys {
-                by_year.entry(*year).or_default().push(*month);
-            }
-
-            let mut year_keys: Vec<_> = by_year.keys().copied().collect();
-            year_keys.sort_unstable();
-
-            for year in year_keys {
-                // Year header
-                table.add_row([
-                    Cell::new(format!("=== {year} ==="))
-                        .add_attribute(Attribute::Bold)
-                        .fg(comfy_table::Color::DarkCyan),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                ]);
-
-                let mut year_total = Money::zero(iso_currency::Currency::RUB);
-                let months = by_year.get(&year).unwrap();
-
-                for month in months {
-                    // Month header
-                    let month_name = match month {
-                        1 => "January",
-                        2 => "February",
-                        3 => "March",
-                        4 => "April",
-                        5 => "May",
-                        6 => "June",
-                        7 => "July",
-                        8 => "August",
-                        9 => "September",
-                        10 => "October",
-                        11 => "November",
-                        12 => "December",
-                        _ => "Unknown",
-                    };
-                    table.add_row([
-                        Cell::new(format!("--- {month_name} ---")),
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(""),
-                    ]);
-
-                    let mut month_total = Money::zero(iso_currency::Currency::RUB);
-                    let payments = grouped.get(&(year, *month)).unwrap();
-
-                    for payment in payments {
-                        let payment_date_str = format_date(payment.coupon_date);
-
-                        table.add_row([
-                            Cell::new(payment_date_str),
-                            Cell::new(format_date(payment.coupon_date)),
-                            Cell::new(payment.name.clone()),
-                            Cell::new(payment.coupon_per_bond.to_string()),
-                            Cell::new(payment.total_coupon.to_string()),
-                        ]);
-
-                        month_total += payment.total_coupon;
-                    }
-
-                    // Month total
-                    table.add_row([
-                        Cell::new(""),
-                        Cell::new(""),
-                        Cell::new(format!("Month {month_name} Total:"))
-                            .add_attribute(Attribute::Bold),
-                        Cell::new(""),
-                        Cell::new(month_total.to_string()).add_attribute(Attribute::Bold),
-                    ]);
-
-                    year_total += month_total;
-                    grand_total += month_total;
-                }
-
-                // Year total
-                table.add_row([
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(format!("Year {year} Total:"))
-                        .add_attribute(Attribute::Bold)
-                        .fg(comfy_table::Color::DarkYellow),
-                    Cell::new(""),
-                    Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
-                ]);
-
-                table.add_row([
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                ]);
-            }
-
-            // Grand total row
-            table.add_row([
-                Cell::new(""),
-                Cell::new(""),
-                Cell::new("Grand Total")
-                    .add_attribute(Attribute::Bold)
-                    .fg(comfy_table::Color::DarkRed),
-                Cell::new(""),
-                Cell::new(grand_total.to_string())
-                    .add_attribute(Attribute::Bold)
-                    .fg(comfy_table::Color::DarkGreen),
-            ]);
-        }
-
-        write!(f, "{table}")
+        write!(f, "{}", format_calendar(&self.upcoming))
     }
 }
 
