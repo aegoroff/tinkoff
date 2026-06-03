@@ -8,9 +8,7 @@ use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
-    client::{
-        AccountPortfolio, InstrumentCatalog, TinkoffInvestment, MAX_CONCURRENT_REQUESTS,
-    },
+    client::{AccountPortfolio, InstrumentCatalog, MAX_CONCURRENT_REQUESTS, TinkoffInvestment},
     domain::{
         Asset, CouponProfit, DividentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
         Profit,
@@ -130,9 +128,7 @@ async fn asset(config: &AppConfig, catalog: InstrumentCatalog) -> Result<()> {
 
 async fn all(config: &AppConfig, output_papers: bool) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio, instruments) = client
-        .get_portfolio_and_instruments(config.account)
-        .await?;
+    let (portfolio, instruments) = client.get_portfolio_and_instruments(config.account).await?;
 
     print_positions(
         &client,
@@ -203,6 +199,22 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     if let Some(history) = History::new(&operations, instrument) {
         println!("{history}");
     }
+    Ok(())
+}
+
+async fn dividends(config: &AppConfig) -> Result<()> {
+    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
+    let calendar = client
+        .get_dividend_calendar(&portfolio, &instruments)
+        .await?;
+    println!("{calendar}");
+    Ok(())
+}
+
+async fn coupons(config: &AppConfig) -> Result<()> {
+    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
+    let calendar = client.get_coupon_calendar(&portfolio, &instruments).await?;
+    println!("{calendar}");
     Ok(())
 }
 
@@ -395,28 +407,12 @@ fn coupons_cmd() -> Command {
 
 async fn portfolio_with_instruments(
     config: &AppConfig,
-) -> Result<(TinkoffInvestment, AccountPortfolio, HashMap<String, Instrument>)> {
+) -> Result<(
+    TinkoffInvestment,
+    AccountPortfolio,
+    HashMap<String, Instrument>,
+)> {
     let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio, instruments) = client
-        .get_portfolio_and_instruments(config.account)
-        .await?;
+    let (portfolio, instruments) = client.get_portfolio_and_instruments(config.account).await?;
     Ok((client, portfolio, instruments))
-}
-
-async fn dividends(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let calendar = client
-        .get_dividend_calendar(&portfolio, &instruments)
-        .await?;
-    println!("{calendar}");
-    Ok(())
-}
-
-async fn coupons(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let calendar = client
-        .get_coupon_calendar(&portfolio, &instruments)
-        .await?;
-    println!("{calendar}");
-    Ok(())
 }
