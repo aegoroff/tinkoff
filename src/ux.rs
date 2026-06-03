@@ -14,7 +14,7 @@ use crate::domain::NumberRange;
 pub fn format_decimal(v: Decimal) -> Result<String, Error> {
     let integer = v
         .round_dp(2)
-        .to_i64()
+        .to_i128()
         .ok_or(Error)?
         .to_formatted_string(&Locale::ru);
 
@@ -150,8 +150,11 @@ mod tests {
     fn format_decimal_large() {
         // Test with a value larger than i64::MAX
         let large_value = dec!(10_000_000_000_000_000_000);
-        let result = format_decimal(large_value);
-        assert!(result.is_err());
+        let result = format_decimal(large_value).unwrap();
+        assert_eq!(
+            result,
+            "10\u{a0}000\u{a0}000\u{a0}000\u{a0}000\u{a0}000\u{a0}000"
+        );
     }
 
     #[test]
