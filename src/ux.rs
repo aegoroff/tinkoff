@@ -107,3 +107,56 @@ pub fn clear_screen() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn format_decimal_zero() {
+        let result = format_decimal(dec!(0)).unwrap();
+        assert_eq!(result, "0");
+    }
+
+    #[test]
+    fn format_decimal_simple() {
+        let result = format_decimal(dec!(1234567)).unwrap();
+        // Russian locale uses non-breaking space (\u{a0}) as thousands separator
+        assert_eq!(result, "1\u{a0}234\u{a0}567");
+    }
+
+    #[test]
+    fn format_decimal_with_cents() {
+        let result = format_decimal(dec!(1234.56)).unwrap();
+        // Russian locale uses non-breaking space (\u{a0}) as thousands separator
+        assert_eq!(result, "1\u{a0}234.56");
+    }
+
+    #[test]
+    fn format_decimal_single_digit_cents() {
+        let result = format_decimal(dec!(100.5)).unwrap();
+        assert_eq!(result, "100.5");
+    }
+
+    #[test]
+    fn format_decimal_negative() {
+        let result = format_decimal(dec!(-1234.56)).unwrap();
+        // Russian locale uses non-breaking space (\u{a0}) as thousands separator
+        assert_eq!(result, "-1\u{a0}234.56");
+    }
+
+    #[test]
+    fn format_decimal_large() {
+        // Test with a value larger than i64::MAX
+        let large_value = dec!(10_000_000_000_000_000_000);
+        let result = format_decimal(large_value);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn format_decimal_rounding() {
+        let result = format_decimal(dec!(100.999)).unwrap();
+        assert_eq!(result, "101.00");
+    }
+}
