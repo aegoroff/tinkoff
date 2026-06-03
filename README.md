@@ -138,12 +138,18 @@ The application provides rich, formatted output including:
 
 ```
 src/
-├── main.rs      # CLI application entry point
-├── lib.rs       # Library exports and utility functions
-├── client.rs    # Tinkoff API client implementation
-├── domain.rs    # Core data structures and business logic
-├── progress.rs  # Progress indicators and UI components
-└── ux.rs        # User experience and formatting utilities
+├── main.rs           # CLI application entry point
+├── lib.rs            # Library exports and utility functions
+├── client.rs         # Tinkoff API client implementation
+├── domain/
+│   ├── money.rs      # Money, Income
+│   ├── paper.rs      # Paper, Position, Profit types
+│   ├── portfolio.rs  # Portfolio, Asset
+│   ├── history.rs    # Trading history
+│   ├── calendar.rs   # Dividend and coupon calendars
+│   └── display/      # Table formatting (Display impls)
+├── progress.rs       # Progress indicators
+└── ux.rs             # Formatting utilities
 ```
 
 ## Key Components
