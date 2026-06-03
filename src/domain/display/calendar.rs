@@ -1,7 +1,8 @@
 use std::{collections::HashMap, fmt::Display};
 
 use chrono::{DateTime, Datelike, Utc};
-use comfy_table::{Attribute, Cell};
+use comfy_table::{Attribute, Cell, Table};
+use iso_currency::Currency;
 
 use crate::ux;
 
@@ -31,22 +32,130 @@ fn month_name(month: u32) -> &'static str {
     }
 }
 
+/// Groups payments by year and month, then sorts chronologically
+fn group_and_sort_payments<P: CalendarPayment>(
+    upcoming: &[P],
+) -> HashMap<i32, HashMap<u32, Vec<&P>>> {
+    let mut grouped: HashMap<(i32, u32), Vec<&P>> = HashMap::new();
+    for payment in upcoming {
+        let date = payment.payment_date();
+        grouped
+            .entry((date.year(), date.month()))
+            .or_default()
+            .push(payment);
+    }
+
+    let mut by_year: HashMap<i32, HashMap<u32, Vec<&P>>> = HashMap::new();
+    for ((year, month), payments) in grouped {
+        by_year.entry(year).or_default().insert(month, payments);
+    }
+    by_year
+}
+
+/// Creates a year header row in the calendar table
+fn add_year_header(table: &mut Table, year: i32) {
+    table.add_row([
+        Cell::new(format!("{year}"))
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkCyan),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+    ]);
+}
+
+/// Creates a month header row in the calendar table
+fn add_month_header(table: &mut Table, month_name_str: &str) {
+    table.add_row([
+        Cell::new(month_name_str).add_attribute(Attribute::Bold),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+    ]);
+}
+
+/// Adds a payment row to the calendar table
+fn add_payment_row<P: CalendarPayment>(table: &mut Table, payment: &&P) {
+    table.add_row([
+        Cell::new(format_date(payment.payment_date())),
+        Cell::new(format_date(payment.ex_date())),
+        Cell::new(payment.name().to_string()),
+        Cell::new(payment.payment_per_unit().to_string()),
+        Cell::new(payment.total_payment().to_string()),
+    ]);
+}
+
+/// Adds a month total row to the calendar table
+fn add_month_total<P: CalendarPayment>(table: &mut Table, month_name_str: &str, total: Money) {
+    table.add_row([
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(P::month_label(month_name_str)).add_attribute(Attribute::Bold),
+        Cell::new(""),
+        Cell::new(total.to_string()).add_attribute(Attribute::Bold),
+    ]);
+}
+
+/// Adds a year total row to the calendar table
+fn add_year_total<P: CalendarPayment>(table: &mut Table, year: i32, total: Money) {
+    table.add_row([
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(P::year_label(year))
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkYellow),
+        Cell::new(""),
+        Cell::new(total.to_string()).add_attribute(Attribute::Bold),
+    ]);
+}
+
+/// Adds the grand total row to the calendar table
+fn add_grand_total(table: &mut Table, total: Money) {
+    table.add_row([
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new("Grand Total")
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkRed),
+        Cell::new(""),
+        Cell::new(total.to_string())
+            .add_attribute(Attribute::Bold)
+            .fg(comfy_table::Color::DarkGreen),
+    ]);
+}
+
+/// Adds an empty separator row
+fn add_separator_row(table: &mut Table) {
+    table.add_row([
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(""),
+    ]);
+}
+
 /// Generic calendar Display implementation for any [`CalendarPayment`] type
 pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
     let mut table = ux::new_table();
 
+    // Add header
     let title = Cell::new(P::calendar_title())
         .add_attribute(Attribute::Bold)
         .fg(comfy_table::Color::DarkBlue);
     table.set_header([title]);
 
+    // Add column headers
     let (payment_date_hdr, ex_date_hdr, company_hdr, per_unit_hdr, total_hdr) = P::column_headers();
-    let payment_date = Cell::new(payment_date_hdr).add_attribute(Attribute::Bold);
-    let ex_date = Cell::new(ex_date_hdr).add_attribute(Attribute::Bold);
-    let company = Cell::new(company_hdr).add_attribute(Attribute::Bold);
-    let per_unit = Cell::new(per_unit_hdr).add_attribute(Attribute::Bold);
-    let total = Cell::new(total_hdr).add_attribute(Attribute::Bold);
-    table.add_row([payment_date, ex_date, company, per_unit, total]);
+    table.add_row([
+        Cell::new(payment_date_hdr).add_attribute(Attribute::Bold),
+        Cell::new(ex_date_hdr).add_attribute(Attribute::Bold),
+        Cell::new(company_hdr).add_attribute(Attribute::Bold),
+        Cell::new(per_unit_hdr).add_attribute(Attribute::Bold),
+        Cell::new(total_hdr).add_attribute(Attribute::Bold),
+    ]);
 
     if upcoming.is_empty() {
         table.add_row([
@@ -59,110 +168,53 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
         return table.to_string();
     }
 
-    let mut grouped: HashMap<(i32, u32), Vec<&P>> = HashMap::new();
-    for payment in upcoming {
-        let date = payment.payment_date();
-        grouped
-            .entry((date.year(), date.month()))
-            .or_default()
-            .push(payment);
-    }
+    let grouped = group_and_sort_payments(upcoming);
 
-    let mut keys: Vec<_> = grouped.keys().copied().collect();
-    keys.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let mut grand_total = Money::zero(Currency::RUB);
 
-    let mut grand_total = Money::zero(iso_currency::Currency::RUB);
-
-    let mut by_year: HashMap<i32, Vec<u32>> = HashMap::new();
-    for (year, month) in &keys {
-        by_year.entry(*year).or_default().push(*month);
-    }
-
-    let mut year_keys: Vec<_> = by_year.keys().copied().collect();
+    // Collect and sort year keys
+    let mut year_keys: Vec<i32> = grouped.keys().copied().collect();
     year_keys.sort_unstable();
 
     for year in year_keys {
-        table.add_row([
-            Cell::new(format!("{year}"))
-                .add_attribute(Attribute::Bold)
-                .fg(comfy_table::Color::DarkCyan),
-            Cell::new(""),
-            Cell::new(""),
-            Cell::new(""),
-            Cell::new(""),
-        ]);
+        let Some(months) = grouped.get(&year) else {
+            continue;
+        };
 
-        let mut year_total = Money::zero(iso_currency::Currency::RUB);
+        add_year_header(&mut table, year);
 
-        if let Some(months) = by_year.get(&year) {
-            for month in months {
-                let month_name_str = month_name(*month);
-                table.add_row([
-                    Cell::new(month_name_str).add_attribute(Attribute::Bold),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(""),
-                ]);
+        let mut year_total = Money::zero(Currency::RUB);
 
-                let mut month_total = Money::zero(iso_currency::Currency::RUB);
+        // Collect and sort month keys
+        let mut month_keys: Vec<u32> = months.keys().copied().collect();
+        month_keys.sort_unstable();
 
-                if let Some(payments) = grouped.get(&(year, *month)) {
-                    for payment in payments {
-                        table.add_row([
-                            Cell::new(format_date(payment.payment_date())),
-                            Cell::new(format_date(payment.ex_date())),
-                            Cell::new(payment.name().to_string()),
-                            Cell::new(payment.payment_per_unit().to_string()),
-                            Cell::new(payment.total_payment().to_string()),
-                        ]);
-                        month_total += payment.total_payment();
-                    }
-                }
+        for month in month_keys {
+            let Some(payments) = months.get(&month) else {
+                continue;
+            };
 
-                table.add_row([
-                    Cell::new(""),
-                    Cell::new(""),
-                    Cell::new(P::month_label(month_name_str)).add_attribute(Attribute::Bold),
-                    Cell::new(""),
-                    Cell::new(month_total.to_string()).add_attribute(Attribute::Bold),
-                ]);
+            let month_name_str = month_name(month);
+            add_month_header(&mut table, month_name_str);
 
-                year_total += month_total;
-                grand_total += month_total;
+            let mut month_total = Money::zero(Currency::RUB);
+
+            for payment in payments {
+                add_payment_row(&mut table, payment);
+                month_total += payment.total_payment();
             }
+
+            add_month_total::<P>(&mut table, month_name_str, month_total);
+
+            year_total += month_total;
+            grand_total += month_total;
         }
 
-        table.add_row([
-            Cell::new(""),
-            Cell::new(""),
-            Cell::new(P::year_label(year))
-                .add_attribute(Attribute::Bold)
-                .fg(comfy_table::Color::DarkYellow),
-            Cell::new(""),
-            Cell::new(year_total.to_string()).add_attribute(Attribute::Bold),
-        ]);
-
-        table.add_row([
-            Cell::new(""),
-            Cell::new(""),
-            Cell::new(""),
-            Cell::new(""),
-            Cell::new(""),
-        ]);
+        add_year_total::<P>(&mut table, year, year_total);
+        add_separator_row(&mut table);
     }
 
-    table.add_row([
-        Cell::new(""),
-        Cell::new(""),
-        Cell::new("Grand Total")
-            .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::DarkRed),
-        Cell::new(""),
-        Cell::new(grand_total.to_string())
-            .add_attribute(Attribute::Bold)
-            .fg(comfy_table::Color::DarkGreen),
-    ]);
+    add_grand_total(&mut table, grand_total);
 
     table.to_string()
 }
