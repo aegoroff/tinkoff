@@ -77,7 +77,7 @@ fn add_month_header(table: &mut Table, month_name_str: &str) {
 }
 
 /// Adds a payment row to the calendar table
-fn add_payment_row<P: CalendarPayment>(table: &mut Table, payment: &&P) {
+fn add_payment_row<P: CalendarPayment>(table: &mut Table, payment: &P) {
     table.add_row([
         Cell::new(format_date(payment.payment_date())),
         Cell::new(format_date(payment.ex_date())),
@@ -200,7 +200,7 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
             let mut month_total = Money::zero(Currency::RUB);
 
             for payment in payments {
-                add_payment_row(&mut table, payment);
+                add_payment_row(&mut table, *payment);
                 month_total += payment.total_payment();
             }
 
