@@ -11,9 +11,6 @@ pub mod domain;
 pub mod progress;
 pub mod ux;
 
-/// Default account type when `--account` is not specified.
-pub const DEFAULT_ACCOUNT_TYPE: AccountType = AccountType::Tinkoff;
-
 const ACCOUNT_TYPE_HELP: &str = "tinkoff (broker, default), iis, invest-box, invest-fund";
 
 /// Parses a CLI account type name into [`AccountType`].
