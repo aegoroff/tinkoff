@@ -2,7 +2,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 extern crate indicatif;
 
-pub trait Progress {
+pub trait Progress: Send + Sync {
     /// Shows progress
     fn progress(&self);
     /// Finishes process

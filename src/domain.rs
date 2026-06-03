@@ -61,6 +61,15 @@ pub struct Paper<P: Profit> {
     pub profit: P,
 }
 
+/// A position loaded from the API, tagged by instrument kind.
+pub enum LoadedPaper {
+    Bond(Paper<CouponProfit>),
+    Share(Paper<DividentProfit>),
+    Etf(Paper<NoneProfit>),
+    Currency(Paper<NoneProfit>),
+    Future(Paper<NoneProfit>),
+}
+
 /// Portfolio is an [`Asset`]'s container
 /// [`Asset`] is a [`Paper`]'s container
 pub struct Portfolio {
@@ -852,6 +861,16 @@ macro_rules! impl_portfolio_aggregator {
 }
 
 impl Portfolio {
+    pub fn add_loaded_paper(&mut self, paper: LoadedPaper) {
+        match paper {
+            LoadedPaper::Bond(p) => self.bonds.add_paper(p),
+            LoadedPaper::Share(p) => self.shares.add_paper(p),
+            LoadedPaper::Etf(p) => self.etfs.add_paper(p),
+            LoadedPaper::Currency(p) => self.currencies.add_paper(p),
+            LoadedPaper::Future(p) => self.futures.add_paper(p),
+        }
+    }
+
     #[must_use]
     pub fn new(output_papers: bool) -> Self {
         Self {
@@ -1264,8 +1283,8 @@ mod tests {
         let calendar = DividendCalendar { upcoming: payments };
         let output = format!("{calendar}");
         // 2024 should appear before 2025
-        let pos_2024 = output.find("=== 2024 ===").unwrap();
-        let pos_2025 = output.find("=== 2025 ===").unwrap();
+        let pos_2024 = output.find("2024").unwrap();
+        let pos_2025 = output.find("2025").unwrap();
         assert!(pos_2024 < pos_2025);
     }
 

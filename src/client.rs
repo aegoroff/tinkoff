@@ -2,6 +2,7 @@ use color_eyre::eyre;
 use iso_currency::Currency;
 use itertools::Itertools;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use tinkoff_invest_api::{
     TIError, TIResult, TinkoffInvestService,
@@ -12,13 +13,17 @@ use tinkoff_invest_api::{
         OperationsRequest, PortfolioPosition, PortfolioRequest, portfolio_request::CurrencyRequest,
     },
 };
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 
 use crate::{
     domain::{
-        CouponCalendar, CouponPayment, DividendCalendar, DividendPayment, History, HistoryItem,
-        Instrument, Money, Paper, Position, Profit, Totals,
+        CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
+        DividentProfit, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit, Paper,
+        Portfolio, Position, Profit, Totals,
     },
+    progress::Progress,
     to_currency, to_datetime_utc, to_decimal, to_money,
 };
 
@@ -304,18 +309,44 @@ impl TinkoffInvestment {
     where
         T: Send + 'static,
         F: Fn(Self, String) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = color_eyre::Result<Vec<T>>> + Send,
+        Fut: Future<Output = color_eyre::Result<Vec<T>>> + Send,
     {
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
-
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
         let fetch = Arc::new(fetch);
+        self.parallel_for_positions(positions, None, {
+            let fetch = Arc::clone(&fetch);
+            move |client, position| {
+                let figi = position.figi.clone();
+                let fetch = Arc::clone(&fetch);
+                async move {
+                    let items = fetch(client, figi).await.unwrap_or_default();
+                    (position, items)
+                }
+            }
+        })
+        .await
+    }
+
+    /// Runs `task` for each position concurrently, limited by [`MAX_CONCURRENT_REQUESTS`].
+    ///
+    /// Task panics are logged to stderr; failed permit acquisition skips the position.
+    /// When `progress` is set, it is incremented once per completed task.
+    async fn parallel_for_positions<T, F, Fut>(
+        &self,
+        positions: &[PortfolioPosition],
+        progress: Option<Arc<dyn Progress>>,
+        task: F,
+    ) -> Vec<T>
+    where
+        T: Send + 'static,
+        F: Fn(TinkoffInvestment, PortfolioPosition) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = T> + Send + 'static,
+    {
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+        let task = Arc::new(task);
         let mut set = JoinSet::new();
 
         for position in positions {
             let client = self.clone();
-            let figi = position.figi.clone();
             let permit = match semaphore.clone().acquire_owned().await {
                 Ok(p) => p,
                 Err(e) => {
@@ -323,24 +354,123 @@ impl TinkoffInvestment {
                     continue;
                 }
             };
-            let position_clone = position.clone();
-            let fetch = Arc::clone(&fetch);
+            let position = position.clone();
+            let task = Arc::clone(&task);
+            let progress = progress.clone();
 
             set.spawn(async move {
                 let _permit = permit;
-                let items = fetch(client, figi).await.unwrap_or_default();
-                (position_clone, items)
+                let result = task(client, position).await;
+                if let Some(p) = &progress {
+                    p.progress();
+                }
+                result
             });
         }
 
         let mut results = Vec::new();
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(pair) => results.push(pair),
+                Ok(item) => results.push(item),
                 Err(e) => eprintln!("Task panicked or cancelled: {e}"),
             }
         }
         results
+    }
+
+    /// Builds a [`Portfolio`] by loading papers for each position in parallel.
+    pub async fn build_portfolio(
+        &self,
+        instruments: &HashMap<String, Instrument>,
+        positions: &[PortfolioPosition],
+        account_id: &str,
+        output_papers: bool,
+        progress: Option<Arc<dyn Progress>>,
+    ) -> Portfolio {
+        let instruments = Arc::new(instruments.clone());
+        let account_id = account_id.to_string();
+
+        let papers = self
+            .parallel_for_positions(positions, progress.clone(), {
+                let instruments = Arc::clone(&instruments);
+                let account_id = account_id.clone();
+                move |client, position| {
+                    let instruments = Arc::clone(&instruments);
+                    let account_id = account_id.clone();
+                    async move {
+                        client
+                            .paper_for_position(&instruments, &account_id, &position)
+                            .await
+                    }
+                }
+            })
+            .await;
+
+        if let Some(p) = &progress {
+            p.finish();
+        }
+
+        let mut portfolio = Portfolio::new(output_papers);
+        for paper in papers.into_iter().flatten() {
+            portfolio.add_loaded_paper(paper);
+        }
+        portfolio
+    }
+
+    async fn paper_for_position(
+        &self,
+        instruments: &HashMap<String, Instrument>,
+        account_id: &str,
+        position: &PortfolioPosition,
+    ) -> Option<LoadedPaper> {
+        match position.instrument_type.as_str() {
+            "bond" => self
+                .create_paper_from_position(
+                    instruments,
+                    account_id.to_string(),
+                    position,
+                    CouponProfit,
+                )
+                .await
+                .map(LoadedPaper::Bond),
+            "share" => self
+                .create_paper_from_position(
+                    instruments,
+                    account_id.to_string(),
+                    position,
+                    DividentProfit,
+                )
+                .await
+                .map(LoadedPaper::Share),
+            "etf" => self
+                .create_paper_from_position(
+                    instruments,
+                    account_id.to_string(),
+                    position,
+                    NoneProfit,
+                )
+                .await
+                .map(LoadedPaper::Etf),
+            "currency" => self
+                .create_paper_from_position(
+                    instruments,
+                    account_id.to_string(),
+                    position,
+                    NoneProfit,
+                )
+                .await
+                .map(LoadedPaper::Currency),
+            "futures" => self
+                .create_paper_from_position(
+                    instruments,
+                    account_id.to_string(),
+                    position,
+                    NoneProfit,
+                )
+                .await
+                .map(LoadedPaper::Future),
+            _ => None,
+        }
     }
 
     async fn get_portfolio(&self, account: AccountType) -> TIResult<AccountPortfolio> {

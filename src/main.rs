@@ -3,18 +3,14 @@ use std::{collections::HashMap, env, future::Future, pin::Pin};
 use clap::{ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
-    client::{AccountPortfolio, InstrumentCatalog, MAX_CONCURRENT_REQUESTS, TinkoffInvestment},
-    domain::{
-        Asset, CouponProfit, DividentProfit, History, Instrument, NoneProfit, Paper, Portfolio,
-        Profit,
-    },
+    client::{AccountPortfolio, InstrumentCatalog, TinkoffInvestment},
+    domain::{History, Instrument},
     parse_account_type,
-    progress::{Progress, Progresser},
+    progress::Progresser,
     ux,
 };
 use tinkoff_invest_api::tcs::{AccountType, InstrumentShort, PortfolioPosition};
@@ -62,14 +58,6 @@ const FUTURES_CMD: &str = "f";
 const HISTORY_CMD: &str = "hi";
 const DIVIDENDS_CMD: &str = "d";
 const COUPONS_CMD: &str = "p";
-
-enum AssetPaper {
-    Bond(Paper<CouponProfit>),
-    Share(Paper<DividentProfit>),
-    Etf(Paper<NoneProfit>),
-    Currency(Paper<NoneProfit>),
-    Future(Paper<NoneProfit>),
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -225,94 +213,16 @@ async fn print_positions(
     account_id: &str,
     output_papers: bool,
 ) {
-    fn add_paper_into_container<P: Profit>(asset: &mut Asset<P>, paper: Option<Paper<P>>) {
-        if let Some(p) = paper {
-            asset.add_paper(p);
-        }
-    }
-
-    let mut container = Portfolio::new(output_papers);
-
-    // To avoid borrow errors
-    let client = Arc::new(client.clone());
-    let instruments = Arc::new(instruments.clone());
-    let account_id = account_id.to_string();
-
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
-    let progresser = Arc::new(Progresser::new(positions.len() as u64));
-
-    let mut set = JoinSet::new();
-
-    for p in positions {
-        let client = Arc::clone(&client);
-        let instruments = Arc::clone(&instruments);
-        let account_id = account_id.clone();
-        let permit = match semaphore.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Failed to acquire semaphore: {e}");
-                continue;
-            }
-        };
-        let progresser = Arc::clone(&progresser);
-        let p = p.clone();
-
-        set.spawn(async move {
-            let _permit = permit;
-
-            let paper = match p.instrument_type.as_str() {
-                "bond" => client
-                    .create_paper_from_position(&instruments, account_id, &p, CouponProfit)
-                    .await
-                    .map(AssetPaper::Bond),
-                "share" => client
-                    .create_paper_from_position(&instruments, account_id, &p, DividentProfit)
-                    .await
-                    .map(AssetPaper::Share),
-                "etf" => client
-                    .create_paper_from_position(&instruments, account_id, &p, NoneProfit)
-                    .await
-                    .map(AssetPaper::Etf),
-                "currency" => client
-                    .create_paper_from_position(&instruments, account_id, &p, NoneProfit)
-                    .await
-                    .map(AssetPaper::Currency),
-                "futures" => client
-                    .create_paper_from_position(&instruments, account_id, &p, NoneProfit)
-                    .await
-                    .map(AssetPaper::Future),
-                _ => None,
-            };
-
-            // Atomic progress update
-            progresser.progress();
-
-            paper
-        });
-    }
-
-    // Collect results
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok(Some(AssetPaper::Bond(p))) => {
-                add_paper_into_container(&mut container.bonds, Some(p));
-            }
-            Ok(Some(AssetPaper::Share(p))) => {
-                add_paper_into_container(&mut container.shares, Some(p));
-            }
-            Ok(Some(AssetPaper::Etf(p))) => add_paper_into_container(&mut container.etfs, Some(p)),
-            Ok(Some(AssetPaper::Currency(p))) => {
-                add_paper_into_container(&mut container.currencies, Some(p));
-            }
-            Ok(Some(AssetPaper::Future(p))) => {
-                add_paper_into_container(&mut container.futures, Some(p));
-            }
-            Ok(None) => {}
-            Err(e) => eprintln!("Task panicked or cancelled: {e}"),
-        }
-    }
-
-    progresser.finish();
+    let progress = Arc::new(Progresser::new(positions.len() as u64));
+    let container = client
+        .build_portfolio(
+            instruments,
+            positions,
+            account_id,
+            output_papers,
+            Some(progress),
+        )
+        .await;
     print!("{container}");
 }
 

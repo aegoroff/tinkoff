@@ -14,8 +14,7 @@ pub mod ux;
 /// Default account type when `--account` is not specified.
 pub const DEFAULT_ACCOUNT_TYPE: AccountType = AccountType::Tinkoff;
 
-const ACCOUNT_TYPE_HELP: &str =
-    "tinkoff (broker, default), iis, invest-box, invest-fund";
+const ACCOUNT_TYPE_HELP: &str = "tinkoff (broker, default), iis, invest-box, invest-fund";
 
 /// Parses a CLI account type name into [`AccountType`].
 ///
@@ -104,10 +103,7 @@ mod tests {
 
     #[test]
     fn parse_account_type_defaults() {
-        assert_eq!(
-            parse_account_type("tinkoff").unwrap(),
-            AccountType::Tinkoff
-        );
+        assert_eq!(parse_account_type("tinkoff").unwrap(), AccountType::Tinkoff);
         assert_eq!(parse_account_type("iis").unwrap(), AccountType::TinkoffIis);
         assert_eq!(
             parse_account_type("invest-box").unwrap(),
