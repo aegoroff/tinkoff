@@ -397,7 +397,7 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
 
     for year in year_keys {
         table.add_row([
-            Cell::new(format!("=== {year} ==="))
+            Cell::new(format!("{year}"))
                 .add_attribute(Attribute::Bold)
                 .fg(comfy_table::Color::DarkCyan),
             Cell::new(""),
@@ -412,7 +412,7 @@ fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
             for month in months {
                 let month_name_str = month_name(*month);
                 table.add_row([
-                    Cell::new(format!("--- {month_name_str} ---")),
+                    Cell::new(month_name_str).add_attribute(Attribute::Bold),
                     Cell::new(""),
                     Cell::new(""),
                     Cell::new(""),
