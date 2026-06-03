@@ -69,6 +69,11 @@ pub fn to_decimal(val: Option<&Quotation>) -> Decimal {
     let Some(x) = val else {
         return Decimal::default();
     };
+    // Simply add units and nano. The Tinkoff API returns consistent signs for both fields.
+    // For example:
+    // - units=1, nano=100_000_000  => 1.10
+    // - units=-1, nano=-100_000_000 => -1.10
+    // - units=0, nano=-100_000_000 => -0.10
     Decimal::from(x.units) + Decimal::from(x.nano) / dec!(1_000_000_000)
 }
 
