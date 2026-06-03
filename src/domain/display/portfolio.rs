@@ -7,7 +7,12 @@ use crate::ux;
 use super::super::paper::Paper;
 use super::super::paper::Profit;
 use super::super::portfolio::{Asset, Portfolio};
-use super::labels::{BALANCE_INCOME, BALANCE_VALUE, CURRENT_VALUE, INCOME, TOTAL_INCOME};
+
+const TOTAL_INCOME: &str = "Total income";
+const INCOME: &str = "Income";
+const CURRENT_VALUE: &str = "Current value";
+const BALANCE_VALUE: &str = "Balance value";
+const BALANCE_INCOME: &str = "Balance income";
 
 impl<P: Profit> Display for Asset<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
