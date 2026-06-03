@@ -512,10 +512,6 @@ impl TinkoffInvestment {
 
     /// Get an account by type.
     ///
-    /// # Panics
-    ///
-    /// Panics if no account get.
-    ///
     /// # Errors
     ///
     /// This function will return an error if account cannot be get.
