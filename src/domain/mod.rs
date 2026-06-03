@@ -16,7 +16,13 @@ pub use paper::{
 pub use portfolio::{Asset, LoadedPaper, Portfolio};
 
 /// Numeric value that can be classified as negative, zero, or positive (for table coloring).
+///
+/// This trait is used for UI colorization of numeric values in tables.
+/// Implementations should check the sign of the value.
 pub trait NumberRange {
+    /// Returns `true` if the value is negative (less than zero).
     fn is_negative(&self) -> bool;
+
+    /// Returns `true` if the value is exactly zero.
     fn is_zero(&self) -> bool;
 }
