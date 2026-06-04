@@ -13,7 +13,7 @@ use super::NumberRange;
 
 const HUNDRED: Decimal = dec!(100);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Money {
     pub value: Decimal,
     pub currency: Currency,

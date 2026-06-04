@@ -4,6 +4,7 @@ pub mod history;
 pub mod money;
 pub mod paper;
 pub mod portfolio;
+pub mod risk;
 
 pub use calendar::{
     CalendarPayment, CouponCalendar, CouponPayment, DividendCalendar, DividendPayment,

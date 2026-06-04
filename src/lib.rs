@@ -11,6 +11,8 @@ pub mod domain;
 pub mod progress;
 pub mod ux;
 
+pub use domain::risk;
+
 const ACCOUNT_TYPE_HELP: &str = "tinkoff (broker, default), iis, invest-box, invest-fund";
 
 /// Parses a CLI account type name into [`AccountType`].

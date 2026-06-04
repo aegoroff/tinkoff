@@ -196,7 +196,8 @@ impl<P: Profit> Asset<P> {
         self.papers.is_empty()
     }
 
-    pub(crate) fn papers(&self) -> &[Paper<P>] {
+    #[must_use]
+    pub fn papers(&self) -> &[Paper<P>] {
         &self.papers
     }
 

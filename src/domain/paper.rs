@@ -17,6 +17,7 @@ pub struct Position {
     pub quantity: Decimal,
 }
 
+#[derive(Clone)]
 pub struct Totals {
     /// Dividends, coupons etc. i.e. some extra value
     /// an asset may earn
@@ -28,7 +29,7 @@ pub struct Totals {
 /// Represents additional asset profit
 /// besides balance value growing due to price increase.
 /// Used mainly for output
-pub trait Profit: Copy {
+pub trait Profit: Copy + Clone {
     /// shows whether additional profit
     /// applicable to an asset
     fn applicable() -> bool;
@@ -44,6 +45,7 @@ pub struct CouponProfit;
 pub struct NoneProfit;
 
 /// Paper represents things like share, bond, currency, etf etc.
+#[derive(Clone)]
 pub struct Paper<P: Profit> {
     pub name: String,
     pub ticker: String,

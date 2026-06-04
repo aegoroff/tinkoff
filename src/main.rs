@@ -8,7 +8,7 @@ use tokio::task::JoinSet;
 use itertools::Itertools;
 use tinkoff::{
     client::{AccountPortfolio, InstrumentCatalog, TinkoffInvestment},
-    domain::{History, Instrument},
+    domain::{History, Instrument, LoadedPaper},
     parse_account_type,
     progress::Progresser,
     ux,
@@ -59,6 +59,7 @@ const HISTORY_CMD: &str = "hi";
 const DIVIDENDS_CMD: &str = "d";
 const COUPONS_CMD: &str = "p";
 const COMBINED_CMD: &str = "j";
+const RISK_CMD: &str = "r";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -89,6 +90,7 @@ fn run_subcommand<'a>(
         DIVIDENDS_CMD => Box::pin(dividends(config)),
         COUPONS_CMD => Box::pin(coupons(config)),
         COMBINED_CMD => Box::pin(combined(config)),
+        RISK_CMD => Box::pin(risk(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -219,6 +221,75 @@ async fn combined(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+async fn risk(config: &AppConfig) -> Result<()> {
+    use tinkoff::domain::risk::RiskAnalysis;
+
+    let client = TinkoffInvestment::new(config.token.clone());
+    let (portfolio_data, instruments) =
+        client.get_portfolio_and_instruments(config.account).await?;
+    let instruments = Arc::new(instruments);
+
+    let positions = &portfolio_data.positions;
+    let account_id = &portfolio_data.account_id;
+
+    // Build portfolio and collect all papers for risk analysis
+    let progress = Arc::new(tinkoff::progress::Progresser::new(positions.len() as u64));
+    let container = client
+        .build_portfolio(
+            instruments.clone(),
+            positions,
+            account_id,
+            false,
+            Some(progress),
+        )
+        .await;
+
+    // Collect all papers for risk analysis
+    let all_papers: Vec<LoadedPaper> = container
+        .bonds
+        .papers()
+        .iter()
+        .cloned()
+        .map(LoadedPaper::Bond)
+        .chain(
+            container
+                .shares
+                .papers()
+                .iter()
+                .cloned()
+                .map(LoadedPaper::Share),
+        )
+        .chain(
+            container
+                .etfs
+                .papers()
+                .iter()
+                .cloned()
+                .map(LoadedPaper::Etf),
+        )
+        .chain(
+            container
+                .currencies
+                .papers()
+                .iter()
+                .cloned()
+                .map(LoadedPaper::Currency),
+        )
+        .chain(
+            container
+                .futures
+                .papers()
+                .iter()
+                .cloned()
+                .map(LoadedPaper::Future),
+        )
+        .collect();
+
+    let risk_analysis = RiskAnalysis::analyze(&container, &all_papers);
+    println!("{risk_analysis}");
+    Ok(())
+}
+
 async fn print_positions(
     client: &TinkoffInvestment,
     instruments: Arc<HashMap<String, Instrument>>,
@@ -266,6 +337,7 @@ fn build_cli() -> Command {
         .subcommand(dividends_cmd())
         .subcommand(coupons_cmd())
         .subcommand(combined_cmd())
+        .subcommand(risk_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -333,6 +405,12 @@ fn combined_cmd() -> Command {
     Command::new(COMBINED_CMD)
         .aliases(["combined", "join"])
         .about("Get combined dividend and coupon calendar")
+}
+
+fn risk_cmd() -> Command {
+    Command::new(RISK_CMD)
+        .aliases(["risk", "risk-analysis"])
+        .about("Analyze portfolio risk metrics")
 }
 
 async fn portfolio_with_instruments(
