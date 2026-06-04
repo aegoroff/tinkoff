@@ -12,24 +12,17 @@ use super::super::{CouponCalendar, DividendCalendar};
 use crate::domain::calendar::CombinedCalendar;
 
 fn format_date(dt: DateTime<Utc>) -> String {
-    format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day())
+    dt.format("%Y-%m-%d").to_string()
 }
 
 fn month_name(month: u32) -> &'static str {
-    match month {
-        1 => "January",
-        2 => "February",
-        3 => "March",
-        4 => "April",
-        5 => "May",
-        6 => "June",
-        7 => "July",
-        8 => "August",
-        9 => "September",
-        10 => "October",
-        11 => "November",
-        12 => "December",
-        _ => "Unknown",
+    let Ok(month) = u8::try_from(month) else {
+        return "Unknown";
+    };
+    if let Ok(m) = chrono::Month::try_from(month) {
+        m.name()
+    } else {
+        "Unknown"
     }
 }
 
