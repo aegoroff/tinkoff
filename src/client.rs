@@ -380,15 +380,13 @@ impl TinkoffInvestment {
         output_papers: bool,
         progress: Option<Arc<dyn Progress>>,
     ) -> Portfolio {
-        let instruments = instruments.clone();
         let account_id = account_id.to_string();
 
         let papers = self
             .parallel_for_positions(positions, progress.clone(), {
-                let instruments = Arc::clone(&instruments);
                 let account_id = account_id.clone();
                 move |client, position| {
-                    let instruments = Arc::clone(&instruments);
+                    let instruments = instruments.clone();
                     let account_id = account_id.clone();
                     async move {
                         client
