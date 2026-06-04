@@ -58,13 +58,7 @@ impl InstrumentCatalog {
         self,
         client: &TinkoffInvestment,
     ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        match self {
-            Self::Bonds => with_retry(|| client.get_all_bonds()).await,
-            Self::Shares => with_retry(|| client.get_all_shares()).await,
-            Self::Etfs => with_retry(|| client.get_all_etfs()).await,
-            Self::Futures => with_retry(|| client.get_all_futures()).await,
-            Self::Currencies => with_retry(|| client.get_all_currencies()).await,
-        }
+        with_retry(|| client.get_instruments(self)).await
     }
 }
 
@@ -160,34 +154,6 @@ macro_rules! collect {
     }};
 }
 
-macro_rules! impl_get_instrument_method {
-    ($(($target_method:ident, $source_method:ident)),*) => {
-        $(
-            async fn $target_method(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
-                let channel = self
-                    .service
-                    .create_channel()
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
-                let mut instruments = self
-                    .service
-                    .instruments(channel)
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
-                let instruments = instruments
-                    .$source_method(InstrumentsRequest {
-                        instrument_status: Some(InstrumentStatus::All as i32),
-                        instrument_exchange: None,
-                    })
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
-                let instruments = collect!(instruments);
-                Ok(instruments)
-            }
-        )*
-    };
-}
-
 /// Executes a future with exponential backoff retry logic.
 ///
 /// Retries up to 5 times with delays: 100ms, 200ms, 400ms, 800ms, 1600ms.
@@ -221,14 +187,6 @@ impl TinkoffInvestment {
         }
     }
 
-    impl_get_instrument_method!(
-        (get_all_bonds, bonds),
-        (get_all_shares, shares),
-        (get_all_etfs, etfs),
-        (get_all_currencies, currencies),
-        (get_all_futures, futures)
-    );
-
     /// Fetches all instrument catalogs in parallel and merges them by FIGI.
     ///
     /// # Errors
@@ -251,6 +209,65 @@ impl TinkoffInvestment {
         all.extend(currencies?);
         all.extend(futures?);
         Ok(all)
+    }
+
+    async fn get_instruments(
+        &self,
+        catalog: InstrumentCatalog,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        let channel = self
+            .service
+            .create_channel()
+            .await
+            .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+        let mut instruments = self
+            .service
+            .instruments(channel)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
+
+        let request = InstrumentsRequest {
+            instrument_status: Some(InstrumentStatus::All as i32),
+            instrument_exchange: None,
+        };
+
+        match catalog {
+            Bonds => {
+                let resp = instruments
+                    .bonds(request)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                Ok(collect!(resp))
+            }
+            Shares => {
+                let resp = instruments
+                    .shares(request)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                Ok(collect!(resp))
+            }
+            Etfs => {
+                let resp = instruments
+                    .etfs(request)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                Ok(collect!(resp))
+            }
+            Futures => {
+                let resp = instruments
+                    .futures(request)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                Ok(collect!(resp))
+            }
+            Currencies => {
+                let resp = instruments
+                    .currencies(request)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                Ok(collect!(resp))
+            }
+        }
     }
 
     /// Loads the portfolio and all instrument catalogs concurrently.
