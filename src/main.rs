@@ -107,7 +107,7 @@ async fn asset(config: &AppConfig, catalog: InstrumentCatalog) -> Result<()> {
 
     print_positions(
         &client,
-        &instruments,
+        Arc::new(instruments),
         &positions,
         &portfolio.account_id,
         true,
@@ -122,7 +122,7 @@ async fn all(config: &AppConfig, output_papers: bool) -> Result<()> {
 
     print_positions(
         &client,
-        &instruments,
+        Arc::new(instruments),
         &portfolio.positions,
         &portfolio.account_id,
         output_papers,
@@ -195,7 +195,7 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
 async fn dividends(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
-        .get_dividend_calendar(&portfolio, &instruments)
+        .get_dividend_calendar(&portfolio, Arc::new(instruments))
         .await?;
     println!("{calendar}");
     Ok(())
@@ -203,7 +203,9 @@ async fn dividends(config: &AppConfig) -> Result<()> {
 
 async fn coupons(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let calendar = client.get_coupon_calendar(&portfolio, &instruments).await?;
+    let calendar = client
+        .get_coupon_calendar(&portfolio, Arc::new(instruments))
+        .await?;
     println!("{calendar}");
     Ok(())
 }
@@ -211,7 +213,7 @@ async fn coupons(config: &AppConfig) -> Result<()> {
 async fn combined(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
-        .get_combined_calendar(&portfolio, &instruments)
+        .get_combined_calendar(&portfolio, Arc::new(instruments))
         .await?;
     println!("{calendar}");
     Ok(())
@@ -219,7 +221,7 @@ async fn combined(config: &AppConfig) -> Result<()> {
 
 async fn print_positions(
     client: &TinkoffInvestment,
-    instruments: &HashMap<String, Instrument>,
+    instruments: Arc<HashMap<String, Instrument>>,
     positions: &[PortfolioPosition],
     account_id: &str,
     output_papers: bool,

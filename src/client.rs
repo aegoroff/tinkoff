@@ -374,13 +374,13 @@ impl TinkoffInvestment {
     /// Builds a [`Portfolio`] by loading papers for each position in parallel.
     pub async fn build_portfolio(
         &self,
-        instruments: &HashMap<String, Instrument>,
+        instruments: Arc<HashMap<String, Instrument>>,
         positions: &[PortfolioPosition],
         account_id: &str,
         output_papers: bool,
         progress: Option<Arc<dyn Progress>>,
     ) -> Portfolio {
-        let instruments = Arc::new(instruments.clone());
+        let instruments = instruments.clone();
         let account_id = account_id.to_string();
 
         let papers = self
@@ -683,10 +683,10 @@ impl TinkoffInvestment {
     pub async fn get_dividend_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
+        instruments: Arc<HashMap<String, Instrument>>,
     ) -> color_eyre::Result<DividendCalendar> {
         let now = chrono::Utc::now();
-        let instruments = Arc::new(instruments.clone());
+        let instruments = instruments.clone();
 
         let pairs = self
             .fetch_parallel(&portfolio.positions, |client, figi| {
@@ -772,10 +772,10 @@ impl TinkoffInvestment {
     pub async fn get_coupon_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
+        instruments: Arc<HashMap<String, Instrument>>,
     ) -> color_eyre::Result<CouponCalendar> {
         let now = chrono::Utc::now();
-        let instruments = Arc::new(instruments.clone());
+        let instruments = instruments.clone();
 
         // Filter only bonds before launching parallel tasks
         let bond_positions: Vec<PortfolioPosition> = portfolio
@@ -864,10 +864,10 @@ impl TinkoffInvestment {
     pub async fn get_combined_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
+        instruments: Arc<HashMap<String, Instrument>>,
     ) -> color_eyre::Result<CombinedCalendar> {
         let (dividend_calendar, coupon_calendar) = tokio::join!(
-            self.get_dividend_calendar(portfolio, instruments),
+            self.get_dividend_calendar(portfolio, instruments.clone()),
             self.get_coupon_calendar(portfolio, instruments),
         );
         let dividend_calendar = dividend_calendar?;
