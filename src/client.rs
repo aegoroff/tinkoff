@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 
 use crate::{
+    client::InstrumentCatalog::{Bonds, Currencies, Etfs, Futures, Shares},
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividentProfit, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit, Paper,
@@ -58,11 +59,11 @@ impl InstrumentCatalog {
         client: &TinkoffInvestment,
     ) -> color_eyre::Result<HashMap<String, Instrument>> {
         match self {
-            Self::Bonds => client.get_all_bonds_until_done().await,
-            Self::Shares => client.get_all_shares_until_done().await,
-            Self::Etfs => client.get_all_etfs_until_done().await,
-            Self::Futures => client.get_all_futures_until_done().await,
-            Self::Currencies => client.get_all_currencies_until_done().await,
+            Self::Bonds => with_retry(|| client.get_all_bonds()).await,
+            Self::Shares => with_retry(|| client.get_all_shares()).await,
+            Self::Etfs => with_retry(|| client.get_all_etfs()).await,
+            Self::Futures => with_retry(|| client.get_all_futures()).await,
+            Self::Currencies => with_retry(|| client.get_all_currencies()).await,
         }
     }
 }
@@ -228,39 +229,6 @@ impl TinkoffInvestment {
         (get_all_futures, futures)
     );
 
-    #[allow(clippy::missing_errors_doc)]
-    pub async fn get_all_bonds_until_done(
-        &self,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        with_retry(|| self.get_all_bonds()).await
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub async fn get_all_shares_until_done(
-        &self,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        with_retry(|| self.get_all_shares()).await
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub async fn get_all_etfs_until_done(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
-        with_retry(|| self.get_all_etfs()).await
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub async fn get_all_currencies_until_done(
-        &self,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        with_retry(|| self.get_all_currencies()).await
-    }
-
-    #[allow(clippy::missing_errors_doc)]
-    pub async fn get_all_futures_until_done(
-        &self,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        with_retry(|| self.get_all_futures()).await
-    }
-
     /// Fetches all instrument catalogs in parallel and merges them by FIGI.
     ///
     /// # Errors
@@ -269,23 +237,20 @@ impl TinkoffInvestment {
     pub async fn get_all_instruments_until_done(
         &self,
     ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        Box::pin(async {
-            let (bonds, shares, etfs, currencies, futures) = tokio::join!(
-                self.get_all_bonds_until_done(),
-                self.get_all_shares_until_done(),
-                self.get_all_etfs_until_done(),
-                self.get_all_currencies_until_done(),
-                self.get_all_futures_until_done(),
-            );
+        let (bonds, shares, etfs, currencies, futures) = tokio::join!(
+            Bonds.fetch_until_done(self),
+            Shares.fetch_until_done(self),
+            Etfs.fetch_until_done(self),
+            Currencies.fetch_until_done(self),
+            Futures.fetch_until_done(self),
+        );
 
-            let mut all = bonds?;
-            all.extend(shares?);
-            all.extend(etfs?);
-            all.extend(currencies?);
-            all.extend(futures?);
-            Ok(all)
-        })
-        .await
+        let mut all = bonds?;
+        all.extend(shares?);
+        all.extend(etfs?);
+        all.extend(currencies?);
+        all.extend(futures?);
+        Ok(all)
     }
 
     /// Loads the portfolio and all instrument catalogs concurrently.
@@ -901,8 +866,12 @@ impl TinkoffInvestment {
         portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<CombinedCalendar> {
-        let dividend_calendar = self.get_dividend_calendar(portfolio, instruments).await?;
-        let coupon_calendar = self.get_coupon_calendar(portfolio, instruments).await?;
+        let (dividend_calendar, coupon_calendar) = tokio::join!(
+            self.get_dividend_calendar(portfolio, instruments),
+            self.get_coupon_calendar(portfolio, instruments),
+        );
+        let dividend_calendar = dividend_calendar?;
+        let coupon_calendar = coupon_calendar?;
 
         let mut combined =
             Vec::with_capacity(dividend_calendar.upcoming.len() + coupon_calendar.upcoming.len());
