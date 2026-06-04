@@ -222,7 +222,7 @@ async fn combined(config: &AppConfig) -> Result<()> {
 }
 
 async fn risk(config: &AppConfig) -> Result<()> {
-    use tinkoff::domain::risk::RiskAnalysis;
+    use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis, TargetAllocation};
 
     let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio_data, instruments) =
@@ -287,6 +287,12 @@ async fn risk(config: &AppConfig) -> Result<()> {
 
     let risk_analysis = RiskAnalysis::analyze(&container, &all_papers);
     println!("{risk_analysis}");
+
+    // Generate rebalancing recommendations using balanced allocation as target
+    let target = TargetAllocation::balanced();
+    let rebalancing = RebalancingAnalysis::analyze(&risk_analysis.asset_allocation, &target);
+    println!("{rebalancing}");
+
     Ok(())
 }
 

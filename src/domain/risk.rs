@@ -116,6 +116,205 @@ pub enum RiskLevel {
     VeryHigh,
 }
 
+/// Target allocation for portfolio rebalancing
+#[derive(Debug, Clone)]
+pub struct TargetAllocation {
+    /// Target percentage for bonds (0-100)
+    pub bonds: Decimal,
+    /// Target percentage for shares (0-100)
+    pub shares: Decimal,
+    /// Target percentage for ETFs (0-100)
+    pub etfs: Decimal,
+    /// Target percentage for currencies (0-100)
+    pub currencies: Decimal,
+    /// Target percentage for futures (0-100)
+    pub futures: Decimal,
+}
+
+impl Default for TargetAllocation {
+    fn default() -> Self {
+        // Conservative allocation: 60% bonds, 30% shares, 10% other
+        Self {
+            bonds: dec!(60),
+            shares: dec!(30),
+            etfs: dec!(5),
+            currencies: dec!(5),
+            futures: dec!(0),
+        }
+    }
+}
+
+impl TargetAllocation {
+    /// Create a balanced allocation (40% bonds, 40% shares, 20% other)
+    #[must_use]
+    pub fn balanced() -> Self {
+        Self {
+            bonds: dec!(40),
+            shares: dec!(40),
+            etfs: dec!(10),
+            currencies: dec!(5),
+            futures: dec!(5),
+        }
+    }
+
+    /// Create an aggressive allocation (20% bonds, 60% shares, 20% other)
+    #[must_use]
+    pub fn aggressive() -> Self {
+        Self {
+            bonds: dec!(20),
+            shares: dec!(60),
+            etfs: dec!(10),
+            currencies: dec!(5),
+            futures: dec!(5),
+        }
+    }
+
+    /// Create a conservative allocation (70% bonds, 20% shares, 10% other)
+    #[must_use]
+    pub fn conservative() -> Self {
+        Self {
+            bonds: dec!(70),
+            shares: dec!(20),
+            etfs: dec!(5),
+            currencies: dec!(5),
+            futures: dec!(0),
+        }
+    }
+
+    /// Validate that percentages sum to 100
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let sum = self.bonds + self.shares + self.etfs + self.currencies + self.futures;
+        sum >= dec!(99) && sum <= dec!(101)
+    }
+}
+
+/// Rebalancing recommendation for a single asset
+#[derive(Debug, Clone)]
+pub struct RebalanceRecommendation {
+    /// Asset type name
+    pub asset_type: &'static str,
+    /// Current percentage in portfolio
+    pub current_percentage: Decimal,
+    /// Target percentage
+    pub target_percentage: Decimal,
+    /// Deviation from target (positive = overweight, negative = underweight)
+    pub deviation: Decimal,
+    /// Recommended action
+    pub action: RebalanceAction,
+    /// Value to buy/sell to rebalance
+    pub rebalance_value: Money,
+}
+
+/// Action to take for rebalancing
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebalanceAction {
+    /// Buy to increase position
+    Buy,
+    /// Sell to decrease position
+    Sell,
+    /// No action needed
+    Hold,
+}
+
+/// Portfolio rebalancing analysis
+#[derive(Debug, Clone)]
+pub struct RebalancingAnalysis {
+    /// Total portfolio value
+    pub total_value: Money,
+    /// Recommendations for each asset type
+    pub recommendations: Vec<RebalanceRecommendation>,
+    /// Maximum deviation from target (absolute value)
+    pub max_deviation: Decimal,
+    /// Total value to rebalance
+    pub total_rebalance_value: Money,
+    /// Rebalancing priority score (0-100, higher = more urgent)
+    pub priority_score: Decimal,
+}
+
+impl RebalancingAnalysis {
+    /// Analyze portfolio and generate rebalancing recommendations
+    #[must_use]
+    pub fn analyze(asset_allocation: &AssetAllocation, target: &TargetAllocation) -> Self {
+        let total_value = asset_allocation.total_value;
+        let currency = total_value.currency;
+
+        // Calculate recommendations for each asset type
+        let mut recommendations = Vec::with_capacity(5);
+        let mut max_deviation = dec!(0);
+        let mut total_rebalance_value = dec!(0);
+
+        let assets = [
+            ("Bonds", asset_allocation.bonds.percentage, target.bonds),
+            ("Shares", asset_allocation.shares.percentage, target.shares),
+            ("ETFs", asset_allocation.etfs.percentage, target.etfs),
+            (
+                "Currencies",
+                asset_allocation.currencies.percentage,
+                target.currencies,
+            ),
+            (
+                "Futures",
+                asset_allocation.futures.percentage,
+                target.futures,
+            ),
+        ];
+
+        for (asset_type, current_pct, target_pct) in assets {
+            let deviation = current_pct - target_pct;
+            let abs_deviation = deviation.abs();
+
+            if abs_deviation > max_deviation {
+                max_deviation = abs_deviation;
+            }
+
+            // Calculate the value to rebalance
+            let target_value = (target_pct / dec!(100)) * total_value.value;
+            let current_value = (current_pct / dec!(100)) * total_value.value;
+            let rebalance_amount = (target_value - current_value).abs();
+
+            // Determine action based on deviation
+            // Threshold of 5% deviation before recommending action
+            let (action, rebalance_value) = if abs_deviation < dec!(5) {
+                (RebalanceAction::Hold, Money::zero(currency))
+            } else if deviation > dec!(0) {
+                (
+                    RebalanceAction::Sell,
+                    Money::from_value(rebalance_amount, currency),
+                )
+            } else {
+                (
+                    RebalanceAction::Buy,
+                    Money::from_value(rebalance_amount, currency),
+                )
+            };
+
+            total_rebalance_value += rebalance_value.value;
+
+            recommendations.push(RebalanceRecommendation {
+                asset_type,
+                current_percentage: current_pct,
+                target_percentage: target_pct,
+                deviation,
+                action,
+                rebalance_value,
+            });
+        }
+
+        // Calculate priority score based on max deviation
+        // 0-5% = 0-25, 5-10% = 25-50, 10-15% = 50-75, 15%+ = 75-100
+        let priority_score = (max_deviation * dec!(5)).min(dec!(100));
+
+        Self {
+            total_value,
+            recommendations,
+            max_deviation,
+            total_rebalance_value: Money::from_value(total_rebalance_value, currency),
+            priority_score,
+        }
+    }
+}
+
 impl RiskAnalysis {
     /// Analyze portfolio risk metrics
     #[must_use]
@@ -827,6 +1026,115 @@ impl std::fmt::Display for RiskAnalysis {
     }
 }
 
+/// Creates the rebalancing recommendations table
+fn create_rebalancing_table(analysis: &RebalancingAnalysis) -> Table {
+    let mut table = ux::new_table();
+
+    // Header
+    let title = Cell::new("Rebalancing Recommendations")
+        .add_attribute(Attribute::Bold)
+        .fg(comfy_table::Color::DarkBlue);
+    table.set_header([title]);
+
+    // Summary
+    table.add_row([
+        Cell::new("Max Deviation"),
+        Cell::new(format!(
+            "{}%",
+            ux::format_decimal(analysis.max_deviation).unwrap_or_default()
+        )),
+    ]);
+    table.add_row([
+        Cell::new("Total Rebalance Value"),
+        Cell::new(analysis.total_rebalance_value.to_string()),
+    ]);
+
+    let priority_color = if analysis.priority_score < dec!(25) {
+        comfy_table::Color::DarkGreen
+    } else if analysis.priority_score < dec!(50) {
+        comfy_table::Color::DarkYellow
+    } else if analysis.priority_score < dec!(75) {
+        comfy_table::Color::Yellow
+    } else {
+        comfy_table::Color::DarkRed
+    };
+
+    table.add_row([
+        Cell::new("Priority Score"),
+        Cell::new(format!(
+            "{} / 100",
+            ux::format_decimal(analysis.priority_score).unwrap_or_default()
+        ))
+        .fg(priority_color),
+    ]);
+
+    // Column headers
+    table.add_row([
+        Cell::new("Asset").add_attribute(Attribute::Bold),
+        Cell::new("Current %").add_attribute(Attribute::Bold),
+        Cell::new("Target %").add_attribute(Attribute::Bold),
+        Cell::new("Deviation").add_attribute(Attribute::Bold),
+        Cell::new("Action").add_attribute(Attribute::Bold),
+        Cell::new("Value").add_attribute(Attribute::Bold),
+    ]);
+
+    // Add rows for each recommendation
+    for rec in &analysis.recommendations {
+        let action_str = match &rec.action {
+            RebalanceAction::Buy => "BUY",
+            RebalanceAction::Sell => "SELL",
+            RebalanceAction::Hold => "HOLD",
+        };
+
+        let mut action_cell = Cell::new(action_str);
+        match &rec.action {
+            RebalanceAction::Buy => action_cell = action_cell.fg(comfy_table::Color::DarkGreen),
+            RebalanceAction::Sell => action_cell = action_cell.fg(comfy_table::Color::DarkRed),
+            RebalanceAction::Hold => action_cell = action_cell.fg(comfy_table::Color::DarkGrey),
+        }
+
+        let deviation_str = format!(
+            "{}{}%",
+            if rec.deviation > dec!(0) { "+" } else { "" },
+            ux::format_decimal(rec.deviation).unwrap_or_default()
+        );
+
+        let mut deviation_cell = Cell::new(deviation_str);
+        if rec.deviation.abs() < dec!(5) {
+            deviation_cell = deviation_cell.fg(comfy_table::Color::DarkGreen);
+        } else if rec.deviation.abs() < dec!(10) {
+            deviation_cell = deviation_cell.fg(comfy_table::Color::DarkYellow);
+        } else {
+            deviation_cell = deviation_cell.fg(comfy_table::Color::DarkRed);
+        }
+
+        table.add_row([
+            Cell::new(rec.asset_type),
+            Cell::new(format!(
+                "{}%",
+                ux::format_decimal(rec.current_percentage).unwrap_or_default()
+            )),
+            Cell::new(format!(
+                "{}%",
+                ux::format_decimal(rec.target_percentage).unwrap_or_default()
+            )),
+            deviation_cell,
+            action_cell,
+            Cell::new(rec.rebalance_value.to_string()),
+        ]);
+    }
+
+    table
+}
+
+impl std::fmt::Display for RebalancingAnalysis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let table = create_rebalancing_table(self);
+        writeln!(f, "\n{table}")?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
@@ -1304,5 +1612,216 @@ mod tests {
 
         // Verify VaR: 1.645 * 13 = 21.385
         assert_eq!(metrics.var_95, dec!(21.385));
+    }
+
+    #[test]
+    fn test_target_allocation_default() {
+        let target = TargetAllocation::default();
+        assert_eq!(target.bonds, dec!(60));
+        assert_eq!(target.shares, dec!(30));
+        assert_eq!(target.etfs, dec!(5));
+        assert_eq!(target.currencies, dec!(5));
+        assert_eq!(target.futures, dec!(0));
+        assert!(target.is_valid());
+    }
+
+    #[test]
+    fn test_target_allocation_balanced() {
+        let target = TargetAllocation::balanced();
+        assert_eq!(target.bonds, dec!(40));
+        assert_eq!(target.shares, dec!(40));
+        assert_eq!(target.etfs, dec!(10));
+        assert_eq!(target.currencies, dec!(5));
+        assert_eq!(target.futures, dec!(5));
+        assert!(target.is_valid());
+    }
+
+    #[test]
+    fn test_target_allocation_aggressive() {
+        let target = TargetAllocation::aggressive();
+        assert_eq!(target.bonds, dec!(20));
+        assert_eq!(target.shares, dec!(60));
+        assert_eq!(target.etfs, dec!(10));
+        assert_eq!(target.currencies, dec!(5));
+        assert_eq!(target.futures, dec!(5));
+        assert!(target.is_valid());
+    }
+
+    #[test]
+    fn test_rebalancing_no_action_needed() {
+        // Portfolio matches target exactly
+        let asset_alloc = AssetAllocation {
+            bonds: AllocationItem {
+                name: "Bonds",
+                value: Money::from_value(dec!(600), Currency::RUB),
+                percentage: dec!(60),
+            },
+            shares: AllocationItem {
+                name: "Shares",
+                value: Money::from_value(dec!(300), Currency::RUB),
+                percentage: dec!(30),
+            },
+            etfs: AllocationItem {
+                name: "ETFs",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            currencies: AllocationItem {
+                name: "Currencies",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            futures: AllocationItem {
+                name: "Futures",
+                value: Money::zero(Currency::RUB),
+                percentage: dec!(0),
+            },
+            total_value: Money::from_value(dec!(1000), Currency::RUB),
+        };
+
+        let target = TargetAllocation::default();
+        let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
+
+        // All actions should be Hold since portfolio matches target
+        for rec in &analysis.recommendations {
+            assert_eq!(rec.action, RebalanceAction::Hold);
+        }
+        assert_eq!(analysis.max_deviation, dec!(0));
+    }
+
+    #[test]
+    fn test_rebalancing_buy_and_sell() {
+        // Portfolio is overweight in shares, underweight in bonds
+        let asset_alloc = AssetAllocation {
+            bonds: AllocationItem {
+                name: "Bonds",
+                value: Money::from_value(dec!(400), Currency::RUB),
+                percentage: dec!(40),
+            },
+            shares: AllocationItem {
+                name: "Shares",
+                value: Money::from_value(dec!(500), Currency::RUB),
+                percentage: dec!(50),
+            },
+            etfs: AllocationItem {
+                name: "ETFs",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            currencies: AllocationItem {
+                name: "Currencies",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            futures: AllocationItem {
+                name: "Futures",
+                value: Money::zero(Currency::RUB),
+                percentage: dec!(0),
+            },
+            total_value: Money::from_value(dec!(1000), Currency::RUB),
+        };
+
+        let target = TargetAllocation::default(); // 60% bonds, 30% shares
+        let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
+
+        // Bonds should be BUY (currently 40%, target 60%)
+        let bonds_rec = analysis
+            .recommendations
+            .iter()
+            .find(|r| r.asset_type == "Bonds")
+            .unwrap();
+        assert_eq!(bonds_rec.action, RebalanceAction::Buy);
+        assert!(bonds_rec.deviation < dec!(0)); // Underweight
+
+        // Shares should be SELL (currently 50%, target 30%)
+        let shares_rec = analysis
+            .recommendations
+            .iter()
+            .find(|r| r.asset_type == "Shares")
+            .unwrap();
+        assert_eq!(shares_rec.action, RebalanceAction::Sell);
+        assert!(shares_rec.deviation > dec!(0)); // Overweight
+    }
+
+    #[test]
+    fn test_rebalancing_threshold() {
+        // Small deviation within 5% threshold
+        let asset_alloc = AssetAllocation {
+            bonds: AllocationItem {
+                name: "Bonds",
+                value: Money::from_value(dec!(580), Currency::RUB),
+                percentage: dec!(58),
+            },
+            shares: AllocationItem {
+                name: "Shares",
+                value: Money::from_value(dec!(320), Currency::RUB),
+                percentage: dec!(32),
+            },
+            etfs: AllocationItem {
+                name: "ETFs",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            currencies: AllocationItem {
+                name: "Currencies",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            futures: AllocationItem {
+                name: "Futures",
+                value: Money::zero(Currency::RUB),
+                percentage: dec!(0),
+            },
+            total_value: Money::from_value(dec!(1000), Currency::RUB),
+        };
+
+        let target = TargetAllocation::default(); // 60% bonds, 30% shares
+        let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
+
+        // Deviations are within 5% threshold, so all should be Hold
+        for rec in &analysis.recommendations {
+            assert_eq!(rec.action, RebalanceAction::Hold);
+        }
+    }
+
+    #[test]
+    fn test_rebalancing_priority_score() {
+        // High deviation should result in high priority score
+        let asset_alloc = AssetAllocation {
+            bonds: AllocationItem {
+                name: "Bonds",
+                value: Money::from_value(dec!(200), Currency::RUB),
+                percentage: dec!(20),
+            },
+            shares: AllocationItem {
+                name: "Shares",
+                value: Money::from_value(dec!(700), Currency::RUB),
+                percentage: dec!(70),
+            },
+            etfs: AllocationItem {
+                name: "ETFs",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            currencies: AllocationItem {
+                name: "Currencies",
+                value: Money::from_value(dec!(50), Currency::RUB),
+                percentage: dec!(5),
+            },
+            futures: AllocationItem {
+                name: "Futures",
+                value: Money::zero(Currency::RUB),
+                percentage: dec!(0),
+            },
+            total_value: Money::from_value(dec!(1000), Currency::RUB),
+        };
+
+        let target = TargetAllocation::default(); // 60% bonds, 30% shares
+        let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
+
+        // Max deviation is 40% (bonds: 20% vs 60% target)
+        assert_eq!(analysis.max_deviation, dec!(40));
+        // Priority score should be capped at 100 (40 * 5 = 200, but capped)
+        assert_eq!(analysis.priority_score, dec!(100));
     }
 }
