@@ -289,7 +289,7 @@ mod tests {
 
         let calendar = CombinedCalendar { upcoming: vec![] };
         let output = format!("{calendar}");
-        assert!(output.contains("Dividend & Coupon Calendar"));
+        assert!(output.contains("Payments Calendar"));
         assert!(output.contains("No upcoming dividend or coupon payments"));
     }
 
@@ -334,7 +334,7 @@ mod tests {
         let output = format!("{calendar}");
 
         // Check title
-        assert!(output.contains("Dividend & Coupon Calendar"));
+        assert!(output.contains("Payments Calendar"));
 
         // Check both payments are present
         assert!(output.contains("Sberbank"));

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use tinkoff_invest_api::{
-    TIError, TIResult, TinkoffInvestService,
+    TinkoffInvestService,
     tcs::{
         Account, AccountType, Coupon, Dividend, FindInstrumentRequest, GetAccountsRequest,
         GetBondCouponsRequest, GetDividendsRequest, InstrumentShort, InstrumentStatus,
@@ -159,29 +159,27 @@ macro_rules! collect {
     }};
 }
 
-macro_rules! impl_get_until_done {
-    ($(($target_method:ident, $source_method:ident)),*) => {
-        $(
-            #[allow(clippy::missing_errors_doc)]
-            pub async fn $target_method(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
-                with_retry(|| self.$source_method()).await
-            }
-        )*
-    };
-}
-
 macro_rules! impl_get_instrument_method {
     ($(($target_method:ident, $source_method:ident)),*) => {
         $(
-            async fn $target_method(&self) -> TIResult<HashMap<String, Instrument>> {
-                let channel = self.service.create_channel().await?;
-                let mut instruments = self.service.instruments(channel).await?;
+            async fn $target_method(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
+                let channel = self
+                    .service
+                    .create_channel()
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+                let mut instruments = self
+                    .service
+                    .instruments(channel)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
                 let instruments = instruments
                     .$source_method(InstrumentsRequest {
                         instrument_status: Some(InstrumentStatus::All as i32),
                         instrument_exchange: None,
                     })
-                    .await?;
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
                 let instruments = collect!(instruments);
                 Ok(instruments)
             }
@@ -189,17 +187,21 @@ macro_rules! impl_get_instrument_method {
     };
 }
 
+/// Executes a future with exponential backoff retry logic.
+///
+/// Retries up to 5 times with delays: 100ms, 200ms, 400ms, 800ms, 1600ms.
+/// Returns the error from the last attempt if all retries fail.
 async fn with_retry<T, F, Fut>(f: F) -> color_eyre::Result<T>
 where
     F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, TIError>>,
+    Fut: std::future::Future<Output = color_eyre::Result<T>>,
 {
     let mut delay = Duration::from_millis(100);
     for attempt in 1..=5 {
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) if attempt == 5 => {
-                return Err(eyre::eyre!("{e:?}"));
+                return Err(eyre::eyre!("Operation failed after 5 attempts: {e:?}"));
             }
             Err(_) => {
                 sleep(delay).await;
@@ -226,13 +228,38 @@ impl TinkoffInvestment {
         (get_all_futures, futures)
     );
 
-    impl_get_until_done!(
-        (get_all_bonds_until_done, get_all_bonds),
-        (get_all_shares_until_done, get_all_shares),
-        (get_all_etfs_until_done, get_all_etfs),
-        (get_all_currencies_until_done, get_all_currencies),
-        (get_all_futures_until_done, get_all_futures)
-    );
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn get_all_bonds_until_done(
+        &self,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        with_retry(|| self.get_all_bonds()).await
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn get_all_shares_until_done(
+        &self,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        with_retry(|| self.get_all_shares()).await
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn get_all_etfs_until_done(&self) -> color_eyre::Result<HashMap<String, Instrument>> {
+        with_retry(|| self.get_all_etfs()).await
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn get_all_currencies_until_done(
+        &self,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        with_retry(|| self.get_all_currencies()).await
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn get_all_futures_until_done(
+        &self,
+    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        with_retry(|| self.get_all_futures()).await
+    }
 
     /// Fetches all instrument catalogs in parallel and merges them by FIGI.
     ///
@@ -474,21 +501,26 @@ impl TinkoffInvestment {
         }
     }
 
-    async fn get_portfolio(&self, account: AccountType) -> TIResult<AccountPortfolio> {
+    async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
         let (channel, users_channel) =
             tokio::join!(self.service.create_channel(), self.service.create_channel());
-        let channel = channel?;
-        let users_channel = users_channel?;
+        let channel = channel.map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+        let users_channel =
+            users_channel.map_err(|e| eyre::eyre!("Failed to create users channel: {e:?}"))?;
 
         let (users, operations) = tokio::join!(
             self.service.users(users_channel),
             self.service.operations(channel)
         );
 
-        let mut operations = operations?;
-        let mut users = users?;
+        let mut operations =
+            operations.map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
+        let mut users = users.map_err(|e| eyre::eyre!("Failed to get users service: {e:?}"))?;
 
-        let accounts = users.get_accounts(GetAccountsRequest {}).await?;
+        let accounts = users
+            .get_accounts(GetAccountsRequest {})
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get accounts: {e:?}"))?;
 
         let Some(account) = accounts
             .get_ref()
@@ -504,7 +536,8 @@ impl TinkoffInvestment {
                 account_id: account.id.clone(),
                 currency: Some(CurrencyRequest::Rub as i32),
             })
-            .await?;
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get portfolio: {e:?}"))?;
         Ok(AccountPortfolio {
             account_id: account.id.clone(),
             positions: portfolio.into_inner().positions,
@@ -581,9 +614,21 @@ impl TinkoffInvestment {
         with_retry(|| self.get_portfolio(account)).await
     }
 
-    async fn get_operations(&self, account_id: String, figi: String) -> TIResult<Vec<Operation>> {
-        let channel = self.service.create_channel().await?;
-        let mut operations = self.service.operations(channel).await?;
+    async fn get_operations(
+        &self,
+        account_id: String,
+        figi: String,
+    ) -> color_eyre::Result<Vec<Operation>> {
+        let channel = self
+            .service
+            .create_channel()
+            .await
+            .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+        let mut operations = self
+            .service
+            .operations(channel)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
         let operations = operations
             .get_operations(OperationsRequest {
                 account_id,
@@ -592,7 +637,8 @@ impl TinkoffInvestment {
                 state: Some(OperationState::Executed as i32),
                 figi: Some(figi),
             })
-            .await?;
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get operations: {e:?}"))?;
 
         Ok(operations.into_inner().operations)
     }
