@@ -869,7 +869,6 @@ impl TinkoffInvestment {
             combined.push(CombinedPayment::Coupon(coupon));
         }
 
-        // Sort by payment date
         combined.sort_by_key(CalendarPayment::payment_date);
 
         Ok(CombinedCalendar { upcoming: combined })
