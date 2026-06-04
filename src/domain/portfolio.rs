@@ -225,9 +225,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::domain::paper::{
-        CouponProfit, DividentProfit, NoneProfit, Position, Totals,
-    };
+    use crate::domain::paper::{CouponProfit, DividentProfit, NoneProfit, Position, Totals};
 
     #[rstest]
     fn portfolio_balance(test_portfolio: Portfolio) {

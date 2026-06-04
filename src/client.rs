@@ -22,6 +22,7 @@ use crate::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividentProfit, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit, Paper,
         Portfolio, Position, Profit, Totals,
+        calendar::{CalendarPayment, CombinedCalendar, CombinedPayment},
     },
     progress::Progress,
     to_currency, to_datetime_utc, to_decimal, to_money,
@@ -840,6 +841,38 @@ impl TinkoffInvestment {
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
         Ok(response.into_inner().events)
+    }
+
+    /// Combined dividend and coupon calendar for all portfolio positions.
+    ///
+    /// Merges both dividend and coupon payments into a single calendar sorted by payment date.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if dividends or coupons cannot be retrieved from remote server.
+    pub async fn get_combined_calendar(
+        &self,
+        portfolio: &AccountPortfolio,
+        instruments: &HashMap<String, Instrument>,
+    ) -> color_eyre::Result<CombinedCalendar> {
+        let dividend_calendar = self.get_dividend_calendar(portfolio, instruments).await?;
+        let coupon_calendar = self.get_coupon_calendar(portfolio, instruments).await?;
+
+        let mut combined =
+            Vec::with_capacity(dividend_calendar.upcoming.len() + coupon_calendar.upcoming.len());
+
+        for dividend in dividend_calendar.upcoming {
+            combined.push(CombinedPayment::Dividend(dividend));
+        }
+
+        for coupon in coupon_calendar.upcoming {
+            combined.push(CombinedPayment::Coupon(coupon));
+        }
+
+        // Sort by payment date
+        combined.sort_by_key(CalendarPayment::payment_date);
+
+        Ok(CombinedCalendar { upcoming: combined })
     }
 }
 

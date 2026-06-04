@@ -58,6 +58,7 @@ const FUTURES_CMD: &str = "f";
 const HISTORY_CMD: &str = "hi";
 const DIVIDENDS_CMD: &str = "d";
 const COUPONS_CMD: &str = "p";
+const COMBINED_CMD: &str = "j";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -87,6 +88,7 @@ fn run_subcommand<'a>(
         HISTORY_CMD => Box::pin(history(config, matches)),
         DIVIDENDS_CMD => Box::pin(dividends(config)),
         COUPONS_CMD => Box::pin(coupons(config)),
+        COMBINED_CMD => Box::pin(combined(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -206,6 +208,15 @@ async fn coupons(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+async fn combined(config: &AppConfig) -> Result<()> {
+    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
+    let calendar = client
+        .get_combined_calendar(&portfolio, &instruments)
+        .await?;
+    println!("{calendar}");
+    Ok(())
+}
+
 async fn print_positions(
     client: &TinkoffInvestment,
     instruments: &HashMap<String, Instrument>,
@@ -252,6 +263,7 @@ fn build_cli() -> Command {
         .subcommand(history_cmd())
         .subcommand(dividends_cmd())
         .subcommand(coupons_cmd())
+        .subcommand(combined_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -313,6 +325,12 @@ fn coupons_cmd() -> Command {
     Command::new(COUPONS_CMD)
         .aliases(["coupons"])
         .about("Get coupon calendar for portfolio bonds")
+}
+
+fn combined_cmd() -> Command {
+    Command::new(COMBINED_CMD)
+        .aliases(["combined", "join"])
+        .about("Get combined dividend and coupon calendar")
 }
 
 async fn portfolio_with_instruments(

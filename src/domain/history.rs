@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use iso_currency::Currency;
 
-use super::money::Money;
 use super::NumberRange;
+use super::money::Money;
 
 pub struct History {
     pub name: String,

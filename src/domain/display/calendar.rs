@@ -9,6 +9,7 @@ use crate::ux;
 use super::super::calendar::CalendarPayment;
 use super::super::money::Money;
 use super::super::{CouponCalendar, DividendCalendar};
+use crate::domain::calendar::CombinedCalendar;
 
 fn format_date(dt: DateTime<Utc>) -> String {
     format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day())
@@ -231,6 +232,12 @@ impl Display for CouponCalendar {
     }
 }
 
+impl Display for CombinedCalendar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", format_calendar(&self.upcoming))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
@@ -274,5 +281,116 @@ mod tests {
         let pos_2024 = output.find("2024").unwrap();
         let pos_2025 = output.find("2025").unwrap();
         assert!(pos_2024 < pos_2025);
+    }
+
+    #[test]
+    fn combined_calendar_empty() {
+        use crate::domain::calendar::CombinedCalendar;
+
+        let calendar = CombinedCalendar { upcoming: vec![] };
+        let output = format!("{calendar}");
+        assert!(output.contains("Dividend & Coupon Calendar"));
+        assert!(output.contains("No upcoming dividend or coupon payments"));
+    }
+
+    #[test]
+    fn combined_calendar_merges_dividends_and_coupons() {
+        use super::super::super::calendar::DividendPayment;
+        use super::super::super::money::Money;
+        use crate::domain::calendar::{CombinedCalendar, CombinedPayment, CouponPayment};
+
+        let dividend = DividendPayment {
+            figi: "1".to_string(),
+            ticker: "SBER".to_string(),
+            name: "Sberbank".to_string(),
+            currency: Currency::RUB,
+            dividend_per_share: Money::from_value(dec!(10), Currency::RUB),
+            total_dividend: Money::from_value(dec!(100), Currency::RUB),
+            quantity: dec!(10),
+            ex_dividend_date: Utc.with_ymd_and_hms(2025, 3, 15, 0, 0, 0).unwrap(),
+            payment_date: None,
+            dividend_type: "Regular".to_string(),
+        };
+
+        let coupon = CouponPayment {
+            figi: "2".to_string(),
+            ticker: "BOND".to_string(),
+            name: "OFZ Bond".to_string(),
+            currency: Currency::RUB,
+            coupon_per_bond: Money::from_value(dec!(5), Currency::RUB),
+            total_coupon: Money::from_value(dec!(50), Currency::RUB),
+            quantity: dec!(10),
+            coupon_date: Utc.with_ymd_and_hms(2025, 2, 1, 0, 0, 0).unwrap(),
+            coupon_type: "Constant".to_string(),
+        };
+
+        let calendar = CombinedCalendar {
+            upcoming: vec![
+                CombinedPayment::Dividend(dividend),
+                CombinedPayment::Coupon(coupon),
+            ],
+        };
+
+        let output = format!("{calendar}");
+
+        // Check title
+        assert!(output.contains("Dividend & Coupon Calendar"));
+
+        // Check both payments are present
+        assert!(output.contains("Sberbank"));
+        assert!(output.contains("OFZ Bond"));
+
+        // Check sorting (coupon date is earlier)
+        let pos_coupon = output.find("2025-02-01").unwrap();
+        let pos_dividend = output.find("2025-03-15").unwrap();
+        assert!(pos_coupon < pos_dividend);
+    }
+
+    #[test]
+    fn combined_calendar_sorts_by_payment_date() {
+        use super::super::super::calendar::DividendPayment;
+        use super::super::super::money::Money;
+        use crate::domain::calendar::{CombinedCalendar, CombinedPayment, CouponPayment};
+
+        // Dividend with earlier date
+        let dividend = DividendPayment {
+            figi: "1".to_string(),
+            ticker: "SBER".to_string(),
+            name: "Sberbank".to_string(),
+            currency: Currency::RUB,
+            dividend_per_share: Money::from_value(dec!(10), Currency::RUB),
+            total_dividend: Money::from_value(dec!(100), Currency::RUB),
+            quantity: dec!(10),
+            ex_dividend_date: Utc.with_ymd_and_hms(2025, 1, 15, 0, 0, 0).unwrap(),
+            payment_date: None,
+            dividend_type: "Regular".to_string(),
+        };
+
+        // Coupon with later date
+        let coupon = CouponPayment {
+            figi: "2".to_string(),
+            ticker: "BOND".to_string(),
+            name: "OFZ Bond".to_string(),
+            currency: Currency::RUB,
+            coupon_per_bond: Money::from_value(dec!(5), Currency::RUB),
+            total_coupon: Money::from_value(dec!(50), Currency::RUB),
+            quantity: dec!(10),
+            coupon_date: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
+            coupon_type: "Constant".to_string(),
+        };
+
+        let calendar = CombinedCalendar {
+            upcoming: vec![
+                CombinedPayment::Coupon(coupon.clone()),
+                CombinedPayment::Dividend(dividend.clone()),
+            ],
+        };
+
+        let output = format!("{calendar}");
+
+        // Check that dividend (earlier date) appears before coupon (later date)
+        let pos_dividend = output.find("2025-01-15").unwrap();
+        let pos_coupon = output.find("2025-06-01").unwrap();
+        assert!(pos_dividend < pos_coupon);
     }
 }

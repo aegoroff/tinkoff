@@ -202,3 +202,99 @@ impl Display for DividendPayment {
         )
     }
 }
+
+/// Combined payment type for merged dividend and coupon calendar
+#[derive(Clone)]
+pub enum CombinedPayment {
+    Dividend(DividendPayment),
+    Coupon(CouponPayment),
+}
+
+/// Combined calendar with both dividend and coupon payments
+pub struct CombinedCalendar {
+    pub upcoming: Vec<CombinedPayment>,
+}
+
+impl CalendarPayment for CombinedPayment {
+    fn payment_date(&self) -> DateTime<Utc> {
+        match self {
+            Self::Dividend(d) => d.payment_date(),
+            Self::Coupon(c) => c.payment_date(),
+        }
+    }
+
+    fn ex_date(&self) -> DateTime<Utc> {
+        match self {
+            Self::Dividend(d) => d.ex_date(),
+            Self::Coupon(c) => c.ex_date(),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Dividend(d) => d.name(),
+            Self::Coupon(c) => c.name(),
+        }
+    }
+
+    fn payment_per_unit(&self) -> Money {
+        match self {
+            Self::Dividend(d) => d.payment_per_unit(),
+            Self::Coupon(c) => c.payment_per_unit(),
+        }
+    }
+
+    fn total_payment(&self) -> Money {
+        match self {
+            Self::Dividend(d) => d.total_payment(),
+            Self::Coupon(c) => c.total_payment(),
+        }
+    }
+
+    fn calendar_title() -> &'static str {
+        "Dividend & Coupon Calendar"
+    }
+
+    fn column_headers() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        (
+            "Payment Date",
+            "Ex-Date",
+            "Company",
+            "Payment per Unit",
+            "Total Payment",
+        )
+    }
+
+    fn empty_message() -> &'static str {
+        "No upcoming dividend or coupon payments"
+    }
+}
+
+impl Display for CombinedPayment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dividend(d) => write!(
+                f,
+                "{} ({} | {} | {})",
+                d.name,
+                d.ticker,
+                d.figi,
+                d.currency.code()
+            ),
+            Self::Coupon(c) => write!(
+                f,
+                "{} ({} | {} | {})",
+                c.name,
+                c.ticker,
+                c.figi,
+                c.currency.code()
+            ),
+        }
+    }
+}
