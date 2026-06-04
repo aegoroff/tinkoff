@@ -18,7 +18,7 @@ pub struct Position {
 }
 
 pub struct Totals {
-    /// Dividents, coupons etc. i.e. some extra value
+    /// Dividends, coupons etc. i.e. some extra value
     /// an asset may earn
     pub additional_profit: Money,
     /// Taxes and fees
@@ -37,7 +37,7 @@ pub trait Profit: Copy {
 }
 
 #[derive(Clone, Copy)]
-pub struct DividentProfit;
+pub struct DividendProfit;
 #[derive(Clone, Copy)]
 pub struct CouponProfit;
 #[derive(Clone, Copy)]
@@ -53,13 +53,13 @@ pub struct Paper<P: Profit> {
     pub profit: P,
 }
 
-impl Profit for DividentProfit {
+impl Profit for DividendProfit {
     fn applicable() -> bool {
         true
     }
 
     fn name() -> &'static str {
-        "Dividents"
+        "Dividends"
     }
 }
 
@@ -90,10 +90,10 @@ impl<P: Profit> Paper<P> {
         Income::new(self.current(), self.balance())
     }
 
-    /// Total income (income + dividents)
+    /// Total income (income + dividends)
     #[must_use]
     pub fn total_income(&self) -> Income {
-        let div = self.dividents();
+        let div = self.dividends();
         Income::new(self.current() + (div.current - div.balance), self.balance())
     }
 
@@ -109,9 +109,9 @@ impl<P: Profit> Paper<P> {
         self.position.current_instrument_price * self.position.quantity
     }
 
-    /// Dividents and coupons
+    /// Dividends and coupons
     #[must_use]
-    pub fn dividents(&self) -> Income {
+    pub fn dividends(&self) -> Income {
         Income::new(
             self.totals.additional_profit + self.balance(),
             self.balance(),

@@ -11,7 +11,7 @@ pub use calendar::{
 pub use history::{History, HistoryItem};
 pub use money::{Income, Money};
 pub use paper::{
-    CouponProfit, DividentProfit, Instrument, NoneProfit, Paper, Position, Profit, Totals,
+    CouponProfit, DividendProfit, Instrument, NoneProfit, Paper, Position, Profit, Totals,
 };
 pub use portfolio::{Asset, LoadedPaper, Portfolio};
 

@@ -42,7 +42,7 @@ impl<P: Profit> Display for Asset<P> {
 
         if P::applicable() {
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
-            ux::add_row_colorized(&mut table, P::name(), self.dividents());
+            ux::add_row_colorized(&mut table, P::name(), self.dividends());
         }
 
         ux::add_row(&mut table, "Instruments count", self.papers().len());
@@ -89,7 +89,7 @@ impl<P: Profit> Display for Paper<P> {
         ux::add_row_colorized(&mut table, INCOME, self.income());
 
         if P::applicable() {
-            ux::add_row_colorized(&mut table, P::name(), self.dividents());
+            ux::add_row_colorized(&mut table, P::name(), self.dividends());
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
         }
 
@@ -117,7 +117,7 @@ impl Display for Portfolio {
 
             ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
-            ux::add_row_colorized(&mut table, "Dividents and coupons", self.dividents());
+            ux::add_row_colorized(&mut table, "Dividends and coupons", self.dividends());
 
             ux::add_row(&mut table, BALANCE_VALUE, self.balance());
             ux::add_row(&mut table, CURRENT_VALUE, self.current());

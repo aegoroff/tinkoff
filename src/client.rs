@@ -21,7 +21,7 @@ use crate::{
     client::InstrumentCatalog::{Bonds, Currencies, Etfs, Futures, Shares},
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
-        DividentProfit, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit, Paper,
+        DividendProfit, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit, Paper,
         Portfolio, Position, Profit, Totals,
         calendar::{CalendarPayment, CombinedCalendar, CombinedPayment},
     },
@@ -80,8 +80,8 @@ pub struct TinkoffInvestment {
 }
 
 enum OperationInfluence {
-    /// Anything that affects to dividents or coupons value.<br/>
-    /// Including negative values like divident tax etc. to calculate pure income<br/>
+    /// Anything that affects to dividends or coupons value.<br/>
+    /// Including negative values like dividend tax etc. to calculate pure income<br/>
     /// without taxes.
     PureIncome,
     /// Comissions and other losses
@@ -429,7 +429,7 @@ impl TinkoffInvestment {
                     instruments,
                     account_id.to_string(),
                     position,
-                    DividentProfit,
+                    DividendProfit,
                 )
                 .await
                 .map(LoadedPaper::Share),

@@ -1,12 +1,12 @@
 use iso_currency::Currency;
 
 use super::money::{Income, Money};
-use super::paper::{CouponProfit, DividentProfit, NoneProfit, Paper, Profit};
+use super::paper::{CouponProfit, DividendProfit, NoneProfit, Paper, Profit};
 
 /// A position loaded from the API, tagged by instrument kind.
 pub enum LoadedPaper {
     Bond(Paper<CouponProfit>),
-    Share(Paper<DividentProfit>),
+    Share(Paper<DividendProfit>),
     Etf(Paper<NoneProfit>),
     Currency(Paper<NoneProfit>),
     Future(Paper<NoneProfit>),
@@ -16,7 +16,7 @@ pub enum LoadedPaper {
 /// [`Asset`] is a [`Paper`]'s container
 pub struct Portfolio {
     pub bonds: Asset<CouponProfit>,
-    pub shares: Asset<DividentProfit>,
+    pub shares: Asset<DividendProfit>,
     pub etfs: Asset<NoneProfit>,
     pub currencies: Asset<NoneProfit>,
     pub futures: Asset<NoneProfit>,
@@ -61,7 +61,7 @@ impl Portfolio {
     pub fn new(output_papers: bool) -> Self {
         Self {
             bonds: Asset::new("Bonds", CouponProfit, output_papers),
-            shares: Asset::new("Shares", DividentProfit, output_papers),
+            shares: Asset::new("Shares", DividendProfit, output_papers),
             etfs: Asset::new("Etfs", NoneProfit, output_papers),
             currencies: Asset::new("Currencies", NoneProfit, output_papers),
             futures: Asset::new("Futures", NoneProfit, output_papers),
@@ -89,7 +89,7 @@ impl Portfolio {
     );
     impl_portfolio_aggregator!(balance, balance, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
-    impl_portfolio_aggregator!(dividents, dividents, Money, Money::zero(Currency::RUB));
+    impl_portfolio_aggregator!(dividends, dividends, Money, Money::zero(Currency::RUB));
 
     #[must_use]
     pub fn count_not_empty_assets(&self) -> usize {
@@ -103,7 +103,7 @@ trait PortfolioAsset {
     fn total_income(&self) -> Income;
     fn balance(&self) -> Money;
     fn current(&self) -> Money;
-    fn dividents(&self) -> Money;
+    fn dividends(&self) -> Money;
     fn is_asset_empty(&self) -> bool;
 }
 
@@ -124,8 +124,8 @@ impl<P: Profit> PortfolioAsset for Asset<P> {
         Asset::current(self)
     }
 
-    fn dividents(&self) -> Money {
-        Asset::dividents(self)
+    fn dividends(&self) -> Money {
+        Asset::dividends(self)
     }
 
     fn is_asset_empty(&self) -> bool {
@@ -182,11 +182,11 @@ impl<P: Profit> Asset<P> {
         })
     }
 
-    pub fn dividents(&self) -> Money {
+    pub fn dividends(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
-            // IMPORTANT: We need absolute divident value here but current is absolute + balance
+            // IMPORTANT: We need absolute dividend value here but current is absolute + balance
             // so we have to subtract
-            acc += p.dividents().current - p.dividents().balance;
+            acc += p.dividends().current - p.dividends().balance;
             acc
         })
     }
@@ -225,7 +225,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::domain::paper::{CouponProfit, DividentProfit, NoneProfit, Position, Totals};
+    use crate::domain::paper::{CouponProfit, DividendProfit, NoneProfit, Position, Totals};
 
     #[rstest]
     fn portfolio_balance(test_portfolio: Portfolio) {
@@ -245,8 +245,8 @@ mod tests {
     }
 
     #[rstest]
-    fn portfolio_dividents(test_portfolio: Portfolio) {
-        assert_eq!(dec!(150), test_portfolio.dividents().value);
+    fn portfolio_dividends(test_portfolio: Portfolio) {
+        assert_eq!(dec!(150), test_portfolio.dividends().value);
     }
 
     #[rstest]
@@ -274,7 +274,7 @@ mod tests {
             },
             profit: CouponProfit,
         });
-        let mut shares = Asset::new("Shares", DividentProfit, true);
+        let mut shares = Asset::new("Shares", DividendProfit, true);
         shares.add_paper(Paper {
             name: "2".to_string(),
             ticker: "2t".to_string(),
@@ -289,7 +289,7 @@ mod tests {
                 additional_profit: Money::from_value(dec!(50), currency),
                 fees: Money::from_value(dec!(10), currency),
             },
-            profit: DividentProfit,
+            profit: DividendProfit,
         });
 
         let etfs = Asset::new("Etfs", NoneProfit, true);
