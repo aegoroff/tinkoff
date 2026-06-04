@@ -252,7 +252,7 @@ impl CalendarPayment for CombinedPayment {
     }
 
     fn calendar_title() -> &'static str {
-        "Dividend & Coupon Calendar"
+        "Payments Calendar"
     }
 
     fn column_headers() -> (
