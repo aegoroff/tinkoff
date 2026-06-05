@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use comfy_table::{Attribute, Cell, Table};
 use iso_currency::Currency;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
@@ -533,13 +533,15 @@ impl RiskMetrics {
         let asset_concentration_risk = Self::calculate_asset_concentration_risk(asset_alloc);
         let volatility = Self::calculate_volatility(asset_alloc);
         let beta = Self::calculate_beta(asset_alloc);
-        let var_95 = Self::calculate_var_95(volatility);
+        let var_95 = Self::calculate_var_95(volatility, 1);
 
         let risk_level = Self::assess_risk_level(
             diversification_score,
             currency_risk,
             concentration_risk,
             asset_concentration_risk,
+            volatility,
+            beta,
         );
 
         Self {
@@ -634,11 +636,21 @@ impl RiskMetrics {
         currency_risk: Decimal,
         concentration_risk: Decimal,
         asset_concentration_risk: Decimal,
+        volatility: Decimal,
+        beta: Decimal,
     ) -> RiskLevel {
         let avg_risk = (currency_risk + concentration_risk + asset_concentration_risk) / dec!(3);
         let diversification_bonus = diversification_score / dec!(10);
 
-        let final_risk = (avg_risk - diversification_bonus)
+        // Volatility penalty: annualised σ > 20% adds up to 20 points.
+        // Typical equity market vol is ~15-20%; anything above signals elevated risk.
+        let vol_penalty = (volatility - dec!(20)).max(dec!(0)).min(dec!(20));
+
+        // Beta penalty: β > 1.5 adds up to 15 points.
+        // β=1 is market-neutral; above 1.5 implies meaningful leverage to market swings.
+        let beta_penalty = ((beta - dec!(1.5)) * dec!(15)).max(dec!(0)).min(dec!(15));
+
+        let final_risk = (avg_risk - diversification_bonus + vol_penalty + beta_penalty)
             .max(dec!(0))
             .min(dec!(100));
 
@@ -690,7 +702,10 @@ impl RiskMetrics {
 
         // Divide by 10_000 to undo the two percentage→fraction conversions,
         // then take the square root to get σ_portfolio in percent.
-        let variance_f64 = weighted_variance.to_f64().unwrap_or(0.0) / 10_000.0;
+        let variance_f64 = weighted_variance
+            .to_f64()
+            .unwrap_or(0.0)
+            / 10_000.0;
 
         Decimal::try_from(variance_f64.sqrt()).unwrap_or(dec!(0))
     }
@@ -722,15 +737,26 @@ impl RiskMetrics {
         weighted_beta / dec!(100)
     }
 
-    /// Calculate Value at Risk (`VaR`) at 95% confidence level
-    /// Uses parametric `VaR` method: `VaR` = μ - 1.645 * σ
-    /// Assuming zero expected return (μ = 0) for short-term `VaR`
-    /// `VaR` = 1.645 * volatility (as percentage of portfolio)
+    /// Calculate Value at Risk (`VaR`) at 95% confidence level for a given horizon.
+    ///
+    /// Uses parametric `VaR`: `VaR(T) = 1.645 · σ_annual · sqrt(T / 252)`
+    ///
+    /// Assuming zero expected return (μ = 0), which is conservative for short horizons.
+    /// The square-root-of-time rule scales annualised volatility to the desired horizon.
+    ///
+    /// `horizon_days` — trading days (252 per year). Pass `1` for the standard 1-day VaR.
+    /// Result is expressed as a percentage of portfolio value (0–100).
     #[must_use]
-    fn calculate_var_95(volatility: Decimal) -> Decimal {
-        // Z-score for 95% confidence level is approximately 1.645
+    fn calculate_var_95(volatility: Decimal, horizon_days: u32) -> Decimal {
+        // Z-score for 95% one-tailed confidence level
         let z_score = dec!(1.645);
-        (z_score * volatility).min(dec!(100))
+
+        // Scale annual volatility to the requested horizon via sqrt-of-time rule.
+        // sqrt(horizon / 252) computed in f64 to avoid needing the `maths` feature.
+        let horizon_scale = Decimal::try_from(((horizon_days as f64) / 252.0_f64).sqrt())
+            .unwrap_or(dec!(1));
+
+        (z_score * volatility * horizon_scale).min(dec!(100))
     }
 }
 
@@ -830,7 +856,7 @@ fn create_risk_summary_table(metrics: &RiskMetrics) -> Table {
         Cell::new(ux::format_decimal(metrics.beta).unwrap_or_default()),
     ]);
     table.add_row([
-        Cell::new("VaR (95%)"),
+        Cell::new("VaR 95% (1d)"),
         Cell::new(format!(
             "{}%",
             ux::format_decimal(metrics.var_95).unwrap_or_default()
@@ -1557,19 +1583,38 @@ mod tests {
 
     #[test]
     fn test_var_95_calculation() {
-        // Test VaR with 10% volatility
+        // 1-day VaR from 10% annual volatility
+        // VaR(1d) = 1.645 * 10 * sqrt(1/252) ≈ 1.0363%
         let volatility = dec!(10);
-        let var = RiskMetrics::calculate_var_95(volatility);
-        // VaR = 1.645 * 10 = 16.45
-        assert_eq!(var, dec!(16.45));
+        let var = RiskMetrics::calculate_var_95(volatility, 1);
+        let expected = Decimal::try_from(1.645 * 10.0 * (1.0_f64 / 252.0).sqrt()).unwrap();
+        let epsilon = dec!(0.000001);
+        assert!(
+            (var - expected).abs() < epsilon,
+            "1d VaR {var} not close enough to {expected}"
+        );
+    }
+
+    #[test]
+    fn test_var_95_10day() {
+        // 10-day VaR from 10% annual volatility (Basel standard horizon)
+        // VaR(10d) = 1.645 * 10 * sqrt(10/252) ≈ 3.2756%
+        let volatility = dec!(10);
+        let var = RiskMetrics::calculate_var_95(volatility, 10);
+        let expected = Decimal::try_from(1.645 * 10.0 * (10.0_f64 / 252.0).sqrt()).unwrap();
+        let epsilon = dec!(0.000001);
+        assert!(
+            (var - expected).abs() < epsilon,
+            "10d VaR {var} not close enough to {expected}"
+        );
     }
 
     #[test]
     fn test_var_95_high_volatility() {
-        // Test VaR with high volatility (should be capped at 100)
+        // Even very high vol should be capped at 100%
         let volatility = dec!(100);
-        let var = RiskMetrics::calculate_var_95(volatility);
-        // VaR = 1.645 * 100 = 164.5, but capped at 100
+        let var = RiskMetrics::calculate_var_95(volatility, 252);
+        // VaR(252d) = 1.645 * 100 * sqrt(1) = 164.5 → capped at 100
         assert_eq!(var, dec!(100));
     }
 
@@ -1634,20 +1679,19 @@ mod tests {
         let expected_vol = dec!(8.7749643874);
         assert!(
             (metrics.volatility - expected_vol).abs() < epsilon,
-            "volatility {} not close enough to {expected_vol}",
-            metrics.volatility
+            "volatility {} not close enough to {expected_vol}", metrics.volatility
         );
 
         // Verify beta: 40%*0.1 + 40%*1 + 20%*0.9 = 0.04 + 0.4 + 0.18 = 0.62
         // (beta is a linear quantity — weighted average is correct here)
         assert_eq!(metrics.beta, dec!(0.62));
 
-        // Verify VaR: 1.645 * sqrt(77) ≈ 14.4348%
-        let expected_var = dec!(14.4348164173);
+        // Verify VaR: 1.645 * sqrt(77) * sqrt(1/252) ≈ 0.9093%  (1-day, 95% confidence)
+        let expected_var =
+            Decimal::try_from(1.645 * 8.7749643874_f64 * (1.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
             (metrics.var_95 - expected_var).abs() < epsilon,
-            "VaR {} not close enough to {expected_var}",
-            metrics.var_95
+            "VaR {} not close enough to {expected_var}", metrics.var_95
         );
     }
 
