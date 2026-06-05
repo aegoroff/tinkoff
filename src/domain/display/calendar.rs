@@ -1,4 +1,5 @@
-use std::{collections::HashMap, fmt::Display};
+use std::collections::BTreeMap;
+use std::fmt::Display;
 
 use chrono::{DateTime, Datelike, Utc};
 use comfy_table::{Attribute, Cell, Table};
@@ -29,8 +30,8 @@ fn month_name(month: u32) -> &'static str {
 /// Groups payments by year and month, then sorts chronologically
 fn group_and_sort_payments<P: CalendarPayment>(
     upcoming: &[P],
-) -> HashMap<i32, HashMap<u32, Vec<&P>>> {
-    let mut grouped: HashMap<(i32, u32), Vec<&P>> = HashMap::new();
+) -> BTreeMap<i32, BTreeMap<u32, Vec<&P>>> {
+    let mut grouped: BTreeMap<(i32, u32), Vec<&P>> = BTreeMap::new();
     for payment in upcoming {
         let date = payment.payment_date();
         grouped
@@ -39,7 +40,7 @@ fn group_and_sort_payments<P: CalendarPayment>(
             .push(payment);
     }
 
-    let mut by_year: HashMap<i32, HashMap<u32, Vec<&P>>> = HashMap::new();
+    let mut by_year: BTreeMap<i32, BTreeMap<u32, Vec<&P>>> = BTreeMap::new();
     for ((year, month), payments) in grouped {
         by_year.entry(year).or_default().insert(month, payments);
     }
@@ -166,29 +167,21 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
 
     let mut grand_total = Money::zero(Currency::RUB);
 
-    // Collect and sort year keys
-    let mut year_keys: Vec<i32> = grouped.keys().copied().collect();
-    year_keys.sort_unstable();
-
-    for year in year_keys {
-        let Some(months) = grouped.get(&year) else {
+    for year in grouped.keys() {
+        let Some(months) = grouped.get(year) else {
             continue;
         };
 
-        add_year_header(&mut table, year);
+        add_year_header(&mut table, *year);
 
         let mut year_total = Money::zero(Currency::RUB);
 
-        // Collect and sort month keys
-        let mut month_keys: Vec<u32> = months.keys().copied().collect();
-        month_keys.sort_unstable();
-
-        for month in month_keys {
-            let Some(payments) = months.get(&month) else {
+        for month in months.keys() {
+            let Some(payments) = months.get(month) else {
                 continue;
             };
 
-            let month_name_str = month_name(month);
+            let month_name_str = month_name(*month);
             add_month_header(&mut table, month_name_str);
 
             let mut month_total = Money::zero(Currency::RUB);
@@ -204,7 +197,7 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
             grand_total += month_total;
         }
 
-        add_year_total::<P>(&mut table, year, year_total);
+        add_year_total::<P>(&mut table, *year, year_total);
         add_separator_row(&mut table);
     }
 
