@@ -226,7 +226,9 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::domain::paper::{CouponProfit, DividendProfit, NoneProfit, Position, Totals};
+    use crate::domain::paper::{
+        CouponProfit, DividendProfit, Figi, NoneProfit, Position, Ticker, Totals,
+    };
 
     #[rstest]
     fn portfolio_balance(test_portfolio: Portfolio) {
@@ -261,8 +263,8 @@ mod tests {
         let mut bonds = Asset::new("Bonds", CouponProfit, true);
         bonds.add_paper(Paper {
             name: "1".to_string(),
-            ticker: "1t".to_string(),
-            figi: "1f".to_string(),
+            ticker: Ticker::new("1t".to_string()),
+            figi: Figi::new("1f".to_string()),
             position: Position {
                 currency,
                 average_buy_price: Money::from_value(dec!(10), currency),
@@ -278,8 +280,8 @@ mod tests {
         let mut shares = Asset::new("Shares", DividendProfit, true);
         shares.add_paper(Paper {
             name: "2".to_string(),
-            ticker: "2t".to_string(),
-            figi: "2f".to_string(),
+            ticker: Ticker::new("2t".to_string()),
+            figi: Figi::new("2f".to_string()),
             position: Position {
                 currency,
                 average_buy_price: Money::from_value(dec!(5), currency),

@@ -234,12 +234,14 @@ mod tests {
     use super::super::super::calendar::DividendPayment;
     use super::super::super::money::Money;
 
+    use super::super::super::paper::{Figi, Ticker};
+
     #[test]
     fn calendar_grouping_sorts_correctly() {
         let payments = vec![
             DividendPayment {
-                figi: "1".to_string(),
-                ticker: "A".to_string(),
+                figi: Figi::new("1".to_string()),
+                ticker: Ticker::new("A".to_string()),
                 name: "A".to_string(),
                 currency: Currency::RUB,
                 dividend_per_share: Money::from_value(dec!(1), Currency::RUB),
@@ -250,8 +252,8 @@ mod tests {
                 dividend_type: "type".to_string(),
             },
             DividendPayment {
-                figi: "2".to_string(),
-                ticker: "B".to_string(),
+                figi: Figi::new("2".to_string()),
+                ticker: Ticker::new("B".to_string()),
                 name: "B".to_string(),
                 currency: Currency::RUB,
                 dividend_per_share: Money::from_value(dec!(2), Currency::RUB),
@@ -286,8 +288,8 @@ mod tests {
         use crate::domain::calendar::{CombinedCalendar, CombinedPayment, CouponPayment};
 
         let dividend = DividendPayment {
-            figi: "1".to_string(),
-            ticker: "SBER".to_string(),
+            figi: Figi::new("1".to_string()),
+            ticker: Ticker::new("SBER".to_string()),
             name: "Sberbank".to_string(),
             currency: Currency::RUB,
             dividend_per_share: Money::from_value(dec!(10), Currency::RUB),
@@ -299,8 +301,8 @@ mod tests {
         };
 
         let coupon = CouponPayment {
-            figi: "2".to_string(),
-            ticker: "BOND".to_string(),
+            figi: Figi::new("2".to_string()),
+            ticker: Ticker::new("BOND".to_string()),
             name: "OFZ Bond".to_string(),
             currency: Currency::RUB,
             coupon_per_bond: Money::from_value(dec!(5), Currency::RUB),
@@ -340,8 +342,8 @@ mod tests {
 
         // Dividend with earlier date
         let dividend = DividendPayment {
-            figi: "1".to_string(),
-            ticker: "SBER".to_string(),
+            figi: Figi::new("1".to_string()),
+            ticker: Ticker::new("SBER".to_string()),
             name: "Sberbank".to_string(),
             currency: Currency::RUB,
             dividend_per_share: Money::from_value(dec!(10), Currency::RUB),
@@ -354,8 +356,8 @@ mod tests {
 
         // Coupon with later date
         let coupon = CouponPayment {
-            figi: "2".to_string(),
-            ticker: "BOND".to_string(),
+            figi: Figi::new("2".to_string()),
+            ticker: Ticker::new("BOND".to_string()),
             name: "OFZ Bond".to_string(),
             currency: Currency::RUB,
             coupon_per_bond: Money::from_value(dec!(5), Currency::RUB),

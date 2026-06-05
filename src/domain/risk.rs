@@ -7,6 +7,7 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
+use super::paper::Ticker;
 use super::portfolio::Portfolio;
 use crate::domain::LoadedPaper;
 use crate::ux;
@@ -81,7 +82,7 @@ pub struct PositionConcentration {
 #[derive(Debug, Clone)]
 pub struct PositionItem {
     pub name: String,
-    pub ticker: String,
+    pub ticker: Ticker,
     pub instrument_type: &'static str,
     pub value: Money,
     pub percentage: Decimal,
@@ -439,28 +440,28 @@ impl CurrencyAllocation {
 impl PositionConcentration {
     #[must_use]
     fn from_papers(papers: &[LoadedPaper]) -> Self {
-        let mut position_values: Vec<(String, String, &'static str, Decimal, Currency)> =
+        let mut position_values: Vec<(String, &Ticker, &'static str, Decimal, Currency)> =
             Vec::new();
 
         for paper in papers {
             let (name, ticker, instrument_type, value, currency) = match paper {
                 LoadedPaper::Bond(p) => (
                     p.name.clone(),
-                    p.ticker.clone(),
+                    &p.ticker,
                     "Bond",
                     p.current().value,
                     p.currency(),
                 ),
                 LoadedPaper::Share(p) => (
                     p.name.clone(),
-                    p.ticker.clone(),
+                    &p.ticker,
                     "Share",
                     p.current().value,
                     p.currency(),
                 ),
                 LoadedPaper::Etf(p) | LoadedPaper::Currency(p) | LoadedPaper::Future(p) => (
                     p.name.clone(),
-                    p.ticker.clone(),
+                    &p.ticker,
                     match paper {
                         LoadedPaper::Etf(_) => "ETF",
                         LoadedPaper::Currency(_) => "Currency",
@@ -491,7 +492,7 @@ impl PositionConcentration {
                 };
                 PositionItem {
                     name: name.clone(),
-                    ticker: ticker.clone(),
+                    ticker: (*ticker).clone(),
                     instrument_type,
                     value: Money::from_value(*value, *currency),
                     percentage,
@@ -1221,7 +1222,9 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::domain::{CouponProfit, DividendProfit, LoadedPaper, Paper, Position, Totals};
+    use crate::domain::{
+        CouponProfit, DividendProfit, Figi, LoadedPaper, Paper, Position, Ticker, Totals,
+    };
 
     #[test]
     fn test_asset_allocation_calculation() {
@@ -1232,8 +1235,8 @@ mod tests {
         let mut bonds = portfolio.bonds;
         bonds.add_paper(Paper {
             name: "Bond 1".to_string(),
-            ticker: "BOND1".to_string(),
-            figi: "bond1figi".to_string(),
+            ticker: Ticker::new("BOND1".to_string()),
+            figi: Figi::new("bond1figi".to_string()),
             position: Position {
                 currency,
                 average_buy_price: Money::from_value(dec!(5), currency),
@@ -1252,8 +1255,8 @@ mod tests {
         let mut shares = portfolio.shares;
         shares.add_paper(Paper {
             name: "Share 1".to_string(),
-            ticker: "SHARE1".to_string(),
-            figi: "share1figi".to_string(),
+            ticker: Ticker::new("SHARE1".to_string()),
+            figi: Figi::new("share1figi".to_string()),
             position: Position {
                 currency,
                 average_buy_price: Money::from_value(dec!(5), currency),
@@ -1281,8 +1284,8 @@ mod tests {
     fn test_currency_allocation_single_currency() {
         let papers = vec![LoadedPaper::Share(Paper {
             name: "Share 1".to_string(),
-            ticker: "SHARE1".to_string(),
-            figi: "share1figi".to_string(),
+            ticker: Ticker::new("SHARE1".to_string()),
+            figi: Figi::new("share1figi".to_string()),
             position: Position {
                 currency: Currency::RUB,
                 average_buy_price: Money::from_value(dec!(100), Currency::RUB),
@@ -1307,8 +1310,8 @@ mod tests {
         let papers = vec![
             LoadedPaper::Share(Paper {
                 name: "Share 1".to_string(),
-                ticker: "SHARE1".to_string(),
-                figi: "share1figi".to_string(),
+                ticker: Ticker::new("SHARE1".to_string()),
+                figi: Figi::new("share1figi".to_string()),
                 position: Position {
                     currency: Currency::RUB,
                     average_buy_price: Money::from_value(dec!(50), Currency::RUB),
@@ -1323,8 +1326,8 @@ mod tests {
             }),
             LoadedPaper::Share(Paper {
                 name: "Share 2".to_string(),
-                ticker: "SHARE2".to_string(),
-                figi: "share2figi".to_string(),
+                ticker: Ticker::new("SHARE2".to_string()),
+                figi: Figi::new("share2figi".to_string()),
                 position: Position {
                     currency: Currency::USD,
                     average_buy_price: Money::from_value(dec!(50), Currency::USD),
@@ -1351,8 +1354,8 @@ mod tests {
         let papers = vec![
             LoadedPaper::Share(Paper {
                 name: "Large Position".to_string(),
-                ticker: "LARGE".to_string(),
-                figi: "largefigi".to_string(),
+                ticker: Ticker::new("LARGE".to_string()),
+                figi: Figi::new("largefigi".to_string()),
                 position: Position {
                     currency: Currency::RUB,
                     average_buy_price: Money::from_value(dec!(100), Currency::RUB),
@@ -1367,8 +1370,8 @@ mod tests {
             }),
             LoadedPaper::Share(Paper {
                 name: "Small Position".to_string(),
-                ticker: "SMALL".to_string(),
-                figi: "smallfigi".to_string(),
+                ticker: Ticker::new("SMALL".to_string()),
+                figi: Figi::new("smallfigi".to_string()),
                 position: Position {
                     currency: Currency::RUB,
                     average_buy_price: Money::from_value(dec!(10), Currency::RUB),

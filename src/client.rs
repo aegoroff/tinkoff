@@ -22,8 +22,8 @@ use crate::{
     client::InstrumentCatalog::{Bonds, Currencies, Etfs, Futures, Shares},
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
-        DividendProfit, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit, Paper,
-        Portfolio, Position, Profit, Totals,
+        DividendProfit, Figi, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit,
+        Paper, Portfolio, Position, Profit, Ticker, Totals,
         calendar::{CalendarPayment, CombinedCalendar, CombinedPayment},
     },
     progress::Progress,
@@ -229,7 +229,7 @@ macro_rules! collect {
                     x.figi.clone(),
                     Instrument {
                         name: x.name.clone(),
-                        ticker: x.ticker.clone(),
+                        ticker: Ticker::new(x.ticker.clone()),
                     },
                 )
             })
@@ -746,11 +746,11 @@ impl TinkoffInvestment {
 
         let totals = Self::reduce(&executed_ops, position.currency);
 
-        let instrument = instruments.get(&portfolio_position.figi)?;
+                let instrument = instruments.get(&portfolio_position.figi)?;
         Some(Paper {
             name: instrument.name.clone(),
             ticker: instrument.ticker.clone(),
-            figi: portfolio_position.figi.clone(),
+            figi: Figi::new(portfolio_position.figi.clone()),
             position,
             totals,
             profit,
@@ -827,8 +827,8 @@ impl TinkoffInvestment {
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(DividendPayment {
-                    figi: position.figi.clone(),
-                    ticker: instrument.ticker.clone(),
+                    figi: Figi::new(position.figi.clone()),
+                    ticker: Ticker::new(instrument.ticker.as_str().to_string()),
                     name: instrument.name.clone(),
                     currency: dividend_per_share.currency,
                     dividend_per_share,
@@ -919,8 +919,8 @@ impl TinkoffInvestment {
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(CouponPayment {
-                    figi: position.figi.clone(),
-                    ticker: instrument.ticker.clone(),
+                    figi: Figi::new(position.figi.clone()),
+                    ticker: Ticker::new(instrument.ticker.as_str().to_string()),
                     name: instrument.name.clone(),
                     currency: coupon_value.currency,
                     coupon_per_bond: coupon_value,

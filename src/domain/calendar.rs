@@ -5,12 +5,13 @@ use iso_currency::Currency;
 use rust_decimal::Decimal;
 
 use super::money::Money;
+use super::paper::{Figi, Ticker};
 
 /// Dividend payment information
 #[derive(Clone)]
 pub struct DividendPayment {
-    pub figi: String,
-    pub ticker: String,
+    pub figi: Figi,
+    pub ticker: Ticker,
     pub name: String,
     pub currency: Currency,
     pub dividend_per_share: Money,
@@ -29,8 +30,8 @@ pub struct DividendCalendar {
 /// Coupon payment information
 #[derive(Clone)]
 pub struct CouponPayment {
-    pub figi: String,
-    pub ticker: String,
+    pub figi: Figi,
+    pub ticker: Ticker,
     pub name: String,
     pub currency: Currency,
     pub coupon_per_bond: Money,

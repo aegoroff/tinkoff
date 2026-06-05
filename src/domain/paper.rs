@@ -1,12 +1,95 @@
 use iso_currency::Currency;
 use rust_decimal::Decimal;
+use std::fmt;
 
 use super::money::{Income, Money};
+
+/// Newtype for FIGI (Financial Instrument Global Identifier)
+/// Provides type safety and prevents mixing up with other string identifiers
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Figi(pub String);
+
+impl Figi {
+    #[must_use]
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Figi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for Figi {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Figi {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl AsRef<str> for Figi {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Newtype for ticker symbol
+/// Provides type safety and prevents mixing up with other string identifiers
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Ticker(pub String);
+
+impl Ticker {
+    #[must_use]
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Ticker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for Ticker {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for Ticker {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl AsRef<str> for Ticker {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Clone)]
 pub struct Instrument {
     pub name: String,
-    pub ticker: String,
+    pub ticker: Ticker,
 }
 
 #[derive(Clone, Copy)]
@@ -48,8 +131,8 @@ pub struct NoneProfit;
 #[derive(Clone)]
 pub struct Paper<P: Profit> {
     pub name: String,
-    pub ticker: String,
-    pub figi: String,
+    pub ticker: Ticker,
+    pub figi: Figi,
     pub position: Position,
     pub totals: Totals,
     pub profit: P,
