@@ -92,6 +92,8 @@ Commands:
   hi    Get trading history for an instrument
   d     Get dividend calendar for portfolio
   p     Get coupon calendar for portfolio bonds
+  j     Get combined dividend and coupon calendar
+  r     Analyze portfolio risk metrics
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -118,6 +120,12 @@ tinkoff d
 # View coupon calendar
 tinkoff p
 
+# Get combined dividend and coupon calendar
+tinkoff j
+
+# Analyze portfolio risk metrics
+tinkoff r
+
 # Use custom token
 tinkoff -t "your_token" a
 ```
@@ -138,18 +146,19 @@ The application provides rich, formatted output including:
 
 ```
 src/
-├── main.rs           # CLI application entry point
-├── lib.rs            # Library exports and utility functions
-├── client.rs         # Tinkoff API client implementation
-├── domain/
-│   ├── money.rs      # Money, Income
-│   ├── paper.rs      # Paper, Position, Profit types
-│   ├── portfolio.rs  # Portfolio, Asset
-│   ├── history.rs    # Trading history
-│   ├── calendar.rs   # Dividend and coupon calendars
-│   └── display/      # Table formatting (Display impls)
-├── progress.rs       # Progress indicators
-└── ux.rs             # Formatting utilities
+├── main.rs              # CLI application entry point
+├── lib.rs               # Library exports and utility functions
+├── client.rs            # Tinkoff API client implementation
+├── progress.rs          # Progress indicators
+├── ux.rs                # Formatting utilities
+└── domain/
+    ├── calendar.rs      # Dividend and coupon calendars
+    ├── money.rs         # Money, Income types
+    ├── paper.rs         # Paper, Position, Profit types
+    ├── risk.rs          # Risk analysis
+    └── display/
+        ├── calendar.rs  # Calendar display formatting
+        └── risk.rs      # Risk display formatting
 ```
 
 ## Key Components
