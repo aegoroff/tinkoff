@@ -102,8 +102,14 @@ pub struct RiskMetrics {
     pub volatility: Decimal,
     /// Portfolio beta (sensitivity to market, typically 0-2)
     pub beta: Decimal,
-    /// Value at Risk (95% confidence, as percentage 0-100)
-    pub var_95: Decimal,
+    /// Value at Risk (95% confidence, 1-day horizon, as percentage 0-100)
+    pub var_95_1d: Decimal,
+    /// Value at Risk (95% confidence, 30-day horizon, as percentage 0-100)
+    pub var_95_30d: Decimal,
+    /// Value at Risk (95% confidence, quarterly horizon ~90 days, as percentage 0-100)
+    pub var_95_quarterly: Decimal,
+    /// Value at Risk (95% confidence, yearly horizon ~252 days, as percentage 0-100)
+    pub var_95_yearly: Decimal,
     /// Risk level assessment
     pub risk_level: RiskLevel,
 }
@@ -533,7 +539,11 @@ impl RiskMetrics {
         let asset_concentration_risk = Self::calculate_asset_concentration_risk(asset_alloc);
         let volatility = Self::calculate_volatility(asset_alloc);
         let beta = Self::calculate_beta(asset_alloc);
-        let var_95 = Self::calculate_var_95(volatility, 30);
+        // Calculate VaR for different horizons: 1 day, 30 days, quarterly (~90 days), yearly (~252 days)
+        let var_95_1d = Self::calculate_var_95(volatility, 1);
+        let var_95_30d = Self::calculate_var_95(volatility, 30);
+        let var_95_quarterly = Self::calculate_var_95(volatility, 90);
+        let var_95_yearly = Self::calculate_var_95(volatility, 252);
 
         let risk_level = Self::assess_risk_level(
             diversification_score,
@@ -551,7 +561,10 @@ impl RiskMetrics {
             asset_concentration_risk,
             volatility,
             beta,
-            var_95,
+            var_95_1d,
+            var_95_30d,
+            var_95_quarterly,
+            var_95_yearly,
             risk_level,
         }
     }
@@ -674,7 +687,7 @@ impl RiskMetrics {
     /// - Currencies: 10%
     /// - Futures: 25% (leveraged instruments)
     ///
-    /// Formula: σ_portfolio = sqrt(Σ wᵢ² · σᵢ²)
+    /// Formula: `σ_portfolio` = sqrt(Σ wᵢ² · σᵢ²)
     ///
     /// This assumes zero cross-class correlation, which is conservative
     /// (i.e. gives a lower bound vs. the fully correlated linear sum, but
@@ -741,7 +754,7 @@ impl RiskMetrics {
     /// Assuming zero expected return (μ = 0), which is conservative for short horizons.
     /// The square-root-of-time rule scales annualised volatility to the desired horizon.
     ///
-    /// `horizon_days` — trading days (252 per year). Pass `1` for the standard 1-day VaR.
+    /// `horizon_days` — trading days (252 per year). Pass `1` for the standard 1-day `VaR`.
     /// Result is expressed as a percentage of portfolio value (0–100).
     #[must_use]
     fn calculate_var_95(volatility: Decimal, horizon_days: u32) -> Decimal {
@@ -751,7 +764,7 @@ impl RiskMetrics {
         // Scale annual volatility to the requested horizon via sqrt-of-time rule.
         // sqrt(horizon / 252) computed in f64 to avoid needing the `maths` feature.
         let horizon_scale =
-            Decimal::try_from(((horizon_days as f64) / 252.0_f64).sqrt()).unwrap_or(dec!(1));
+            Decimal::try_from((f64::from(horizon_days) / 252.0_f64).sqrt()).unwrap_or(dec!(1));
 
         (z_score * volatility * horizon_scale).min(dec!(100))
     }
@@ -852,11 +865,37 @@ fn create_risk_summary_table(metrics: &RiskMetrics) -> Table {
         Cell::new("Beta"),
         Cell::new(ux::format_decimal(metrics.beta).unwrap_or_default()),
     ]);
+    // VaR section header
+    let var_header = Cell::new("Value at Risk (95%)")
+        .add_attribute(Attribute::Bold)
+        .fg(comfy_table::Color::DarkCyan);
+    table.add_row([var_header]);
     table.add_row([
-        Cell::new("VaR 95% (30d)"),
+        Cell::new("VaR 1d"),
         Cell::new(format!(
             "{}%",
-            ux::format_decimal(metrics.var_95).unwrap_or_default()
+            ux::format_decimal(metrics.var_95_1d).unwrap_or_default()
+        )),
+    ]);
+    table.add_row([
+        Cell::new("VaR 30d"),
+        Cell::new(format!(
+            "{}%",
+            ux::format_decimal(metrics.var_95_30d).unwrap_or_default()
+        )),
+    ]);
+    table.add_row([
+        Cell::new("VaR Quarterly (90d)"),
+        Cell::new(format!(
+            "{}%",
+            ux::format_decimal(metrics.var_95_quarterly).unwrap_or_default()
+        )),
+    ]);
+    table.add_row([
+        Cell::new("VaR Yearly (252d)"),
+        Cell::new(format!(
+            "{}%",
+            ux::format_decimal(metrics.var_95_yearly).unwrap_or_default()
         )),
     ]);
 
@@ -1686,13 +1725,40 @@ mod tests {
         // (beta is a linear quantity — weighted average is correct here)
         assert_eq!(metrics.beta, dec!(0.62));
 
-        // Verify VaR: 1.645 * sqrt(77) * sqrt(1/252) ≈ 0.9093%  (1-day, 95% confidence)
-        let expected_var =
+        // Verify VaR 1d: 1.645 * sqrt(77) * sqrt(1/252) ≈ 0.9093%  (1-day, 95% confidence)
+        let expected_var_1d =
             Decimal::try_from(1.645 * 8.7749643874_f64 * (1.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
-            (metrics.var_95 - expected_var).abs() < epsilon,
-            "VaR {} not close enough to {expected_var}",
-            metrics.var_95
+            (metrics.var_95_1d - expected_var_1d).abs() < epsilon,
+            "VaR 1d {} not close enough to {expected_var_1d}",
+            metrics.var_95_1d
+        );
+
+        // Verify VaR 30d: 1.645 * sqrt(77) * sqrt(30/252) ≈ 4.980%
+        let expected_var_30d =
+            Decimal::try_from(1.645 * 8.7749643874_f64 * (30.0_f64 / 252.0).sqrt()).unwrap();
+        assert!(
+            (metrics.var_95_30d - expected_var_30d).abs() < epsilon,
+            "VaR 30d {} not close enough to {expected_var_30d}",
+            metrics.var_95_30d
+        );
+
+        // Verify VaR quarterly (90d): 1.645 * sqrt(77) * sqrt(90/252) ≈ 8.627%
+        let expected_var_quarterly =
+            Decimal::try_from(1.645 * 8.7749643874_f64 * (90.0_f64 / 252.0).sqrt()).unwrap();
+        assert!(
+            (metrics.var_95_quarterly - expected_var_quarterly).abs() < epsilon,
+            "VaR quarterly {} not close enough to {expected_var_quarterly}",
+            metrics.var_95_quarterly
+        );
+
+        // Verify VaR yearly (252d): 1.645 * sqrt(77) * sqrt(252/252) ≈ 14.435%
+        let expected_var_yearly =
+            Decimal::try_from(1.645 * 8.7749643874_f64 * (252.0_f64 / 252.0).sqrt()).unwrap();
+        assert!(
+            (metrics.var_95_yearly - expected_var_yearly).abs() < epsilon,
+            "VaR yearly {} not close enough to {expected_var_yearly}",
+            metrics.var_95_yearly
         );
     }
 
