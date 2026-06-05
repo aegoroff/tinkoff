@@ -533,7 +533,7 @@ impl RiskMetrics {
         let asset_concentration_risk = Self::calculate_asset_concentration_risk(asset_alloc);
         let volatility = Self::calculate_volatility(asset_alloc);
         let beta = Self::calculate_beta(asset_alloc);
-        let var_95 = Self::calculate_var_95(volatility, 1);
+        let var_95 = Self::calculate_var_95(volatility, 30);
 
         let risk_level = Self::assess_risk_level(
             diversification_score,
@@ -853,7 +853,7 @@ fn create_risk_summary_table(metrics: &RiskMetrics) -> Table {
         Cell::new(ux::format_decimal(metrics.beta).unwrap_or_default()),
     ]);
     table.add_row([
-        Cell::new("VaR 95% (1d)"),
+        Cell::new("VaR 95% (30d)"),
         Cell::new(format!(
             "{}%",
             ux::format_decimal(metrics.var_95).unwrap_or_default()
