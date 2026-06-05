@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use comfy_table::{Attribute, Cell, Table};
 use iso_currency::Currency;
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
@@ -702,10 +702,7 @@ impl RiskMetrics {
 
         // Divide by 10_000 to undo the two percentage→fraction conversions,
         // then take the square root to get σ_portfolio in percent.
-        let variance_f64 = weighted_variance
-            .to_f64()
-            .unwrap_or(0.0)
-            / 10_000.0;
+        let variance_f64 = weighted_variance.to_f64().unwrap_or(0.0) / 10_000.0;
 
         Decimal::try_from(variance_f64.sqrt()).unwrap_or(dec!(0))
     }
@@ -753,8 +750,8 @@ impl RiskMetrics {
 
         // Scale annual volatility to the requested horizon via sqrt-of-time rule.
         // sqrt(horizon / 252) computed in f64 to avoid needing the `maths` feature.
-        let horizon_scale = Decimal::try_from(((horizon_days as f64) / 252.0_f64).sqrt())
-            .unwrap_or(dec!(1));
+        let horizon_scale =
+            Decimal::try_from(((horizon_days as f64) / 252.0_f64).sqrt()).unwrap_or(dec!(1));
 
         (z_score * volatility * horizon_scale).min(dec!(100))
     }
@@ -1023,6 +1020,7 @@ fn create_position_table(concentration: &PositionConcentration) -> Table {
         )),
     ]);
     table.add_row([Cell::new("HHI"), hhi_cell]);
+    table.add_row([Cell::new("")]);
 
     // Column headers for positions
     table.add_row([
@@ -1679,7 +1677,8 @@ mod tests {
         let expected_vol = dec!(8.7749643874);
         assert!(
             (metrics.volatility - expected_vol).abs() < epsilon,
-            "volatility {} not close enough to {expected_vol}", metrics.volatility
+            "volatility {} not close enough to {expected_vol}",
+            metrics.volatility
         );
 
         // Verify beta: 40%*0.1 + 40%*1 + 20%*0.9 = 0.04 + 0.4 + 0.18 = 0.62
@@ -1691,7 +1690,8 @@ mod tests {
             Decimal::try_from(1.645 * 8.7749643874_f64 * (1.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
             (metrics.var_95 - expected_var).abs() < epsilon,
-            "VaR {} not close enough to {expected_var}", metrics.var_95
+            "VaR {} not close enough to {expected_var}",
+            metrics.var_95
         );
     }
 
