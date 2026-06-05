@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use comfy_table::{Attribute, Cell, Table};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
@@ -652,13 +653,22 @@ impl RiskMetrics {
         }
     }
 
-    /// Calculate portfolio volatility based on asset allocation
+    /// Calculate portfolio volatility based on asset allocation.
+    ///
     /// Uses typical annualized volatility values for each asset type:
     /// - Bonds: 5%
     /// - Shares: 20%
     /// - ETFs: 15% (average, depends on underlying)
     /// - Currencies: 10%
     /// - Futures: 25% (leveraged instruments)
+    ///
+    /// Formula: σ_portfolio = sqrt(Σ wᵢ² · σᵢ²)
+    ///
+    /// This assumes zero cross-class correlation, which is conservative
+    /// (i.e. gives a lower bound vs. the fully correlated linear sum, but
+    /// higher than a perfectly negatively correlated portfolio). Linear
+    /// weighting would be correct only if all correlations were 1, which
+    /// systematically overstates risk.
     #[must_use]
     fn calculate_volatility(asset_alloc: &AssetAllocation) -> Decimal {
         // Typical annualized volatility percentages for each asset type
@@ -668,15 +678,21 @@ impl RiskMetrics {
         let currency_vol = dec!(10);
         let future_vol = dec!(25);
 
-        // Weight volatility by asset allocation percentage
-        let weighted_vol = asset_alloc.bonds.percentage * bond_vol
-            + asset_alloc.shares.percentage * share_vol
-            + asset_alloc.etfs.percentage * etf_vol
-            + asset_alloc.currencies.percentage * currency_vol
-            + asset_alloc.futures.percentage * future_vol;
+        // Weights are percentages (0–100), so wᵢ = percentage / 100.
+        // wᵢ² · σᵢ² = (percentage / 100)² · σᵢ²
+        //            = percentage² · σᵢ² / 10_000
+        let sq = |x: Decimal| x * x;
+        let weighted_variance = sq(asset_alloc.bonds.percentage) * sq(bond_vol)
+            + sq(asset_alloc.shares.percentage) * sq(share_vol)
+            + sq(asset_alloc.etfs.percentage) * sq(etf_vol)
+            + sq(asset_alloc.currencies.percentage) * sq(currency_vol)
+            + sq(asset_alloc.futures.percentage) * sq(future_vol);
 
-        // Divide by 100 to get weighted average
-        weighted_vol / dec!(100)
+        // Divide by 10_000 to undo the two percentage→fraction conversions,
+        // then take the square root to get σ_portfolio in percent.
+        let variance_f64 = weighted_variance.to_f64().unwrap_or(0.0) / 10_000.0;
+
+        Decimal::try_from(variance_f64.sqrt()).unwrap_or(dec!(0))
     }
 
     /// Calculate portfolio beta (sensitivity to market movements)
@@ -1418,7 +1434,7 @@ mod tests {
         };
 
         let volatility = RiskMetrics::calculate_volatility(&asset_alloc);
-        // 100% bonds = 5% volatility
+        // sqrt((1.0 * 5)²) = 5% — single-asset case is unchanged vs. linear formula
         assert_eq!(volatility, dec!(5));
     }
 
@@ -1455,8 +1471,14 @@ mod tests {
         };
 
         let volatility = RiskMetrics::calculate_volatility(&asset_alloc);
-        // 50% bonds (5%) + 50% shares (20%) = 2.5 + 10 = 12.5%
-        assert_eq!(volatility, dec!(12.5));
+        // sqrt((0.5*5)² + (0.5*20)²) = sqrt(6.25 + 100) = sqrt(106.25) ≈ 10.3078%
+        // (linear sum 12.5% was wrong: assumes correlation = 1 between all asset classes)
+        let expected = dec!(10.3077640640);
+        let epsilon = dec!(0.000001);
+        assert!(
+            (volatility - expected).abs() < epsilon,
+            "volatility {volatility} not close enough to {expected}"
+        );
     }
 
     #[test]
@@ -1604,14 +1626,29 @@ mod tests {
 
         let metrics = RiskMetrics::calculate(&asset_alloc, &currency_alloc, &position_conc);
 
-        // Verify volatility: 40%*5 + 40%*20 + 20%*15 = 2 + 8 + 3 = 13%
-        assert_eq!(metrics.volatility, dec!(13));
+        let epsilon = dec!(0.000001);
+
+        // Verify volatility: sqrt((0.4*5)² + (0.4*20)² + (0.2*15)²)
+        //   = sqrt(4 + 64 + 9) = sqrt(77) ≈ 8.7750%
+        // (old linear result 13% assumed correlation = 1, which overstated risk)
+        let expected_vol = dec!(8.7749643874);
+        assert!(
+            (metrics.volatility - expected_vol).abs() < epsilon,
+            "volatility {} not close enough to {expected_vol}",
+            metrics.volatility
+        );
 
         // Verify beta: 40%*0.1 + 40%*1 + 20%*0.9 = 0.04 + 0.4 + 0.18 = 0.62
+        // (beta is a linear quantity — weighted average is correct here)
         assert_eq!(metrics.beta, dec!(0.62));
 
-        // Verify VaR: 1.645 * 13 = 21.385
-        assert_eq!(metrics.var_95, dec!(21.385));
+        // Verify VaR: 1.645 * sqrt(77) ≈ 14.4348%
+        let expected_var = dec!(14.4348164173);
+        assert!(
+            (metrics.var_95 - expected_var).abs() < epsilon,
+            "VaR {} not close enough to {expected_var}",
+            metrics.var_95
+        );
     }
 
     #[test]
