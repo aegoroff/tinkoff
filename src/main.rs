@@ -197,25 +197,60 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
 async fn dividends(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
-        .get_dividend_calendar(&portfolio, Arc::new(instruments))
+        .calendar()
+        .dividends()
+        .fetch(&portfolio, Arc::new(instruments))
         .await?;
-    println!("{calendar}");
+    // Filter only dividend payments
+    let dividend_calendar = calendar
+        .upcoming
+        .iter()
+        .filter_map(|p| match p {
+            tinkoff::domain::calendar::CombinedPayment::Dividend(d) => Some(d.clone()),
+            tinkoff::domain::calendar::CombinedPayment::Coupon(_) => None,
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        tinkoff::domain::DividendCalendar {
+            upcoming: dividend_calendar
+        }
+    );
     Ok(())
 }
 
 async fn coupons(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
-        .get_coupon_calendar(&portfolio, Arc::new(instruments))
+        .calendar()
+        .coupons()
+        .fetch(&portfolio, Arc::new(instruments))
         .await?;
-    println!("{calendar}");
+    // Filter only coupon payments
+    let coupon_calendar = calendar
+        .upcoming
+        .iter()
+        .filter_map(|p| match p {
+            tinkoff::domain::calendar::CombinedPayment::Coupon(c) => Some(c.clone()),
+            tinkoff::domain::calendar::CombinedPayment::Dividend(_) => None,
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        tinkoff::domain::CouponCalendar {
+            upcoming: coupon_calendar
+        }
+    );
     Ok(())
 }
 
 async fn combined(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
     let calendar = client
-        .get_combined_calendar(&portfolio, Arc::new(instruments))
+        .calendar()
+        .dividends()
+        .coupons()
+        .fetch(&portfolio, Arc::new(instruments))
         .await?;
     println!("{calendar}");
     Ok(())

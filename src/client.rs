@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use color_eyre::eyre;
 use iso_currency::Currency;
 use itertools::Itertools;
@@ -31,6 +32,88 @@ use crate::{
 
 /// Maximum number of concurrent API requests when loading portfolio positions or calendars.
 pub const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+/// Builder for calendar queries with fluent API.
+pub struct CalendarBuilder<'a> {
+    client: &'a TinkoffInvestment,
+    include_dividends: bool,
+    include_coupons: bool,
+    filter_future_dates: bool,
+}
+
+impl<'a> CalendarBuilder<'a> {
+    fn new(client: &'a TinkoffInvestment) -> Self {
+        Self {
+            client,
+            include_dividends: false,
+            include_coupons: false,
+            filter_future_dates: true,
+        }
+    }
+
+    /// Include dividend payments in the calendar.
+    #[must_use]
+    pub fn dividends(mut self) -> Self {
+        self.include_dividends = true;
+        self
+    }
+
+    /// Include coupon payments in the calendar.
+    #[must_use]
+    pub fn coupons(mut self) -> Self {
+        self.include_coupons = true;
+        self
+    }
+
+    /// Filter out past dates, keeping only future payments.
+    #[must_use]
+    pub fn filter_future_dates(mut self, filter: bool) -> Self {
+        self.filter_future_dates = filter;
+        self
+    }
+
+    /// Fetches the calendar based on the builder configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the calendar cannot be fetched from the API.
+    pub async fn fetch(
+        self,
+        portfolio: &AccountPortfolio,
+        instruments: Arc<HashMap<String, Instrument>>,
+    ) -> color_eyre::Result<CombinedCalendar> {
+        let now = if self.filter_future_dates {
+            Some(chrono::Utc::now())
+        } else {
+            None
+        };
+
+        let mut payments = Vec::new();
+
+        if self.include_dividends {
+            let dividend_calendar = self
+                .client
+                .get_dividend_calendar(portfolio, instruments.clone(), now)
+                .await?;
+            for dividend in dividend_calendar.upcoming {
+                payments.push(CombinedPayment::Dividend(dividend));
+            }
+        }
+
+        if self.include_coupons {
+            let coupon_calendar = self
+                .client
+                .get_coupon_calendar(portfolio, instruments, now)
+                .await?;
+            for coupon in coupon_calendar.upcoming {
+                payments.push(CombinedPayment::Coupon(coupon));
+            }
+        }
+
+        payments.sort_by_key(CalendarPayment::payment_date);
+        Ok(CombinedCalendar { upcoming: payments })
+    }
+}
 
 /// Instrument catalog slice returned by the Instruments API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -698,20 +781,19 @@ impl TinkoffInvestment {
         }
     }
 
-    /// Upcoming dividend calendar for portfolio positions.
-    ///
-    /// The account is defined by `portfolio` (positions and quantities). Dividend schedules
-    /// are fetched per instrument via the Instruments API and do not take `account_id`.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if dividends cannot be retrieved from remote server.
-    pub async fn get_dividend_calendar(
+    /// Creates a new calendar builder for fluent API.
+    #[must_use]
+    pub fn calendar(&self) -> CalendarBuilder<'_> {
+        CalendarBuilder::new(self)
+    }
+
+    /// Internal method for fetching dividend calendar with optional date filtering.
+    async fn get_dividend_calendar(
         &self,
         portfolio: &AccountPortfolio,
         instruments: Arc<HashMap<String, Instrument>>,
+        filter_after: Option<DateTime<Utc>>,
     ) -> color_eyre::Result<DividendCalendar> {
-        let now = chrono::Utc::now();
         let instruments = instruments.clone();
 
         let pairs = self
@@ -735,9 +817,11 @@ impl TinkoffInvestment {
                 let ex_dividend_date = dividend
                     .record_date
                     .as_ref()
-                    .map_or(now, |d| to_datetime_utc(Some(d)));
+                    .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
 
-                if ex_dividend_date <= now {
+                if let Some(cutoff) = filter_after
+                    && ex_dividend_date <= cutoff
+                {
                     continue;
                 }
 
@@ -787,20 +871,13 @@ impl TinkoffInvestment {
         Ok(response.into_inner().dividends)
     }
 
-    /// Upcoming coupon calendar for bond positions in the portfolio.
-    ///
-    /// The account is defined by `portfolio` (positions and quantities). Coupon schedules
-    /// are fetched per instrument via the Instruments API and do not take `account_id`.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if coupons cannot be retrieved from remote server.
-    pub async fn get_coupon_calendar(
+    /// Internal method for fetching coupon calendar with optional date filtering.
+    async fn get_coupon_calendar(
         &self,
         portfolio: &AccountPortfolio,
         instruments: Arc<HashMap<String, Instrument>>,
+        filter_after: Option<DateTime<Utc>>,
     ) -> color_eyre::Result<CouponCalendar> {
-        let now = chrono::Utc::now();
         let instruments = instruments.clone();
 
         // Filter only bonds before launching parallel tasks
@@ -832,9 +909,11 @@ impl TinkoffInvestment {
                 let coupon_date = coupon
                     .coupon_date
                     .as_ref()
-                    .map_or(now, |d| to_datetime_utc(Some(d)));
+                    .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
 
-                if coupon_date <= now {
+                if let Some(cutoff) = filter_after
+                    && coupon_date <= cutoff
+                {
                     continue;
                 }
 
@@ -878,41 +957,6 @@ impl TinkoffInvestment {
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
         Ok(response.into_inner().events)
-    }
-
-    /// Combined dividend and coupon calendar for all portfolio positions.
-    ///
-    /// Merges both dividend and coupon payments into a single calendar sorted by payment date.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if dividends or coupons cannot be retrieved from remote server.
-    pub async fn get_combined_calendar(
-        &self,
-        portfolio: &AccountPortfolio,
-        instruments: Arc<HashMap<String, Instrument>>,
-    ) -> color_eyre::Result<CombinedCalendar> {
-        let (dividend_calendar, coupon_calendar) = tokio::join!(
-            self.get_dividend_calendar(portfolio, instruments.clone()),
-            self.get_coupon_calendar(portfolio, instruments),
-        );
-        let dividend_calendar = dividend_calendar?;
-        let coupon_calendar = coupon_calendar?;
-
-        let mut combined =
-            Vec::with_capacity(dividend_calendar.upcoming.len() + coupon_calendar.upcoming.len());
-
-        for dividend in dividend_calendar.upcoming {
-            combined.push(CombinedPayment::Dividend(dividend));
-        }
-
-        for coupon in coupon_calendar.upcoming {
-            combined.push(CombinedPayment::Coupon(coupon));
-        }
-
-        combined.sort_by_key(CalendarPayment::payment_date);
-
-        Ok(CombinedCalendar { upcoming: combined })
     }
 }
 
