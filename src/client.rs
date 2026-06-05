@@ -482,21 +482,33 @@ impl TinkoffInvestment {
     }
 
     async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
-        let (channel, users_channel) =
-            tokio::join!(self.service.create_channel(), self.service.create_channel());
-        let channel = channel.map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
-        let users_channel =
-            users_channel.map_err(|e| eyre::eyre!("Failed to create users channel: {e:?}"))?;
-
-        let (users, operations) = tokio::join!(
-            self.service.users(users_channel),
-            self.service.operations(channel)
+        let (users_res, ops_res) = tokio::join!(
+            async {
+                let ch = self
+                    .service
+                    .create_channel()
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to create users channel: {e:?}"))?;
+                self.service
+                    .users(ch)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to get users service: {e:?}"))
+            },
+            async {
+                let ch = self
+                    .service
+                    .create_channel()
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+                self.service
+                    .operations(ch)
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))
+            },
         );
 
-        let mut operations =
-            operations.map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
-        let mut users = users.map_err(|e| eyre::eyre!("Failed to get users service: {e:?}"))?;
-
+        let mut users = users_res?;
+        let mut operations = ops_res?;
         let accounts = users
             .get_accounts(GetAccountsRequest {})
             .await
