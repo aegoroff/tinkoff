@@ -746,7 +746,7 @@ impl TinkoffInvestment {
 
         let totals = Self::reduce(&executed_ops, position.currency);
 
-                let instrument = instruments.get(&portfolio_position.figi)?;
+        let instrument = instruments.get(&portfolio_position.figi)?;
         Some(Paper {
             name: instrument.name.clone(),
             ticker: instrument.ticker.clone(),
