@@ -12,6 +12,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 📅 **Dividend Calendar**: View upcoming dividend payments for your portfolio
 - 📋 **Coupon Calendar**: Track bond coupon payments
 - 📋 **Trading History**: Detailed history of all trading operations
+- 🎯 **Risk Analysis**: Portfolio risk metrics and rebalancing recommendations
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
 - ⚡ **High Performance**: Optimized with MiMalloc for Linux systems
 - 🔒 **Secure**: Uses Tinkoff API v2 with token authentication
@@ -75,6 +76,12 @@ tinkoff d
 
 # Get coupon calendar
 tinkoff p
+
+# Get combined dividend and coupon calendar
+tinkoff j
+
+# Analyze portfolio risk metrics
+tinkoff r
 ```
 
 ### Command Line Options
@@ -141,6 +148,7 @@ The application provides rich, formatted output including:
 - **Trading History**: Detailed operation history with dates, prices, and quantities
 - **Dividend Calendar**: Upcoming dividend payments for portfolio instruments
 - **Coupon Calendar**: Bond coupon payment schedule
+- **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations
 
 ## Project Structure
 
