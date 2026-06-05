@@ -1107,6 +1107,7 @@ fn create_rebalancing_table(analysis: &RebalancingAnalysis) -> Table {
         ))
         .fg(priority_color),
     ]);
+    table.add_row([Cell::new("")]);
 
     // Column headers
     table.add_row([
