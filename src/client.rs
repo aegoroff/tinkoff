@@ -323,7 +323,6 @@ impl TinkoffInvestment {
     {
         let fetch = Arc::new(fetch);
         self.parallel_for_positions(positions, None, {
-            let fetch = Arc::clone(&fetch);
             move |client, position| {
                 let figi = position.figi.clone();
                 let fetch = Arc::clone(&fetch);
@@ -716,8 +715,8 @@ impl TinkoffInvestment {
         let instruments = instruments.clone();
 
         let pairs = self
-            .fetch_parallel(&portfolio.positions, |client, figi| {
-                Box::pin(async move { client.get_dividends_for_figi(figi).await })
+            .fetch_parallel(&portfolio.positions, |client, figi| async move {
+                client.get_dividends_for_figi(figi).await
             })
             .await;
 
@@ -813,8 +812,8 @@ impl TinkoffInvestment {
             .collect();
 
         let pairs = self
-            .fetch_parallel(&bond_positions, |client, figi| {
-                Box::pin(async move { client.get_coupons_for_figi(figi).await })
+            .fetch_parallel(&bond_positions, |client, figi| async move {
+                client.get_coupons_for_figi(figi).await
             })
             .await;
 
