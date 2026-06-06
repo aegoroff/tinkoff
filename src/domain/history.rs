@@ -27,6 +27,23 @@ pub struct HistoryItem {
 }
 
 impl History {
+    pub fn new(operations: &[Operation], instrument: &InstrumentShort) -> Option<Self> {
+        let items = operations
+            .iter()
+            .unique_by(|op| &op.id)
+            .map(HistoryItem::from)
+            .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
+            .collect_vec();
+        let currency = items.first()?.payment.currency;
+        Some(Self {
+            name: instrument.name.clone(),
+            ticker: instrument.ticker.clone(),
+            figi: instrument.figi.clone(),
+            items,
+            currency,
+        })
+    }
+
     #[must_use]
     pub fn expenses(&self) -> Money {
         self.sum(|i| i.payment.is_negative())
@@ -88,24 +105,5 @@ impl HistoryItem {
             description: op.r#type.clone(),
             operation_state: state,
         }
-    }
-}
-
-impl History {
-    pub fn new(operations: &[Operation], instrument: &InstrumentShort) -> Option<Self> {
-        let items = operations
-            .iter()
-            .unique_by(|op| &op.id)
-            .map(HistoryItem::from)
-            .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
-            .collect_vec();
-        let currency = items.first()?.payment.currency;
-        Some(Self {
-            name: instrument.name.clone(),
-            ticker: instrument.ticker.clone(),
-            figi: instrument.figi.clone(),
-            items,
-            currency,
-        })
     }
 }
