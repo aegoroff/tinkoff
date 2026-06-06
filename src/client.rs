@@ -9,9 +9,10 @@ use tinkoff_invest_api::{
     TinkoffInvestService,
     tcs::{
         Account, AccountType, Coupon, Dividend, FindInstrumentRequest, GetAccountsRequest,
-        GetBondCouponsRequest, GetDividendsRequest, InstrumentShort, InstrumentStatus,
-        InstrumentType, InstrumentsRequest, Operation, OperationState, OperationType,
-        OperationsRequest, PortfolioPosition, PortfolioRequest, portfolio_request::CurrencyRequest,
+        GetAccountsResponse, GetBondCouponsRequest, GetDividendsRequest, InstrumentShort,
+        InstrumentStatus, InstrumentType, InstrumentsRequest, Operation, OperationState,
+        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
+        portfolio_request::CurrencyRequest,
     },
 };
 use tokio::sync::Semaphore;
@@ -564,44 +565,22 @@ impl TinkoffInvestment {
     }
 
     async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
-        let (users_res, ops_res) = tokio::join!(
-            async {
-                let ch = self
-                    .service
-                    .create_channel()
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to create users channel: {e:?}"))?;
-                self.service
-                    .users(ch)
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to get users service: {e:?}"))
-            },
-            async {
-                let ch = self
-                    .service
-                    .create_channel()
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
-                self.service
-                    .operations(ch)
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))
-            },
-        );
+        let (accounts_res, ops_res) = tokio::join!(self.get_accounts_response(), async {
+            let ch = self
+                .service
+                .create_channel()
+                .await
+                .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+            self.service
+                .operations(ch)
+                .await
+                .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))
+        },);
 
-        let mut users = users_res?;
+        let accounts_res = accounts_res?;
         let mut operations = ops_res?;
-        let accounts = users
-            .get_accounts(GetAccountsRequest {})
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get accounts: {e:?}"))?;
 
-        let Some(account) = accounts
-            .get_ref()
-            .accounts
-            .iter()
-            .find(|a| a.r#type() == account)
-        else {
+        let Some(account) = accounts_res.accounts.iter().find(|a| a.r#type() == account) else {
             return Ok(AccountPortfolio::default());
         };
 
@@ -618,12 +597,12 @@ impl TinkoffInvestment {
         })
     }
 
-    /// Get an account by type.
+    /// Get accounts response from API.
     ///
     /// # Errors
     ///
-    /// This function will return an error if account cannot be get.
-    pub async fn get_account(&self, account_type: AccountType) -> color_eyre::Result<Account> {
+    /// This function will return an error if accounts cannot be retrieved.
+    async fn get_accounts_response(&self) -> color_eyre::Result<GetAccountsResponse> {
         let channel = self
             .service
             .create_channel()
@@ -638,7 +617,17 @@ impl TinkoffInvestment {
             .get_accounts(GetAccountsRequest {})
             .await
             .map_err(|e| eyre::eyre!("{e:?}"))?;
-        let all_accounts = &accounts.get_ref().accounts;
+        Ok(accounts.into_inner())
+    }
+
+    /// Get an account by type.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if account cannot be get.
+    pub async fn get_account(&self, account_type: AccountType) -> color_eyre::Result<Account> {
+        let accounts = &self.get_accounts_response().await?;
+        let all_accounts = &accounts.accounts;
         let account = all_accounts
             .iter()
             .find(|a| a.r#type() == account_type)
