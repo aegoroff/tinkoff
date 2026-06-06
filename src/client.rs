@@ -627,11 +627,11 @@ impl TinkoffInvestment {
     /// This function will return an error if account cannot be get.
     pub async fn get_account(&self, account_type: AccountType) -> color_eyre::Result<Account> {
         let accounts = &self.get_accounts_response().await?;
-        let all_accounts = &accounts.accounts;
-        let account = all_accounts
+        let account = accounts
+            .accounts
             .iter()
             .find(|a| a.r#type() == account_type)
-            .or_else(|| all_accounts.first())
+            .or_else(|| accounts.accounts.first())
             .ok_or_else(|| eyre::eyre!("No accounts found"))?;
         Ok(account.clone())
     }
