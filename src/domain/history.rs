@@ -1,5 +1,9 @@
 use chrono::{DateTime, Utc};
 use iso_currency::Currency;
+use itertools::Itertools;
+use tinkoff_invest_api::tcs::{InstrumentShort, Operation, OperationState};
+
+use crate::{to_datetime_utc, to_money};
 
 use super::NumberRange;
 use super::money::Money;
@@ -49,5 +53,59 @@ impl History {
                 acc += p.payment;
                 acc
             })
+    }
+}
+
+impl HistoryItem {
+    #[must_use]
+    pub fn from(op: &Operation) -> Self {
+        let currency =
+            Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap_or(Currency::RUB);
+        let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
+            payment
+        } else {
+            Money::zero(currency)
+        };
+        let price = if let Some(price) = to_money(op.price.as_ref()) {
+            price
+        } else {
+            Money::zero(currency)
+        };
+        let state = match op.state() {
+            OperationState::Unspecified => "Not specified",
+            OperationState::Executed => "Executed",
+            OperationState::Canceled => "Canceled",
+            OperationState::Progress => "In progress",
+        };
+
+        let dt = to_datetime_utc(op.date.as_ref());
+        Self {
+            datetime: dt,
+            quantity: op.quantity,
+            quantity_rest: op.quantity_rest,
+            price,
+            payment,
+            description: op.r#type.clone(),
+            operation_state: state,
+        }
+    }
+}
+
+impl History {
+    pub fn new(operations: &[Operation], instrument: &InstrumentShort) -> Option<Self> {
+        let items = operations
+            .iter()
+            .unique_by(|op| &op.id)
+            .map(HistoryItem::from)
+            .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
+            .collect_vec();
+        let currency = items.first()?.payment.currency;
+        Some(Self {
+            name: instrument.name.clone(),
+            ticker: instrument.ticker.clone(),
+            figi: instrument.figi.clone(),
+            items,
+            currency,
+        })
     }
 }

@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use color_eyre::eyre;
 use iso_currency::Currency;
-use itertools::Itertools;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -23,8 +22,8 @@ use crate::{
     client::InstrumentCatalog::{Bonds, Currencies, Etfs, Futures, Shares},
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
-        DividendProfit, Figi, History, HistoryItem, Instrument, LoadedPaper, Money, NoneProfit,
-        Paper, Portfolio, Position, Profit, Ticker, Totals,
+        DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
+        Position, Profit, Ticker, Totals,
         calendar::{CalendarPayment, CombinedCalendar, CombinedPayment},
     },
     progress::Progress,
@@ -960,59 +959,5 @@ fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'sta
         tinkoff_invest_api::tcs::CouponType::Fix => "Fix",
         tinkoff_invest_api::tcs::CouponType::Variable => "Variable",
         tinkoff_invest_api::tcs::CouponType::Other => "Other",
-    }
-}
-
-impl HistoryItem {
-    #[must_use]
-    pub fn from(op: &Operation) -> Self {
-        let currency =
-            Currency::from_code(&op.currency.to_ascii_uppercase()).unwrap_or(Currency::RUB);
-        let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
-            payment
-        } else {
-            Money::zero(currency)
-        };
-        let price = if let Some(price) = to_money(op.price.as_ref()) {
-            price
-        } else {
-            Money::zero(currency)
-        };
-        let state = match op.state() {
-            OperationState::Unspecified => "Not specified",
-            OperationState::Executed => "Executed",
-            OperationState::Canceled => "Canceled",
-            OperationState::Progress => "In progress",
-        };
-
-        let dt = to_datetime_utc(op.date.as_ref());
-        Self {
-            datetime: dt,
-            quantity: op.quantity,
-            quantity_rest: op.quantity_rest,
-            price,
-            payment,
-            description: op.r#type.clone(),
-            operation_state: state,
-        }
-    }
-}
-
-impl History {
-    pub fn new(operations: &[Operation], instrument: &InstrumentShort) -> Option<Self> {
-        let items = operations
-            .iter()
-            .unique_by(|op| &op.id)
-            .map(HistoryItem::from)
-            .sorted_by(|a, b| Ord::cmp(&a.datetime, &b.datetime))
-            .collect_vec();
-        let currency = items.first()?.payment.currency;
-        Some(Self {
-            name: instrument.name.clone(),
-            ticker: instrument.ticker.clone(),
-            figi: instrument.figi.clone(),
-            items,
-            currency,
-        })
     }
 }
