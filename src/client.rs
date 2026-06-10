@@ -802,16 +802,21 @@ impl TinkoffInvestment {
                     .and_then(|d| to_money(Some(d)))
                     .unwrap_or_else(|| Money::zero(Currency::RUB));
 
-                let ex_dividend_date = dividend
-                    .record_date
+                let payment_date = dividend
+                    .payment_date
                     .as_ref()
                     .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
 
                 if let Some(cutoff) = filter_after
-                    && ex_dividend_date <= cutoff
+                    && payment_date < cutoff
                 {
                     continue;
                 }
+
+                let ex_dividend_date = dividend
+                    .record_date
+                    .as_ref()
+                    .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(DividendPayment {
@@ -823,10 +828,7 @@ impl TinkoffInvestment {
                     total_dividend: dividend_per_share * quantity,
                     quantity,
                     ex_dividend_date,
-                    payment_date: dividend
-                        .payment_date
-                        .as_ref()
-                        .map(|d| to_datetime_utc(Some(d))),
+                    payment_date: Some(payment_date),
                     dividend_type: dividend.dividend_type,
                 });
             }
