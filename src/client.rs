@@ -537,7 +537,7 @@ impl TinkoffInvestment {
                     instruments,
                     account_id.to_string(),
                     position,
-                    NoneProfit,
+                    DividendProfit,
                 )
                 .await
                 .map(LoadedPaper::Etf),

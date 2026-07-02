@@ -7,7 +7,7 @@ use super::paper::{CouponProfit, DividendProfit, NoneProfit, Paper, Profit};
 pub enum LoadedPaper {
     Bond(Paper<CouponProfit>),
     Share(Paper<DividendProfit>),
-    Etf(Paper<NoneProfit>),
+    Etf(Paper<DividendProfit>),
     Currency(Paper<NoneProfit>),
     Future(Paper<NoneProfit>),
 }
@@ -17,7 +17,7 @@ pub enum LoadedPaper {
 pub struct Portfolio {
     pub bonds: Asset<CouponProfit>,
     pub shares: Asset<DividendProfit>,
-    pub etfs: Asset<NoneProfit>,
+    pub etfs: Asset<DividendProfit>,
     pub currencies: Asset<NoneProfit>,
     pub futures: Asset<NoneProfit>,
 }
@@ -62,7 +62,7 @@ impl Portfolio {
         Self {
             bonds: Asset::new("Bonds", CouponProfit, output_papers),
             shares: Asset::new("Shares", DividendProfit, output_papers),
-            etfs: Asset::new("Etfs", NoneProfit, output_papers),
+            etfs: Asset::new("Etfs", DividendProfit, output_papers),
             currencies: Asset::new("Currencies", NoneProfit, output_papers),
             futures: Asset::new("Futures", NoneProfit, output_papers),
         }
@@ -295,7 +295,7 @@ mod tests {
             profit: DividendProfit,
         });
 
-        let etfs = Asset::new("Etfs", NoneProfit, true);
+        let etfs = Asset::new("Etfs", DividendProfit, true);
         let currencies = Asset::new("Currencies", NoneProfit, true);
         let futures = Asset::new("Futures", NoneProfit, true);
         Portfolio {

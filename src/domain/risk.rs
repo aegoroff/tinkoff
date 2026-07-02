@@ -389,7 +389,8 @@ impl CurrencyAllocation {
             let (value, currency) = match paper {
                 LoadedPaper::Bond(p) => (p.current().value, p.currency()),
                 LoadedPaper::Share(p) => (p.current().value, p.currency()),
-                LoadedPaper::Etf(p) | LoadedPaper::Currency(p) | LoadedPaper::Future(p) => {
+                LoadedPaper::Etf(p) => (p.current().value, p.currency()),
+                LoadedPaper::Currency(p) | LoadedPaper::Future(p) => {
                     (p.current().value, p.currency())
                 }
             };
@@ -457,7 +458,14 @@ impl PositionConcentration {
                     p.current().value,
                     p.currency(),
                 ),
-                LoadedPaper::Etf(p) | LoadedPaper::Currency(p) | LoadedPaper::Future(p) => (
+                LoadedPaper::Etf(p) => (
+                    p.name.clone(),
+                    &p.ticker,
+                    "ETF",
+                    p.current().value,
+                    p.currency(),
+                ),
+                LoadedPaper::Currency(p) | LoadedPaper::Future(p) => (
                     p.name.clone(),
                     &p.ticker,
                     match paper {
