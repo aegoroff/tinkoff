@@ -12,8 +12,13 @@ use crate::domain::NumberRange;
 ///
 /// This function will return an error if failed to convert rounded decimal to i64.
 pub fn format_decimal(v: Decimal) -> Result<String, Error> {
-    let integer = v
-        .round_dp(2)
+    // `to_i128()` truncates toward zero, so for values in (-1, 0) the integer
+    // part collapses to 0 and the minus sign is lost. Take the absolute value
+    // before formatting and re-attach the sign explicitly.
+    let rounded = v.round_dp(2);
+    let is_negative = v.is_sign_negative() && !rounded.is_zero();
+    let integer = rounded
+        .abs()
         .to_i128()
         .ok_or(Error)?
         .to_formatted_string(&Locale::ru);
@@ -21,7 +26,8 @@ pub fn format_decimal(v: Decimal) -> Result<String, Error> {
     let mut fract = v.fract().round_dp(2);
     fract.set_sign_positive(true);
     let fract: String = fract.to_string().chars().skip(1).collect();
-    Ok(format!("{integer}{fract}"))
+    let sign = if is_negative { "-" } else { "" };
+    Ok(format!("{sign}{integer}{fract}"))
 }
 
 /// Creates new table
@@ -161,5 +167,22 @@ mod tests {
     fn format_decimal_rounding() {
         let result = format_decimal(dec!(100.999)).unwrap();
         assert_eq!(result, "101.00");
+    }
+
+    #[test]
+    fn format_decimal_small_negative_keeps_sign() {
+        // Values in (-1, 0) must keep the minus sign: `to_i128()` truncates
+        // toward zero and would otherwise lose it.
+        assert_eq!(format_decimal(dec!(-0.56)).unwrap(), "-0.56");
+        assert_eq!(format_decimal(dec!(-0.01)).unwrap(), "-0.01");
+        assert_eq!(format_decimal(dec!(-0.99)).unwrap(), "-0.99");
+    }
+
+    #[test]
+    fn format_decimal_tiny_negative_rounds_to_zero_without_sign() {
+        // Values that round to 0.00 at 2 dp must not be displayed as "-0.00".
+        // The fractional part keeps scale 2 after rounding, so the result is
+        // "0.00" rather than "0" — the important part is the absence of sign.
+        assert_eq!(format_decimal(dec!(-0.004)).unwrap(), "0.00");
     }
 }
