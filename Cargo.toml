@@ -24,6 +24,7 @@ clap = { version = "4.6.1", features = ["std", "color", "cargo"] }
 color-eyre = "0.6.5"
 chrono = { version="0.4.45", default-features = false, features = ["clock", "std"] }
 prost-types = "0.11.9"
+tonic = { version = "0.8.3", features = ["tls", "tls-roots"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mimalloc = "0.1.52"

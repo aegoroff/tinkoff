@@ -17,6 +17,13 @@ use tinkoff_invest_api::{
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+
+/// Prod T-Invest API endpoint (official `tbank.ru` host).
+const INVEST_API_ENDPOINT: &str = "https://invest-public-api.tbank.ru:443/";
+
+/// Russian Trusted Root CA PEM (required for T-Bank TLS).
+const RUSSIAN_TRUSTED_CAS: &[u8] = include_bytes!("../certs/russian_trusted_cas.pem");
 
 use crate::{
     client::InstrumentCatalog::{Bonds, Currencies, Etfs, Futures, Shares},
@@ -270,6 +277,20 @@ impl TinkoffInvestment {
         }
     }
 
+    /// Creates a TLS gRPC channel with the embedded Russian Trusted CA bundle.
+    async fn create_channel(&self) -> color_eyre::Result<Channel> {
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(RUSSIAN_TRUSTED_CAS))
+            .domain_name("invest-public-api.tbank.ru");
+
+        Channel::from_static(INVEST_API_ENDPOINT)
+            .tls_config(tls)
+            .map_err(|e| eyre::eyre!("TLS config failed: {e:?}"))?
+            .connect()
+            .await
+            .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))
+    }
+
     /// Fetches all instrument catalogs in parallel and merges them by FIGI.
     ///
     /// # Errors
@@ -298,11 +319,7 @@ impl TinkoffInvestment {
         &self,
         catalog: InstrumentCatalog,
     ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        let channel = self
-            .service
-            .create_channel()
-            .await
-            .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+        let channel = self.create_channel().await?;
         let mut instruments = self
             .service
             .instruments(channel)
@@ -565,11 +582,7 @@ impl TinkoffInvestment {
 
     async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
         let (accounts_res, ops_res) = tokio::join!(self.get_accounts_response(), async {
-            let ch = self
-                .service
-                .create_channel()
-                .await
-                .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+            let ch = self.create_channel().await?;
             self.service
                 .operations(ch)
                 .await
@@ -602,11 +615,7 @@ impl TinkoffInvestment {
     ///
     /// This function will return an error if accounts cannot be retrieved.
     async fn get_accounts_response(&self) -> color_eyre::Result<GetAccountsResponse> {
-        let channel = self
-            .service
-            .create_channel()
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let channel = self.create_channel().await?;
         let mut users = self
             .service
             .users(channel)
@@ -644,11 +653,7 @@ impl TinkoffInvestment {
         &self,
         ticker: String,
     ) -> color_eyre::Result<Vec<InstrumentShort>> {
-        let channel = self
-            .service
-            .create_channel()
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let channel = self.create_channel().await?;
         let mut instruments = self
             .service
             .instruments(channel)
@@ -681,11 +686,7 @@ impl TinkoffInvestment {
         account_id: String,
         figi: String,
     ) -> color_eyre::Result<Vec<Operation>> {
-        let channel = self
-            .service
-            .create_channel()
-            .await
-            .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))?;
+        let channel = self.create_channel().await?;
         let mut operations = self
             .service
             .operations(channel)
@@ -839,11 +840,7 @@ impl TinkoffInvestment {
     }
 
     async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
-        let channel = self
-            .service
-            .create_channel()
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let channel = self.create_channel().await?;
         let mut instruments = self
             .service
             .instruments(channel)
@@ -927,11 +924,7 @@ impl TinkoffInvestment {
     }
 
     async fn get_coupons_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Coupon>> {
-        let channel = self
-            .service
-            .create_channel()
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let channel = self.create_channel().await?;
         let mut instruments = self
             .service
             .instruments(channel)
@@ -961,5 +954,30 @@ fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'sta
         tinkoff_invest_api::tcs::CouponType::Fix => "Fix",
         tinkoff_invest_api::tcs::CouponType::Variable => "Variable",
         tinkoff_invest_api::tcs::CouponType::Other => "Other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invest_tls_config_accepts_embedded_cas() {
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(RUSSIAN_TRUSTED_CAS))
+            .domain_name("invest-public-api.tbank.ru");
+
+        Channel::from_static(INVEST_API_ENDPOINT)
+            .tls_config(tls)
+            .expect("TLS config with embedded Russian Trusted CAs should be valid");
+    }
+
+    #[tokio::test]
+    async fn create_channel_completes_tls_handshake() {
+        let client = TinkoffInvestment::new(String::new());
+        client
+            .create_channel()
+            .await
+            .expect("TLS handshake with invest-public-api.tbank.ru should succeed");
     }
 }
