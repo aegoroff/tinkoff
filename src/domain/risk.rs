@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use iso_currency::Currency;
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
@@ -97,19 +96,7 @@ pub struct RiskMetrics {
     pub concentration_risk: Decimal,
     /// Asset type concentration risk (0-100, lower is better)
     pub asset_concentration_risk: Decimal,
-    /// Portfolio volatility (annualized, as percentage 0-100)
-    pub volatility: Decimal,
-    /// Portfolio beta (sensitivity to market, typically 0-2)
-    pub beta: Decimal,
-    /// Value at Risk (95% confidence, 1-day horizon, as percentage 0-100)
-    pub var_95_1d: Decimal,
-    /// Value at Risk (95% confidence, 30-day horizon, as percentage 0-100)
-    pub var_95_30d: Decimal,
-    /// Value at Risk (95% confidence, quarterly horizon ~90 days, as percentage 0-100)
-    pub var_95_quarterly: Decimal,
-    /// Value at Risk (95% confidence, yearly horizon ~252 days, as percentage 0-100)
-    pub var_95_yearly: Decimal,
-    /// Risk level assessment
+    /// Risk level assessment from allocation / HHI metrics only
     pub risk_level: RiskLevel,
 }
 
@@ -537,21 +524,11 @@ impl RiskMetrics {
         let currency_risk = Self::calculate_currency_risk(currency_alloc);
         let concentration_risk = Self::calculate_concentration_risk(position_conc);
         let asset_concentration_risk = Self::calculate_asset_concentration_risk(asset_alloc);
-        let volatility = Self::calculate_volatility(asset_alloc);
-        let beta = Self::calculate_beta(asset_alloc);
-        // Calculate VaR for different horizons: 1 day, 30 days, quarterly (~90 days), yearly (~252 days)
-        let var_95_1d = Self::calculate_var_95(volatility, 1);
-        let var_95_30d = Self::calculate_var_95(volatility, 30);
-        let var_95_quarterly = Self::calculate_var_95(volatility, 90);
-        let var_95_yearly = Self::calculate_var_95(volatility, 252);
-
         let risk_level = Self::assess_risk_level(
             diversification_score,
             currency_risk,
             concentration_risk,
             asset_concentration_risk,
-            volatility,
-            beta,
         );
 
         Self {
@@ -559,12 +536,6 @@ impl RiskMetrics {
             currency_risk,
             concentration_risk,
             asset_concentration_risk,
-            volatility,
-            beta,
-            var_95_1d,
-            var_95_30d,
-            var_95_quarterly,
-            var_95_yearly,
             risk_level,
         }
     }
@@ -649,21 +620,11 @@ impl RiskMetrics {
         currency_risk: Decimal,
         concentration_risk: Decimal,
         asset_concentration_risk: Decimal,
-        volatility: Decimal,
-        beta: Decimal,
     ) -> RiskLevel {
         let avg_risk = (currency_risk + concentration_risk + asset_concentration_risk) / dec!(3);
         let diversification_bonus = diversification_score / dec!(10);
 
-        // Volatility penalty: annualised σ > 20% adds up to 20 points.
-        // Typical equity market vol is ~15-20%; anything above signals elevated risk.
-        let vol_penalty = (volatility - dec!(20)).max(dec!(0)).min(dec!(20));
-
-        // Beta penalty: β > 1.5 adds up to 15 points.
-        // β=1 is market-neutral; above 1.5 implies meaningful leverage to market swings.
-        let beta_penalty = ((beta - dec!(1.5)) * dec!(15)).max(dec!(0)).min(dec!(15));
-
-        let final_risk = (avg_risk - diversification_bonus + vol_penalty + beta_penalty)
+        let final_risk = (avg_risk - diversification_bonus)
             .max(dec!(0))
             .min(dec!(100));
 
@@ -676,97 +637,6 @@ impl RiskMetrics {
         } else {
             RiskLevel::VeryHigh
         }
-    }
-
-    /// Calculate portfolio volatility based on asset allocation.
-    ///
-    /// Uses typical annualized volatility values for each asset type:
-    /// - Bonds: 5%
-    /// - Shares: 20%
-    /// - ETFs: 15% (average, depends on underlying)
-    /// - Currencies: 10%
-    /// - Futures: 25% (leveraged instruments)
-    ///
-    /// Formula: `σ_portfolio` = sqrt(Σ wᵢ² · σᵢ²)
-    ///
-    /// This assumes zero cross-class correlation, which is conservative
-    /// (i.e. gives a lower bound vs. the fully correlated linear sum, but
-    /// higher than a perfectly negatively correlated portfolio). Linear
-    /// weighting would be correct only if all correlations were 1, which
-    /// systematically overstates risk.
-    #[must_use]
-    fn calculate_volatility(asset_alloc: &AssetAllocation) -> Decimal {
-        // Typical annualized volatility percentages for each asset type
-        let bond_vol = dec!(5);
-        let share_vol = dec!(20);
-        let etf_vol = dec!(15);
-        let currency_vol = dec!(10);
-        let future_vol = dec!(25);
-
-        // Weights are percentages (0–100), so wᵢ = percentage / 100.
-        // wᵢ² · σᵢ² = (percentage / 100)² · σᵢ²
-        //            = percentage² · σᵢ² / 10_000
-        let sq = |x: Decimal| x * x;
-        let weighted_variance = sq(asset_alloc.bonds.percentage) * sq(bond_vol)
-            + sq(asset_alloc.shares.percentage) * sq(share_vol)
-            + sq(asset_alloc.etfs.percentage) * sq(etf_vol)
-            + sq(asset_alloc.currencies.percentage) * sq(currency_vol)
-            + sq(asset_alloc.futures.percentage) * sq(future_vol);
-
-        // Divide by 10_000 to undo the two percentage→fraction conversions,
-        // then take the square root to get σ_portfolio in percent.
-        let variance_f64 = weighted_variance.to_f64().unwrap_or(0.0) / 10_000.0;
-
-        Decimal::try_from(variance_f64.sqrt()).unwrap_or(dec!(0))
-    }
-
-    /// Calculate portfolio beta (sensitivity to market movements)
-    /// Uses typical beta values for each asset type:
-    /// - Bonds: 0.1 (low correlation with equity market)
-    /// - Shares: 1.0 (market beta)
-    /// - ETFs: 0.9 (slightly lower due to diversification)
-    /// - Currencies: 0.0 (no market beta)
-    /// - Futures: 1.2 (slightly leveraged)
-    #[must_use]
-    fn calculate_beta(asset_alloc: &AssetAllocation) -> Decimal {
-        // Typical beta values for each asset type
-        let bond_beta = dec!(0.1);
-        let share_beta = dec!(1);
-        let etf_beta = dec!(0.9);
-        let currency_beta = dec!(0);
-        let future_beta = dec!(1.2);
-
-        // Weight beta by asset allocation percentage
-        let weighted_beta = asset_alloc.bonds.percentage * bond_beta
-            + asset_alloc.shares.percentage * share_beta
-            + asset_alloc.etfs.percentage * etf_beta
-            + asset_alloc.currencies.percentage * currency_beta
-            + asset_alloc.futures.percentage * future_beta;
-
-        // Divide by 100 to get weighted average
-        weighted_beta / dec!(100)
-    }
-
-    /// Calculate Value at Risk (`VaR`) at 95% confidence level for a given horizon.
-    ///
-    /// Uses parametric `VaR`: `VaR(T) = 1.645 · σ_annual · sqrt(T / 252)`
-    ///
-    /// Assuming zero expected return (μ = 0), which is conservative for short horizons.
-    /// The square-root-of-time rule scales annualised volatility to the desired horizon.
-    ///
-    /// `horizon_days` — trading days (252 per year). Pass `1` for the standard 1-day `VaR`.
-    /// Result is expressed as a percentage of portfolio value (0–100).
-    #[must_use]
-    fn calculate_var_95(volatility: Decimal, horizon_days: u32) -> Decimal {
-        // Z-score for 95% one-tailed confidence level
-        let z_score = dec!(1.645);
-
-        // Scale annual volatility to the requested horizon via sqrt-of-time rule.
-        // sqrt(horizon / 252) computed in f64 to avoid needing the `maths` feature.
-        let horizon_scale =
-            Decimal::try_from((f64::from(horizon_days) / 252.0_f64).sqrt()).unwrap_or(dec!(1));
-
-        (z_score * volatility * horizon_scale).min(dec!(100))
     }
 }
 
@@ -1023,198 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn test_volatility_calculation() {
-        // Test 100% bonds - low volatility
-        let asset_alloc = AssetAllocation {
-            bonds: AllocationItem {
-                name: "Bonds",
-                value: Money::from_value(dec!(1000), Currency::RUB),
-                percentage: dec!(100),
-            },
-            shares: AllocationItem {
-                name: "Shares",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            etfs: AllocationItem {
-                name: "ETFs",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            currencies: AllocationItem {
-                name: "Currencies",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            futures: AllocationItem {
-                name: "Futures",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            total_value: Money::from_value(dec!(1000), Currency::RUB),
-        };
-
-        let volatility = RiskMetrics::calculate_volatility(&asset_alloc);
-        // sqrt((1.0 * 5)²) = 5% — single-asset case is unchanged vs. linear formula
-        assert_eq!(volatility, dec!(5));
-    }
-
-    #[test]
-    fn test_volatility_mixed_portfolio() {
-        // Test 50% shares, 50% bonds
-        let asset_alloc = AssetAllocation {
-            bonds: AllocationItem {
-                name: "Bonds",
-                value: Money::from_value(dec!(500), Currency::RUB),
-                percentage: dec!(50),
-            },
-            shares: AllocationItem {
-                name: "Shares",
-                value: Money::from_value(dec!(500), Currency::RUB),
-                percentage: dec!(50),
-            },
-            etfs: AllocationItem {
-                name: "ETFs",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            currencies: AllocationItem {
-                name: "Currencies",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            futures: AllocationItem {
-                name: "Futures",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            total_value: Money::from_value(dec!(1000), Currency::RUB),
-        };
-
-        let volatility = RiskMetrics::calculate_volatility(&asset_alloc);
-        // sqrt((0.5*5)² + (0.5*20)²) = sqrt(6.25 + 100) = sqrt(106.25) ≈ 10.3078%
-        // (linear sum 12.5% was wrong: assumes correlation = 1 between all asset classes)
-        let expected = dec!(10.3077640640);
-        let epsilon = dec!(0.000001);
-        assert!(
-            (volatility - expected).abs() < epsilon,
-            "volatility {volatility} not close enough to {expected}"
-        );
-    }
-
-    #[test]
-    fn test_beta_calculation() {
-        // Test 100% bonds - low beta
-        let asset_alloc = AssetAllocation {
-            bonds: AllocationItem {
-                name: "Bonds",
-                value: Money::from_value(dec!(1000), Currency::RUB),
-                percentage: dec!(100),
-            },
-            shares: AllocationItem {
-                name: "Shares",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            etfs: AllocationItem {
-                name: "ETFs",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            currencies: AllocationItem {
-                name: "Currencies",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            futures: AllocationItem {
-                name: "Futures",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            total_value: Money::from_value(dec!(1000), Currency::RUB),
-        };
-
-        let beta = RiskMetrics::calculate_beta(&asset_alloc);
-        // 100% bonds = 0.1 beta
-        assert_eq!(beta, dec!(0.1));
-    }
-
-    #[test]
-    fn test_beta_mixed_portfolio() {
-        // Test 50% shares, 50% bonds
-        let asset_alloc = AssetAllocation {
-            bonds: AllocationItem {
-                name: "Bonds",
-                value: Money::from_value(dec!(500), Currency::RUB),
-                percentage: dec!(50),
-            },
-            shares: AllocationItem {
-                name: "Shares",
-                value: Money::from_value(dec!(500), Currency::RUB),
-                percentage: dec!(50),
-            },
-            etfs: AllocationItem {
-                name: "ETFs",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            currencies: AllocationItem {
-                name: "Currencies",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            futures: AllocationItem {
-                name: "Futures",
-                value: Money::zero(Currency::RUB),
-                percentage: dec!(0),
-            },
-            total_value: Money::from_value(dec!(1000), Currency::RUB),
-        };
-
-        let beta = RiskMetrics::calculate_beta(&asset_alloc);
-        // 50% bonds (0.1) + 50% shares (1.0) = 0.05 + 0.5 = 0.55
-        assert_eq!(beta, dec!(0.55));
-    }
-
-    #[test]
-    fn test_var_95_calculation() {
-        // 1-day VaR from 10% annual volatility
-        // VaR(1d) = 1.645 * 10 * sqrt(1/252) ≈ 1.0363%
-        let volatility = dec!(10);
-        let var = RiskMetrics::calculate_var_95(volatility, 1);
-        let expected = Decimal::try_from(1.645 * 10.0 * (1.0_f64 / 252.0).sqrt()).unwrap();
-        let epsilon = dec!(0.000001);
-        assert!(
-            (var - expected).abs() < epsilon,
-            "1d VaR {var} not close enough to {expected}"
-        );
-    }
-
-    #[test]
-    fn test_var_95_10day() {
-        // 10-day VaR from 10% annual volatility (Basel standard horizon)
-        // VaR(10d) = 1.645 * 10 * sqrt(10/252) ≈ 3.2756%
-        let volatility = dec!(10);
-        let var = RiskMetrics::calculate_var_95(volatility, 10);
-        let expected = Decimal::try_from(1.645 * 10.0 * (10.0_f64 / 252.0).sqrt()).unwrap();
-        let epsilon = dec!(0.000001);
-        assert!(
-            (var - expected).abs() < epsilon,
-            "10d VaR {var} not close enough to {expected}"
-        );
-    }
-
-    #[test]
-    fn test_var_95_high_volatility() {
-        // Even very high vol should be capped at 100%
-        let volatility = dec!(100);
-        let var = RiskMetrics::calculate_var_95(volatility, 252);
-        // VaR(252d) = 1.645 * 100 * sqrt(1) = 164.5 → capped at 100
-        assert_eq!(var, dec!(100));
-    }
-
-    #[test]
-    fn test_full_risk_metrics_calculation() {
+    fn test_risk_metrics_from_allocation_only() {
         let asset_alloc = AssetAllocation {
             bonds: AllocationItem {
                 name: "Bonds",
@@ -1265,58 +944,10 @@ mod tests {
         };
 
         let metrics = RiskMetrics::calculate(&asset_alloc, &currency_alloc, &position_conc);
-
-        let epsilon = dec!(0.000001);
-
-        // Verify volatility: sqrt((0.4*5)² + (0.4*20)² + (0.2*15)²)
-        //   = sqrt(4 + 64 + 9) = sqrt(77) ≈ 8.7750%
-        // (old linear result 13% assumed correlation = 1, which overstated risk)
-        let expected_vol = dec!(8.7749643874);
-        assert!(
-            (metrics.volatility - expected_vol).abs() < epsilon,
-            "volatility {} not close enough to {expected_vol}",
-            metrics.volatility
-        );
-
-        // Verify beta: 40%*0.1 + 40%*1 + 20%*0.9 = 0.04 + 0.4 + 0.18 = 0.62
-        // (beta is a linear quantity — weighted average is correct here)
-        assert_eq!(metrics.beta, dec!(0.62));
-
-        // Verify VaR 1d: 1.645 * sqrt(77) * sqrt(1/252) ≈ 0.9093%  (1-day, 95% confidence)
-        let expected_var_1d =
-            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (1.0_f64 / 252.0).sqrt()).unwrap();
-        assert!(
-            (metrics.var_95_1d - expected_var_1d).abs() < epsilon,
-            "VaR 1d {} not close enough to {expected_var_1d}",
-            metrics.var_95_1d
-        );
-
-        // Verify VaR 30d: 1.645 * sqrt(77) * sqrt(30/252) ≈ 4.980%
-        let expected_var_30d =
-            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (30.0_f64 / 252.0).sqrt()).unwrap();
-        assert!(
-            (metrics.var_95_30d - expected_var_30d).abs() < epsilon,
-            "VaR 30d {} not close enough to {expected_var_30d}",
-            metrics.var_95_30d
-        );
-
-        // Verify VaR quarterly (90d): 1.645 * sqrt(77) * sqrt(90/252) ≈ 8.627%
-        let expected_var_quarterly =
-            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (90.0_f64 / 252.0).sqrt()).unwrap();
-        assert!(
-            (metrics.var_95_quarterly - expected_var_quarterly).abs() < epsilon,
-            "VaR quarterly {} not close enough to {expected_var_quarterly}",
-            metrics.var_95_quarterly
-        );
-
-        // Verify VaR yearly (252d): 1.645 * sqrt(77) * sqrt(252/252) ≈ 14.435%
-        let expected_var_yearly =
-            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (252.0_f64 / 252.0).sqrt()).unwrap();
-        assert!(
-            (metrics.var_95_yearly - expected_var_yearly).abs() < epsilon,
-            "VaR yearly {} not close enough to {expected_var_yearly}",
-            metrics.var_95_yearly
-        );
+        assert!(metrics.diversification_score > dec!(0));
+        assert!(metrics.currency_risk > dec!(0));
+        assert!(metrics.concentration_risk > dec!(0));
+        assert_eq!(metrics.currency_risk, dec!(100)); // hhi=1 → 100 + single-currency penalty, capped at 100
     }
 
     #[test]

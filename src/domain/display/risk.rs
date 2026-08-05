@@ -98,52 +98,6 @@ fn create_risk_summary_table(metrics: &RiskMetrics) -> Table {
         metrics.asset_concentration_risk,
     );
 
-    // Additional risk metrics
-    table.add_row([
-        Cell::new("Volatility (Ann.)"),
-        Cell::new(format!(
-            "{}%",
-            ux::format_decimal(metrics.volatility).unwrap_or_default()
-        )),
-    ]);
-    table.add_row([
-        Cell::new("Beta"),
-        Cell::new(ux::format_decimal(metrics.beta).unwrap_or_default()),
-    ]);
-    // VaR section header
-    let var_header = Cell::new("Value at Risk (95%)")
-        .add_attribute(Attribute::Bold)
-        .fg(comfy_table::Color::DarkCyan);
-    table.add_row([var_header]);
-    table.add_row([
-        Cell::new("VaR 1d"),
-        Cell::new(format!(
-            "{}%",
-            ux::format_decimal(metrics.var_95_1d).unwrap_or_default()
-        )),
-    ]);
-    table.add_row([
-        Cell::new("VaR 30d"),
-        Cell::new(format!(
-            "{}%",
-            ux::format_decimal(metrics.var_95_30d).unwrap_or_default()
-        )),
-    ]);
-    table.add_row([
-        Cell::new("VaR Quarterly (90d)"),
-        Cell::new(format!(
-            "{}%",
-            ux::format_decimal(metrics.var_95_quarterly).unwrap_or_default()
-        )),
-    ]);
-    table.add_row([
-        Cell::new("VaR Yearly (252d)"),
-        Cell::new(format!(
-            "{}%",
-            ux::format_decimal(metrics.var_95_yearly).unwrap_or_default()
-        )),
-    ]);
-
     table
 }
 
