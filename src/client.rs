@@ -17,7 +17,7 @@ use tinkoff_invest_api::{
         OperationsRequest, PortfolioPosition, PortfolioRequest,
     },
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OnceCell, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
@@ -174,6 +174,8 @@ pub struct AccountPortfolio {
 #[derive(Clone)]
 pub struct TinkoffInvestment {
     service: Arc<TinkoffInvestService>,
+    /// Shared TLS channel; connected once, then cloned (cheap handle).
+    channel: Arc<OnceCell<Channel>>,
 }
 
 enum OperationInfluence {
@@ -287,21 +289,27 @@ impl TinkoffInvestment {
     pub fn new(token: String) -> Self {
         Self {
             service: Arc::new(TinkoffInvestService::new(token)),
+            channel: Arc::new(OnceCell::new()),
         }
     }
 
-    /// Creates a TLS gRPC channel with the embedded Russian Trusted CA bundle.
+    /// Returns a shared TLS gRPC channel (connects on first use).
     async fn create_channel(&self) -> color_eyre::Result<Channel> {
-        let tls = ClientTlsConfig::new()
-            .ca_certificate(Certificate::from_pem(RUSSIAN_TRUSTED_CAS))
-            .domain_name("invest-public-api.tbank.ru");
+        self.channel
+            .get_or_try_init(|| async {
+                let tls = ClientTlsConfig::new()
+                    .ca_certificate(Certificate::from_pem(RUSSIAN_TRUSTED_CAS))
+                    .domain_name("invest-public-api.tbank.ru");
 
-        Channel::from_static(INVEST_API_ENDPOINT)
-            .tls_config(tls)
-            .map_err(|e| eyre::eyre!("TLS config failed: {e:?}"))?
-            .connect()
+                Channel::from_static(INVEST_API_ENDPOINT)
+                    .tls_config(tls)
+                    .map_err(|e| eyre::eyre!("TLS config failed: {e:?}"))?
+                    .connect()
+                    .await
+                    .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))
+            })
             .await
-            .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))
+            .cloned()
     }
 
     /// Fetches all instrument catalogs in parallel and merges them by FIGI.
@@ -1269,6 +1277,26 @@ mod tests {
             .create_channel()
             .await
             .expect("TLS handshake with invest-public-api.tbank.ru should succeed");
+    }
+
+    #[tokio::test]
+    async fn create_channel_reuses_cached_connection() {
+        let client = TinkoffInvestment::new(String::new());
+        let first = client
+            .create_channel()
+            .await
+            .expect("first channel connect");
+        let second = client
+            .create_channel()
+            .await
+            .expect("second channel connect");
+        assert!(
+            client.channel.get().is_some(),
+            "channel should be cached after first connect"
+        );
+        // Cloned handles share the same connection pool; both must succeed.
+        drop(first);
+        drop(second);
     }
 
     #[test]
