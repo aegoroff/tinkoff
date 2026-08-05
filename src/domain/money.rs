@@ -44,11 +44,28 @@ impl Money {
             currency,
         }
     }
+
+    /// Converts this amount to `target` using `rate` (units of target per 1 unit of self).
+    #[must_use]
+    pub fn to_currency(self, rate: Decimal, target: Currency) -> Self {
+        Self {
+            value: self.value * rate,
+            currency: target,
+        }
+    }
+}
+
+fn assert_same_currency(a: Currency, b: Currency) {
+    assert_eq!(
+        a, b,
+        "currency mismatch: {a:?} vs {b:?}; convert to a common currency before combining"
+    );
 }
 
 impl Income {
     #[must_use]
     pub fn new(current: Money, balance: Money) -> Self {
+        assert_same_currency(current.currency, balance.currency);
         Self {
             currency: current.currency,
             current: current.value,
@@ -84,6 +101,7 @@ impl ops::Add<Money> for Money {
     type Output = Money;
 
     fn add(self, rhs: Money) -> Money {
+        assert_same_currency(self.currency, rhs.currency);
         Money {
             value: self.value + rhs.value,
             currency: self.currency,
@@ -104,6 +122,7 @@ impl ops::Add<Decimal> for Money {
 
 impl AddAssign for Money {
     fn add_assign(&mut self, other: Self) {
+        assert_same_currency(self.currency, other.currency);
         self.value += other.value;
     }
 }
@@ -118,6 +137,7 @@ impl ops::Sub<Money> for Money {
     type Output = Money;
 
     fn sub(self, rhs: Money) -> Money {
+        assert_same_currency(self.currency, rhs.currency);
         Money {
             value: self.value - rhs.value,
             currency: self.currency,
@@ -138,6 +158,7 @@ impl ops::Sub<Decimal> for Money {
 
 impl SubAssign for Money {
     fn sub_assign(&mut self, other: Self) {
+        assert_same_currency(self.currency, other.currency);
         self.value -= other.value;
     }
 }
@@ -152,6 +173,7 @@ impl ops::Mul<Money> for Money {
     type Output = Money;
 
     fn mul(self, rhs: Money) -> Money {
+        assert_same_currency(self.currency, rhs.currency);
         Money {
             value: self.value * rhs.value,
             currency: self.currency,
@@ -172,6 +194,7 @@ impl ops::Mul<Decimal> for Money {
 
 impl MulAssign for Money {
     fn mul_assign(&mut self, other: Self) {
+        assert_same_currency(self.currency, other.currency);
         self.value *= other.value;
     }
 }
@@ -186,6 +209,7 @@ impl ops::Div<Money> for Money {
     type Output = Money;
 
     fn div(self, rhs: Money) -> Money {
+        assert_same_currency(self.currency, rhs.currency);
         Money {
             value: self.value / rhs.value,
             currency: self.currency,
@@ -206,6 +230,7 @@ impl ops::Div<Decimal> for Money {
 
 impl DivAssign for Money {
     fn div_assign(&mut self, other: Self) {
+        assert_same_currency(self.currency, other.currency);
         self.value /= other.value;
     }
 }
@@ -220,6 +245,7 @@ impl ops::Add<Income> for Income {
     type Output = Income;
 
     fn add(self, rhs: Income) -> Income {
+        assert_same_currency(self.currency, rhs.currency);
         Income {
             current: self.current + rhs.current,
             balance: self.balance + rhs.balance,
@@ -230,6 +256,7 @@ impl ops::Add<Income> for Income {
 
 impl AddAssign for Income {
     fn add_assign(&mut self, other: Self) {
+        assert_same_currency(self.currency, other.currency);
         self.current += other.current;
         self.balance += other.balance;
     }
@@ -292,6 +319,22 @@ mod tests {
         let result = m1 + m2;
         assert_eq!(result.value, dec!(150));
         assert_eq!(result.currency, Currency::RUB);
+    }
+
+    #[test]
+    #[should_panic(expected = "currency mismatch")]
+    fn money_add_different_currency_panics() {
+        let m1 = Money::from_value(dec!(100), Currency::RUB);
+        let m2 = Money::from_value(dec!(50), Currency::USD);
+        let _ = m1 + m2;
+    }
+
+    #[test]
+    fn money_to_currency_applies_rate() {
+        let usd = Money::from_value(dec!(10), Currency::USD);
+        let rub = usd.to_currency(dec!(90), Currency::RUB);
+        assert_eq!(rub.value, dec!(900));
+        assert_eq!(rub.currency, Currency::RUB);
     }
 
     #[test]

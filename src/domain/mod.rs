@@ -1,5 +1,6 @@
 pub mod calendar;
 pub mod display;
+pub mod fx;
 pub mod history;
 pub mod money;
 pub mod paper;

@@ -12,6 +12,18 @@ pub enum LoadedPaper {
     Future(Paper<NoneProfit>),
 }
 
+impl LoadedPaper {
+    /// Current market value and nominal (instrument) currency.
+    #[must_use]
+    pub fn current_value_and_nominal_currency(&self) -> (rust_decimal::Decimal, Currency) {
+        match self {
+            Self::Bond(p) => (p.current().value, p.currency()),
+            Self::Share(p) | Self::Etf(p) => (p.current().value, p.currency()),
+            Self::Currency(p) | Self::Future(p) => (p.current().value, p.currency()),
+        }
+    }
+}
+
 /// Portfolio is an [`Asset`]'s container
 /// [`Asset`] is a [`Paper`]'s container
 pub struct Portfolio {
@@ -206,16 +218,13 @@ impl<P: Profit> Asset<P> {
         IF: FnMut(Currency) -> B,
         F: FnMut(B, &Paper<P>) -> B,
     {
-        let currency = self.currency();
+        // Settlement currency for aggregates is always RUB after FX conversion.
+        // Position.currency stays as the instrument nominal for risk allocation.
+        let currency = self
+            .papers
+            .first()
+            .map_or(Currency::RUB, |p| p.average_buy_price().currency);
         self.papers.iter().fold(init(currency), f)
-    }
-
-    fn currency(&self) -> Currency {
-        if self.papers.is_empty() {
-            iso_currency::Currency::RUB
-        } else {
-            self.papers[0].currency()
-        }
     }
 }
 

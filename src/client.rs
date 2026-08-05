@@ -1,17 +1,20 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use color_eyre::eyre;
 use iso_currency::Currency;
+use itertools::Itertools;
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tinkoff_invest_api::{
     TinkoffInvestService,
     tcs::{
-        Account, AccountType, Coupon, Dividend, FindInstrumentRequest, GetAccountsRequest,
-        GetAccountsResponse, GetBondCouponsRequest, GetDividendsRequest, InstrumentShort,
-        InstrumentStatus, InstrumentType, InstrumentsRequest, Operation, OperationState,
-        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
-        portfolio_request::CurrencyRequest,
+        Account, AccountType, CandleInterval, Coupon, Dividend, FindInstrumentRequest,
+        GetAccountsRequest, GetAccountsResponse, GetBondCouponsRequest, GetCandlesRequest,
+        GetDividendsRequest, GetLastPricesRequest, InstrumentShort, InstrumentStatus,
+        InstrumentType, InstrumentsRequest, Operation, OperationState, OperationType,
+        OperationsRequest, PortfolioPosition, PortfolioRequest,
     },
 };
 use tokio::sync::Semaphore;
@@ -32,6 +35,8 @@ use crate::{
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
         Position, Profit, Ticker, Totals,
         calendar::{CalendarPayment, CombinedCalendar, CombinedPayment},
+        fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
+        history::{History, HistoryItem},
     },
     progress::Progress,
     to_currency, to_datetime_utc, to_decimal, to_money,
@@ -39,6 +44,13 @@ use crate::{
 
 /// Maximum number of concurrent API requests when loading portfolio positions or calendars.
 pub const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+/// FX instrument map + per-request rate cache (spot and historical).
+pub struct FxBook {
+    instruments: HashMap<Currency, FxInstrument>,
+    spot: Mutex<HashMap<Currency, Decimal>>,
+    hist: Mutex<HashMap<(Currency, NaiveDate), Decimal>>,
+}
 
 /// Builder for calendar queries with fluent API.
 pub struct CalendarBuilder<'a> {
@@ -95,12 +107,13 @@ impl<'a> CalendarBuilder<'a> {
             None
         };
 
+        let fx = self.client.load_fx_book().await?;
         let mut payments = Vec::new();
 
         if self.include_dividends {
             let dividend_calendar = self
                 .client
-                .get_dividend_calendar(portfolio, instruments.clone(), now)
+                .get_dividend_calendar(portfolio, instruments.clone(), now, fx.clone())
                 .await?;
             for dividend in dividend_calendar.upcoming {
                 payments.push(CombinedPayment::Dividend(dividend));
@@ -110,7 +123,7 @@ impl<'a> CalendarBuilder<'a> {
         if self.include_coupons {
             let coupon_calendar = self
                 .client
-                .get_coupon_calendar(portfolio, instruments, now)
+                .get_coupon_calendar(portfolio, instruments, now, fx)
                 .await?;
             for coupon in coupon_calendar.upcoming {
                 payments.push(CombinedPayment::Coupon(coupon));
@@ -488,6 +501,8 @@ impl TinkoffInvestment {
     }
 
     /// Builds a [`Portfolio`] by loading papers for each position in parallel.
+    ///
+    /// Position money fields and operation totals are converted to RUB via FX rates.
     pub async fn build_portfolio(
         &self,
         instruments: Arc<HashMap<String, Instrument>>,
@@ -497,16 +512,29 @@ impl TinkoffInvestment {
         progress: Option<Arc<dyn Progress>>,
     ) -> Portfolio {
         let account_id = account_id.to_string();
+        let fx = match self.load_fx_book().await {
+            Ok(fx) => fx,
+            Err(e) => {
+                eprintln!("Failed to load FX book: {e:?}");
+                Arc::new(FxBook {
+                    instruments: HashMap::new(),
+                    spot: Mutex::new(HashMap::new()),
+                    hist: Mutex::new(HashMap::new()),
+                })
+            }
+        };
 
         let papers = self
             .parallel_for_positions(positions, progress.clone(), {
                 let account_id = account_id.clone();
+                let fx = fx.clone();
                 move |client, position| {
                     let instruments = instruments.clone();
                     let account_id = account_id.clone();
+                    let fx = fx.clone();
                     async move {
                         client
-                            .paper_for_position(&instruments, &account_id, &position)
+                            .paper_for_position(&instruments, &account_id, &position, &fx)
                             .await
                     }
                 }
@@ -529,6 +557,7 @@ impl TinkoffInvestment {
         instruments: &HashMap<String, Instrument>,
         account_id: &str,
         position: &PortfolioPosition,
+        fx: &FxBook,
     ) -> Option<LoadedPaper> {
         match position.instrument_type.as_str() {
             "bond" => self
@@ -537,6 +566,7 @@ impl TinkoffInvestment {
                     account_id.to_string(),
                     position,
                     CouponProfit,
+                    fx,
                 )
                 .await
                 .map(LoadedPaper::Bond),
@@ -546,6 +576,7 @@ impl TinkoffInvestment {
                     account_id.to_string(),
                     position,
                     DividendProfit,
+                    fx,
                 )
                 .await
                 .map(LoadedPaper::Share),
@@ -555,6 +586,7 @@ impl TinkoffInvestment {
                     account_id.to_string(),
                     position,
                     DividendProfit,
+                    fx,
                 )
                 .await
                 .map(LoadedPaper::Etf),
@@ -564,6 +596,7 @@ impl TinkoffInvestment {
                     account_id.to_string(),
                     position,
                     NoneProfit,
+                    fx,
                 )
                 .await
                 .map(LoadedPaper::Currency),
@@ -573,6 +606,7 @@ impl TinkoffInvestment {
                     account_id.to_string(),
                     position,
                     NoneProfit,
+                    fx,
                 )
                 .await
                 .map(LoadedPaper::Future),
@@ -596,10 +630,11 @@ impl TinkoffInvestment {
             return Ok(AccountPortfolio::default());
         };
 
+        // Native instrument currencies; convert to RUB in domain via FX.
         let portfolio = operations
             .get_portfolio(PortfolioRequest {
                 account_id: account.id.clone(),
-                currency: Some(CurrencyRequest::Rub as i32),
+                currency: None,
             })
             .await
             .map_err(|e| eyre::eyre!("Failed to get portfolio: {e:?}"))?;
@@ -725,15 +760,26 @@ impl TinkoffInvestment {
         account_id: String,
         portfolio_position: &PortfolioPosition,
         profit: P,
+        fx: &FxBook,
     ) -> Option<Paper<P>> {
-        let position = Position::try_from(portfolio_position).ok()?;
+        let mut position = Position::try_from(portfolio_position).ok()?;
+
+        // Convert position prices to RUB at spot; keep nominal on position.currency.
+        position.average_buy_price = self
+            .money_to_rub(fx, position.average_buy_price, None)
+            .await
+            .ok()?;
+        position.current_instrument_price = self
+            .money_to_rub(fx, position.current_instrument_price, None)
+            .await
+            .ok()?;
 
         let executed_ops = self
             .get_operations_until_done(account_id, portfolio_position.figi.clone())
-            .await;
-        let executed_ops = executed_ops.ok()?;
+            .await
+            .ok()?;
 
-        let totals = Self::reduce(&executed_ops, position.currency);
+        let totals = self.reduce(fx, &executed_ops).await.ok()?;
 
         let instrument = instruments.get(&portfolio_position.figi)?;
         Some(Paper {
@@ -746,28 +792,42 @@ impl TinkoffInvestment {
         })
     }
 
+    /// Accumulates fees and pure-income payments already denominated in RUB.
     #[must_use]
-    fn reduce(operations: &[Operation], currency: iso_currency::Currency) -> Totals {
-        let mut fees = Money::zero(currency);
-        let mut additional_profit = Money::zero(currency);
+    pub fn accumulate_totals_rub(
+        pure_income: impl IntoIterator<Item = Money>,
+        fees: impl IntoIterator<Item = Money>,
+    ) -> Totals {
+        let mut additional_profit = Money::zero(Currency::RUB);
+        let mut fee_total = Money::zero(Currency::RUB);
+        for payment in pure_income {
+            additional_profit += payment;
+        }
+        for payment in fees {
+            fee_total += payment;
+        }
+        Totals {
+            additional_profit,
+            fees: fee_total,
+        }
+    }
+
+    async fn reduce(&self, fx: &FxBook, operations: &[Operation]) -> color_eyre::Result<Totals> {
+        let mut income = Vec::new();
+        let mut fees = Vec::new();
         for op in operations {
             let Some(payment) = crate::to_money(op.payment.as_ref()) else {
                 continue;
             };
+            let at = op.date.as_ref().map(|d| to_datetime_utc(Some(d)));
+            let payment = self.money_to_rub(fx, payment, at).await?;
             match to_influence(op.operation_type()) {
-                OperationInfluence::PureIncome => {
-                    additional_profit += payment;
-                }
-                OperationInfluence::Fees => {
-                    fees += payment;
-                }
+                OperationInfluence::PureIncome => income.push(payment),
+                OperationInfluence::Fees => fees.push(payment),
                 OperationInfluence::Unspecified => {}
             }
         }
-        Totals {
-            additional_profit,
-            fees,
-        }
+        Ok(Self::accumulate_totals_rub(income, fees))
     }
 
     /// Creates a new calendar builder for fluent API.
@@ -776,12 +836,222 @@ impl TinkoffInvestment {
         CalendarBuilder::new(self)
     }
 
+    /// Builds instrument history with all money fields converted to RUB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if FX conversion fails.
+    pub async fn history_in_rub(
+        &self,
+        operations: &[Operation],
+        instrument: &InstrumentShort,
+    ) -> color_eyre::Result<Option<History>> {
+        let fx = self.load_fx_book().await?;
+        let mut items: Vec<HistoryItem> = Vec::new();
+        for op in operations.iter().unique_by(|op| &op.id) {
+            let mut item = HistoryItem::from(op);
+            let at = Some(item.datetime);
+            item.payment = self.money_to_rub(&fx, item.payment, at).await?;
+            item.price = self.money_to_rub(&fx, item.price, at).await?;
+            items.push(item);
+        }
+        items.sort_by(|a, b| Ord::cmp(&a.datetime, &b.datetime));
+        let Some(first) = items.first() else {
+            return Ok(None);
+        };
+        Ok(Some(History {
+            name: instrument.name.clone(),
+            ticker: instrument.ticker.clone(),
+            figi: instrument.figi.clone(),
+            currency: first.payment.currency,
+            items,
+        }))
+    }
+
+    /// Loads currency instruments for FX conversion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Currencies catalog cannot be fetched.
+    pub async fn load_fx_book(&self) -> color_eyre::Result<Arc<FxBook>> {
+        let channel = self.create_channel().await?;
+        let mut instruments = self
+            .service
+            .instruments(channel)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
+        let response = instruments
+            .currencies(InstrumentsRequest {
+                instrument_status: Some(InstrumentStatus::All as i32),
+                instrument_exchange: None,
+            })
+            .await
+            .map_err(|e| eyre::eyre!("Failed to fetch currencies: {e:?}"))?;
+
+        let candidates = response
+            .into_inner()
+            .instruments
+            .into_iter()
+            .filter_map(|c| {
+                let currency = Currency::from_code(&c.iso_currency_name.to_ascii_uppercase())?;
+                let nominal = c.nominal.as_ref().map_or(Decimal::ONE, money_value_amount);
+                Some(FxCandidate {
+                    currency,
+                    instrument_id: if c.uid.is_empty() { c.figi } else { c.uid },
+                    lot: c.lot,
+                    nominal,
+                    settlement_is_rub: c.currency.eq_ignore_ascii_case("rub"),
+                })
+            });
+
+        Ok(Arc::new(FxBook {
+            instruments: build_fx_map(candidates),
+            spot: Mutex::new(HashMap::new()),
+            hist: Mutex::new(HashMap::new()),
+        }))
+    }
+
+    async fn money_to_rub(
+        &self,
+        fx: &FxBook,
+        money: Money,
+        at: Option<DateTime<Utc>>,
+    ) -> color_eyre::Result<Money> {
+        if money.currency == Currency::RUB {
+            return Ok(money);
+        }
+        let rate = self.rate_to_rub(fx, money.currency, at).await?;
+        Ok(money.to_currency(rate, Currency::RUB))
+    }
+
+    async fn rate_to_rub(
+        &self,
+        fx: &FxBook,
+        currency: Currency,
+        at: Option<DateTime<Utc>>,
+    ) -> color_eyre::Result<Decimal> {
+        if currency == Currency::RUB {
+            return Ok(Decimal::ONE);
+        }
+        let instr = fx
+            .instruments
+            .get(&currency)
+            .ok_or_else(|| eyre::eyre!("No FX instrument for currency {currency:?}"))?;
+        match at {
+            None => self.spot_rate(fx, currency, instr).await,
+            Some(dt) => self.hist_rate(fx, currency, instr, dt).await,
+        }
+    }
+
+    async fn spot_rate(
+        &self,
+        fx: &FxBook,
+        currency: Currency,
+        instr: &FxInstrument,
+    ) -> color_eyre::Result<Decimal> {
+        if let Ok(guard) = fx.spot.lock()
+            && let Some(rate) = guard.get(&currency).copied()
+        {
+            return Ok(rate);
+        }
+
+        let channel = self.create_channel().await?;
+        let mut market = self
+            .service
+            .marketdata(channel)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get marketdata service: {e:?}"))?;
+        let response = market
+            .get_last_prices(GetLastPricesRequest {
+                instrument_id: vec![instr.instrument_id.clone()],
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| eyre::eyre!("GetLastPrices failed for {currency:?}: {e:?}"))?;
+        let price = response
+            .into_inner()
+            .last_prices
+            .into_iter()
+            .next()
+            .and_then(|lp| lp.price)
+            .ok_or_else(|| eyre::eyre!("Empty last price for {currency:?}"))?;
+        let rate = quote_to_rub_rate(to_decimal(Some(&price)), instr.lot, instr.nominal);
+        if let Ok(mut guard) = fx.spot.lock() {
+            guard.insert(currency, rate);
+        }
+        Ok(rate)
+    }
+
+    async fn hist_rate(
+        &self,
+        fx: &FxBook,
+        currency: Currency,
+        instr: &FxInstrument,
+        at: DateTime<Utc>,
+    ) -> color_eyre::Result<Decimal> {
+        let date = at.date_naive();
+        for offset in 0i64..3 {
+            let day = date
+                .checked_sub_signed(ChronoDuration::days(offset))
+                .unwrap_or(date);
+            if let Ok(guard) = fx.hist.lock()
+                && let Some(rate) = guard.get(&(currency, day)).copied()
+            {
+                return Ok(rate);
+            }
+
+            let from = day
+                .and_hms_opt(0, 0, 0)
+                .map(|naive| naive.and_utc())
+                .ok_or_else(|| eyre::eyre!("Invalid date {day}"))?;
+            let to = day
+                .succ_opt()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|naive| naive.and_utc())
+                .ok_or_else(|| eyre::eyre!("Invalid date {day}"))?;
+
+            let channel = self.create_channel().await?;
+            let mut market = self
+                .service
+                .marketdata(channel)
+                .await
+                .map_err(|e| eyre::eyre!("Failed to get marketdata service: {e:?}"))?;
+            let response = market
+                .get_candles(GetCandlesRequest {
+                    from: Some(prost_types::Timestamp {
+                        seconds: from.timestamp(),
+                        nanos: 0,
+                    }),
+                    to: Some(prost_types::Timestamp {
+                        seconds: to.timestamp(),
+                        nanos: 0,
+                    }),
+                    interval: CandleInterval::Day as i32,
+                    instrument_id: Some(instr.instrument_id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("GetCandles failed for {currency:?}: {e:?}"))?;
+
+            let candles = response.into_inner().candles;
+            if let Some(close) = candles.last().and_then(|c| c.close.as_ref()) {
+                let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.lot, instr.nominal);
+                if let Ok(mut guard) = fx.hist.lock() {
+                    guard.insert((currency, day), rate);
+                }
+                return Ok(rate);
+            }
+        }
+        Err(eyre::eyre!("No FX candle for {currency:?} around {date}"))
+    }
+
     /// Internal method for fetching dividend calendar with optional date filtering.
     async fn get_dividend_calendar(
         &self,
         portfolio: &AccountPortfolio,
         instruments: Arc<HashMap<String, Instrument>>,
         filter_after: Option<DateTime<Utc>>,
+        fx: Arc<FxBook>,
     ) -> color_eyre::Result<DividendCalendar> {
         let instruments = instruments.clone();
 
@@ -819,12 +1089,20 @@ impl TinkoffInvestment {
                     .as_ref()
                     .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
 
+                // Upcoming: spot; otherwise rate on payment date.
+                let at = if filter_after.is_some() {
+                    None
+                } else {
+                    Some(payment_date)
+                };
+                let dividend_per_share = self.money_to_rub(&fx, dividend_per_share, at).await?;
+
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(DividendPayment {
                     figi: Figi::new(position.figi.clone()),
                     ticker: Ticker::new(instrument.ticker.as_str().to_string()),
                     name: instrument.name.clone(),
-                    currency: dividend_per_share.currency,
+                    currency: Currency::RUB,
                     dividend_per_share,
                     total_dividend: dividend_per_share * quantity,
                     quantity,
@@ -864,10 +1142,10 @@ impl TinkoffInvestment {
         portfolio: &AccountPortfolio,
         instruments: Arc<HashMap<String, Instrument>>,
         filter_after: Option<DateTime<Utc>>,
+        fx: Arc<FxBook>,
     ) -> color_eyre::Result<CouponCalendar> {
         let instruments = instruments.clone();
 
-        // Filter only bonds before launching parallel tasks
         let bond_positions: Vec<PortfolioPosition> = portfolio
             .positions
             .iter()
@@ -904,12 +1182,19 @@ impl TinkoffInvestment {
                     continue;
                 }
 
+                let at = if filter_after.is_some() {
+                    None
+                } else {
+                    Some(coupon_date)
+                };
+                let coupon_value = self.money_to_rub(&fx, coupon_value, at).await?;
+
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(CouponPayment {
                     figi: Figi::new(position.figi.clone()),
                     ticker: Ticker::new(instrument.ticker.as_str().to_string()),
                     name: instrument.name.clone(),
-                    currency: coupon_value.currency,
+                    currency: Currency::RUB,
                     coupon_per_bond: coupon_value,
                     total_coupon: coupon_value * quantity,
                     quantity,
@@ -943,6 +1228,10 @@ impl TinkoffInvestment {
     }
 }
 
+fn money_value_amount(mv: &tinkoff_invest_api::tcs::MoneyValue) -> Decimal {
+    Decimal::from(mv.units) + Decimal::from(mv.nano) / dec!(1_000_000_000)
+}
+
 #[must_use]
 fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'static str {
     match coupon_type {
@@ -960,6 +1249,7 @@ fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn invest_tls_config_accepts_embedded_cas() {
@@ -979,5 +1269,27 @@ mod tests {
             .create_channel()
             .await
             .expect("TLS handshake with invest-public-api.tbank.ru should succeed");
+    }
+
+    #[test]
+    fn accumulate_totals_rub_sums_converted_payments() {
+        let totals = TinkoffInvestment::accumulate_totals_rub(
+            [
+                Money::from_value(dec!(100), Currency::RUB),
+                Money::from_value(dec!(50), Currency::RUB),
+            ],
+            [Money::from_value(dec!(-10), Currency::RUB)],
+        );
+        assert_eq!(totals.additional_profit.value, dec!(150));
+        assert_eq!(totals.fees.value, dec!(-10));
+        assert_eq!(totals.additional_profit.currency, Currency::RUB);
+    }
+
+    #[test]
+    fn money_to_rub_via_rate_matches_spot_math() {
+        let usd = Money::from_value(dec!(2), Currency::USD);
+        let rub = usd.to_currency(quote_to_rub_rate(dec!(90), 1, dec!(1)), Currency::RUB);
+        assert_eq!(rub.value, dec!(180));
+        assert_eq!(rub.currency, Currency::RUB);
     }
 }

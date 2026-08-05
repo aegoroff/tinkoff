@@ -8,7 +8,7 @@ use tokio::task::JoinSet;
 use itertools::Itertools;
 use tinkoff::{
     client::{AccountPortfolio, InstrumentCatalog, TinkoffInvestment},
-    domain::{History, Instrument, LoadedPaper},
+    domain::{Instrument, LoadedPaper},
     parse_account_type,
     progress::Progresser,
     ux,
@@ -188,7 +188,7 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         return Ok(());
     };
 
-    if let Some(history) = History::new(&operations, instrument) {
+    if let Some(history) = client.history_in_rub(&operations, instrument).await? {
         println!("{history}");
     }
     Ok(())

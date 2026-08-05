@@ -386,14 +386,7 @@ impl CurrencyAllocation {
         let mut total_value = Decimal::ZERO;
 
         for paper in papers {
-            let (value, currency) = match paper {
-                LoadedPaper::Bond(p) => (p.current().value, p.currency()),
-                LoadedPaper::Share(p) => (p.current().value, p.currency()),
-                LoadedPaper::Etf(p) => (p.current().value, p.currency()),
-                LoadedPaper::Currency(p) | LoadedPaper::Future(p) => {
-                    (p.current().value, p.currency())
-                }
-            };
+            let (value, currency) = paper.current_value_and_nominal_currency();
             *currency_map.entry(currency).or_default() += value;
             total_value += value;
         }
@@ -1291,7 +1284,7 @@ mod tests {
 
         // Verify VaR 1d: 1.645 * sqrt(77) * sqrt(1/252) ≈ 0.9093%  (1-day, 95% confidence)
         let expected_var_1d =
-            Decimal::try_from(1.645 * 8.7749643874_f64 * (1.0_f64 / 252.0).sqrt()).unwrap();
+            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (1.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
             (metrics.var_95_1d - expected_var_1d).abs() < epsilon,
             "VaR 1d {} not close enough to {expected_var_1d}",
@@ -1300,7 +1293,7 @@ mod tests {
 
         // Verify VaR 30d: 1.645 * sqrt(77) * sqrt(30/252) ≈ 4.980%
         let expected_var_30d =
-            Decimal::try_from(1.645 * 8.7749643874_f64 * (30.0_f64 / 252.0).sqrt()).unwrap();
+            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (30.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
             (metrics.var_95_30d - expected_var_30d).abs() < epsilon,
             "VaR 30d {} not close enough to {expected_var_30d}",
@@ -1309,7 +1302,7 @@ mod tests {
 
         // Verify VaR quarterly (90d): 1.645 * sqrt(77) * sqrt(90/252) ≈ 8.627%
         let expected_var_quarterly =
-            Decimal::try_from(1.645 * 8.7749643874_f64 * (90.0_f64 / 252.0).sqrt()).unwrap();
+            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (90.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
             (metrics.var_95_quarterly - expected_var_quarterly).abs() < epsilon,
             "VaR quarterly {} not close enough to {expected_var_quarterly}",
@@ -1318,7 +1311,7 @@ mod tests {
 
         // Verify VaR yearly (252d): 1.645 * sqrt(77) * sqrt(252/252) ≈ 14.435%
         let expected_var_yearly =
-            Decimal::try_from(1.645 * 8.7749643874_f64 * (252.0_f64 / 252.0).sqrt()).unwrap();
+            Decimal::try_from(1.645 * 8.774_964_387_4_f64 * (252.0_f64 / 252.0).sqrt()).unwrap();
         assert!(
             (metrics.var_95_yearly - expected_var_yearly).abs() < epsilon,
             "VaR yearly {} not close enough to {expected_var_yearly}",
