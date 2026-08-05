@@ -150,30 +150,6 @@ impl TargetAllocation {
         }
     }
 
-    /// Create an aggressive allocation (20% bonds, 60% shares, 20% other)
-    #[must_use]
-    pub fn aggressive() -> Self {
-        Self {
-            bonds: dec!(20),
-            shares: dec!(60),
-            etfs: dec!(10),
-            currencies: dec!(5),
-            futures: dec!(5),
-        }
-    }
-
-    /// Create a conservative allocation (70% bonds, 20% shares, 10% other)
-    #[must_use]
-    pub fn conservative() -> Self {
-        Self {
-            bonds: dec!(70),
-            shares: dec!(20),
-            etfs: dec!(5),
-            currencies: dec!(5),
-            futures: dec!(0),
-        }
-    }
-
     /// Validate that percentages sum to 100
     #[must_use]
     pub fn is_valid(&self) -> bool {
@@ -966,17 +942,6 @@ mod tests {
         let target = TargetAllocation::balanced();
         assert_eq!(target.bonds, dec!(40));
         assert_eq!(target.shares, dec!(40));
-        assert_eq!(target.etfs, dec!(10));
-        assert_eq!(target.currencies, dec!(5));
-        assert_eq!(target.futures, dec!(5));
-        assert!(target.is_valid());
-    }
-
-    #[test]
-    fn test_target_allocation_aggressive() {
-        let target = TargetAllocation::aggressive();
-        assert_eq!(target.bonds, dec!(20));
-        assert_eq!(target.shares, dec!(60));
         assert_eq!(target.etfs, dec!(10));
         assert_eq!(target.currencies, dec!(5));
         assert_eq!(target.futures, dec!(5));

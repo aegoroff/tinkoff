@@ -57,7 +57,6 @@ pub struct CalendarBuilder<'a> {
     client: &'a TinkoffInvestment,
     include_dividends: bool,
     include_coupons: bool,
-    filter_future_dates: bool,
 }
 
 impl<'a> CalendarBuilder<'a> {
@@ -66,7 +65,6 @@ impl<'a> CalendarBuilder<'a> {
             client,
             include_dividends: false,
             include_coupons: false,
-            filter_future_dates: true,
         }
     }
 
@@ -84,13 +82,6 @@ impl<'a> CalendarBuilder<'a> {
         self
     }
 
-    /// Filter out past dates, keeping only future payments.
-    #[must_use]
-    pub fn filter_future_dates(mut self, filter: bool) -> Self {
-        self.filter_future_dates = filter;
-        self
-    }
-
     /// Fetches the calendar based on the builder configuration.
     ///
     /// # Errors
@@ -101,11 +92,7 @@ impl<'a> CalendarBuilder<'a> {
         portfolio: &AccountPortfolio,
         instruments: Arc<HashMap<String, Instrument>>,
     ) -> color_eyre::Result<CombinedCalendar> {
-        let now = if self.filter_future_dates {
-            Some(chrono::Utc::now())
-        } else {
-            None
-        };
+        let now = Some(chrono::Utc::now());
 
         let fx = self.client.load_fx_book().await?;
         let mut payments = Vec::new();
