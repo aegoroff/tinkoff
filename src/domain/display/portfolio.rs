@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use comfy_table::{Attribute, Cell, TableComponent};
+use comfy_table::{Attribute, Cell};
 
 use crate::ux;
 
@@ -20,7 +20,7 @@ impl<P: Profit> Display for Asset<P> {
         asset_table.set_header([Cell::new(self.name)
             .add_attribute(Attribute::Bold)
             .fg(comfy_table::Color::DarkBlue)]);
-        asset_table.set_style(TableComponent::HeaderLines, ' ');
+        asset_table.style_mut().header_separator.fill = Some(' ');
 
         if self.output_papers {
             for p in self.papers() {

@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use comfy_table::{Attribute, Cell, TableComponent};
+use comfy_table::{Attribute, Cell};
 
 use crate::ux;
 
@@ -19,7 +19,7 @@ impl Display for History {
         history_table.set_header([Cell::new(title)
             .add_attribute(Attribute::Bold)
             .fg(comfy_table::Color::DarkBlue)]);
-        history_table.set_style(TableComponent::HeaderLines, ' ');
+        history_table.style_mut().header_separator.fill = Some(' ');
 
         let mut items_table = ux::new_table();
 

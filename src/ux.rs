@@ -1,6 +1,6 @@
 use std::{fmt::Error, process::Command};
 
-use comfy_table::{Cell, ContentArrangement, Table, TableComponent, presets};
+use comfy_table::{Cell, ContentArrangement, ContentLineStyle, LineStyle, Table, TableStyle};
 use num_format::{Locale, ToFormattedString};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 
@@ -30,27 +30,21 @@ pub fn format_decimal(v: Decimal) -> Result<String, Error> {
     Ok(format!("{sign}{integer}{fract}"))
 }
 
+/// UTF8 condensed look with box-drawing borders replaced by spaces
+/// and a dashed header separator.
+const TABLE_STYLE: TableStyle = TableStyle::new()
+    .top_border(LineStyle::new(' ', ' ', ' ', ' '))
+    .header_lines(ContentLineStyle::new(' ', ' ', ' '))
+    .header_separator(LineStyle::new(' ', '-', ' ', ' '))
+    .content_lines(ContentLineStyle::new(' ', ' ', ' '))
+    .bottom_border(LineStyle::new(' ', ' ', ' ', ' '));
+
 /// Creates new table
 #[must_use]
 pub fn new_table() -> Table {
     let mut table = Table::new();
     table
-        .load_preset(presets::UTF8_FULL_CONDENSED)
-        .set_style(TableComponent::BottomBorder, ' ')
-        .set_style(TableComponent::BottomBorderIntersections, ' ')
-        .set_style(TableComponent::TopBorder, ' ')
-        .set_style(TableComponent::TopBorderIntersections, ' ')
-        .set_style(TableComponent::HeaderLines, '-')
-        .set_style(TableComponent::RightHeaderIntersection, ' ')
-        .set_style(TableComponent::LeftHeaderIntersection, ' ')
-        .set_style(TableComponent::MiddleHeaderIntersections, ' ')
-        .set_style(TableComponent::LeftBorder, ' ')
-        .set_style(TableComponent::RightBorder, ' ')
-        .set_style(TableComponent::TopRightCorner, ' ')
-        .set_style(TableComponent::TopLeftCorner, ' ')
-        .set_style(TableComponent::BottomLeftCorner, ' ')
-        .set_style(TableComponent::BottomRightCorner, ' ')
-        .set_style(TableComponent::VerticalLines, ' ')
+        .load_style(TABLE_STYLE)
         .set_content_arrangement(ContentArrangement::Dynamic);
     table
 }
