@@ -30,7 +30,7 @@ tonic = { version = "0.8.3", features = ["tls", "tls-roots"] }
 mimalloc = "0.1.52"
 
 [dev-dependencies]
-rstest = "0.26.1"
+rstest = "0.27.0"
 
 [profile.release]
 lto = true
