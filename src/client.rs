@@ -50,6 +50,7 @@ use crate::{
         calendar::{Calendar, CalendarKind, CombinedCalendar},
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
         history::{History, HistoryItem},
+        income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
         xirr::CashFlow,
     },
     progress::Progress,
@@ -61,6 +62,9 @@ const FX_LOOKBACK_DAYS: i64 = 14;
 
 /// How far ahead bond events are requested; covers the longest bond maturities.
 const BOND_EVENTS_HORIZON_DAYS: i64 = 50 * 365;
+
+/// Passive income forecast horizon in days.
+const INCOME_FORECAST_DAYS: u32 = 365;
 
 /// Most assets accepted by a single fundamentals request.
 const MAX_FUNDAMENTALS_ASSETS: usize = 100;
@@ -1243,19 +1247,7 @@ impl TinkoffInvestment {
         period: &CalendarPeriod,
         fx: &FxBook,
     ) -> color_eyre::Result<(DividendCalendar, Vec<eyre::Report>)> {
-        // The API rejects dividend requests for anything but shares and ETFs.
-        let dividend_positions: Vec<PortfolioPosition> = portfolio
-            .positions
-            .iter()
-            .filter(|p| p.instrument_type == "share" || p.instrument_type == "etf")
-            .cloned()
-            .collect();
-
-        let pairs = self
-            .fetch_parallel(&dividend_positions, |client, figi| async move {
-                client.get_dividends_for_figi(figi).await
-            })
-            .await;
+        let pairs = self.fetch_portfolio_dividends(portfolio).await;
 
         let mut upcoming = Vec::new();
         let mut failures = Vec::new();
@@ -1269,16 +1261,11 @@ impl TinkoffInvestment {
                 }
             };
             for dividend in dividends {
-                let dividend_per_share = dividend
-                    .dividend_net
-                    .as_ref()
-                    .and_then(|d| to_money(Some(d)))
-                    .unwrap_or_else(|| Money::zero(Currency::RUB));
-
+                let dividend_per_share = dividend_per_share(&dividend);
                 let payment_date = to_optional_datetime_utc(dividend.payment_date.as_ref());
                 let record_date = to_optional_datetime_utc(dividend.record_date.as_ref());
                 // Without any date a dividend cannot be placed into the calendar.
-                let Some(calendar_date) = payment_date.or(record_date) else {
+                let Some(calendar_date) = dividend_date(&dividend) else {
                     continue;
                 };
 
@@ -1309,6 +1296,104 @@ impl TinkoffInvestment {
 
         upcoming.sort_by_key(|a| a.ex_dividend_date);
         Ok((DividendCalendar { upcoming }, failures))
+    }
+
+    /// All dividends, past and declared, of portfolio shares and ETFs.
+    async fn fetch_portfolio_dividends(
+        &self,
+        portfolio: &AccountPortfolio,
+    ) -> Vec<(PortfolioPosition, color_eyre::Result<Vec<Dividend>>)> {
+        // The API rejects dividend requests for anything but shares and ETFs.
+        let dividend_positions: Vec<PortfolioPosition> = portfolio
+            .positions
+            .iter()
+            .filter(|p| p.instrument_type == "share" || p.instrument_type == "etf")
+            .cloned()
+            .collect();
+
+        self.fetch_parallel(&dividend_positions, |client, figi| async move {
+            client.get_dividends_for_figi(figi).await
+        })
+        .await
+    }
+
+    /// Passive income expected within a year: coupons, declared dividends and dividends
+    /// estimated by the last year ones, with the current portfolio value for its yield.
+    ///
+    /// Amounts are before taxes; foreign currency payments are converted at today's rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if FX rates cannot be loaded or a payment cannot be converted to RUB.
+    /// Positions that failed to load are returned alongside the forecast.
+    pub async fn get_income_forecast(
+        &self,
+        portfolio: &AccountPortfolio,
+        instruments: &HashMap<String, Instrument>,
+    ) -> color_eyre::Result<(IncomeForecast, Vec<eyre::Report>)> {
+        let period = CalendarPeriod::days_ahead(Utc::now(), INCOME_FORECAST_DAYS);
+        let fx = self.load_fx_book().await?;
+
+        let (coupons, mut failures) = self
+            .get_coupon_calendar(portfolio, instruments, &period, &fx)
+            .await?;
+        let mut items: Vec<IncomeItem> = coupons
+            .upcoming
+            .iter()
+            .filter(|c| c.kind == BondEventKind::Coupon)
+            .map(|c| IncomeItem {
+                date: c.coupon_date,
+                kind: IncomeKind::Coupon,
+                amount: c.total_coupon,
+            })
+            .collect();
+
+        for (position, dividends) in self.fetch_portfolio_dividends(portfolio).await {
+            let dividends = match dividends {
+                Ok(dividends) => dividends,
+                Err(e) => {
+                    let instrument = instrument_or_figi(instruments, &position.figi);
+                    failures.push(skipped(e, &instrument, &position.figi));
+                    continue;
+                }
+            };
+            let mut records = Vec::new();
+            for dividend in &dividends {
+                let Some(date) = dividend_date(dividend) else {
+                    continue;
+                };
+                // Past and future payments are all converted at today's rate.
+                let per_share = self
+                    .money_to_rub(&fx, dividend_per_share(dividend), period.from)
+                    .await?;
+                records.push(DividendRecord { date, per_share });
+            }
+            let quantity = to_decimal(position.quantity.as_ref());
+            items.extend(expected_dividends(
+                &records,
+                quantity,
+                period.from,
+                period.until,
+            ));
+        }
+
+        let mut portfolio_value = Money::zero(Currency::RUB);
+        for position in &portfolio.positions {
+            let value = Position::try_from(position).and_then(|p| {
+                ensure_rub(&p)?;
+                Ok(p.current())
+            });
+            match value {
+                Ok(value) => portfolio_value += value,
+                Err(e) => {
+                    let instrument = instrument_or_figi(instruments, &position.figi);
+                    failures.push(skipped(e, &instrument, &position.figi));
+                }
+            }
+        }
+
+        let forecast = IncomeForecast::new(period.from, period.until, &items, portfolio_value);
+        Ok((forecast, failures))
     }
 
     async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
@@ -1521,6 +1606,17 @@ impl CalendarPeriod {
         let day = date.date_naive();
         day >= self.from.date_naive() && day <= self.until.date_naive()
     }
+}
+
+/// Dividend per share before taxes; zero when not known yet.
+fn dividend_per_share(dividend: &Dividend) -> Money {
+    to_money(dividend.dividend_net.as_ref()).unwrap_or_else(|| Money::zero(Currency::RUB))
+}
+
+/// Payment date of a dividend, or its record date when the payment date is unknown.
+fn dividend_date(dividend: &Dividend) -> Option<DateTime<Utc>> {
+    to_optional_datetime_utc(dividend.payment_date.as_ref())
+        .or_else(|| to_optional_datetime_utc(dividend.record_date.as_ref()))
 }
 
 /// Adds to `e` which position was skipped because of it.

@@ -11,10 +11,11 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 💰 **Income Tracking**: Track dividends and coupons with dedicated calendar views
 - 📅 **Dividend Calendar**: View upcoming dividend payments for your portfolio
 - 📋 **Bond Payments Calendar**: Coupons, amortizations and maturities of portfolio bonds
-- 📐 **Returns**: Annual return (XIRR) per position, asset type and portfolio; yield to maturity and to offer for bonds
+- 💵 **Passive Income Forecast**: Coupons and dividends expected by month within a year and the current portfolio yield
+- 📐 **Returns**: Annual return (XIRR) per position, asset type and portfolio; yield to maturity and to offer, duration and rate sensitivity for bonds
 - 📋 **Trading History**: Detailed history of all trading operations
 - 🔭 **Share Analytics**: Analyst consensus forecasts and fundamentals (P/E, P/B, EV/EBITDA, ROE, dividend yield) of portfolio shares
-- 🎯 **Risk Analysis**: Portfolio risk metrics and rebalancing recommendations
+- 🎯 **Risk Analysis**: Portfolio risk metrics, currency and sector allocation, rebalancing recommendations
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
 - ⚡ **High Performance**: Optimized with MiMalloc for Linux systems
 - 🔒 **Secure**: Uses Tinkoff API v2 with token authentication
@@ -85,6 +86,9 @@ tinkoff p --days 1095
 # Get combined dividend and bond payments calendar
 tinkoff j
 
+# Forecast passive income for a year and the current portfolio yield
+tinkoff in
+
 # Analyze portfolio risk metrics
 tinkoff r
 
@@ -117,6 +121,7 @@ Commands:
   r     Analyze portfolio risk metrics
   ac    List accounts
   an    Get analyst forecasts and fundamentals of portfolio shares
+  in    Forecast passive income for a year: coupons, dividends and current yield
   help  Print this message or the help of the given subcommand(s)
 
 Options:

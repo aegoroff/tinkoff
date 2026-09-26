@@ -4,6 +4,7 @@ pub mod calendar;
 pub mod display;
 pub mod fx;
 pub mod history;
+pub mod income;
 pub mod money;
 pub mod paper;
 pub mod portfolio;

@@ -117,6 +117,14 @@ pub struct Position {
     pub blocked_lots: Decimal,
 }
 
+impl Position {
+    /// Current price plus accrued interest multiplied to quantity
+    #[must_use]
+    pub fn current(&self) -> Money {
+        (self.current_instrument_price + self.accrued_interest) * self.quantity
+    }
+}
+
 #[derive(Clone)]
 pub struct Totals {
     /// Dividends, coupons etc. i.e. some extra value
@@ -230,8 +238,7 @@ impl<P: Profit> Paper<P> {
     /// Current position value, i.e. current position price plus accrued interest multiplied to quantity
     #[must_use]
     pub fn current(&self) -> Money {
-        (self.position.current_instrument_price + self.position.accrued_interest)
-            * self.position.quantity
+        self.position.current()
     }
 
     /// Change since the previous trading day relative to the value at its close

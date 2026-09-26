@@ -72,6 +72,7 @@ const COMBINED_CMD: &str = "j";
 const RISK_CMD: &str = "r";
 const ACCOUNTS_CMD: &str = "ac";
 const ANALYTICS_CMD: &str = "an";
+const INCOME_CMD: &str = "in";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -105,6 +106,7 @@ fn run_subcommand<'a>(
         RISK_CMD => Box::pin(risk(config, matches)),
         ACCOUNTS_CMD => Box::pin(accounts(config)),
         ANALYTICS_CMD => Box::pin(analytics(config)),
+        INCOME_CMD => Box::pin(income(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -223,6 +225,18 @@ async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> R
         .get_calendar(&portfolio, &instruments, kind, days)
         .await?;
     println!("{calendar}");
+    report_failures(&failures);
+    Ok(())
+}
+
+/// Prints passive income expected within a year and the portfolio yield.
+async fn income(config: &AppConfig) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
+    let (portfolio, instruments) = client
+        .get_portfolio_and_instruments(&config.account)
+        .await?;
+    let (forecast, failures) = client.get_income_forecast(&portfolio, &instruments).await?;
+    println!("{forecast}");
     report_failures(&failures);
     Ok(())
 }
@@ -378,6 +392,7 @@ fn build_cli() -> Command {
         .subcommand(risk_cmd())
         .subcommand(accounts_cmd())
         .subcommand(analytics_cmd())
+        .subcommand(income_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -469,6 +484,12 @@ fn analytics_cmd() -> Command {
     Command::new(ANALYTICS_CMD)
         .aliases(["analytics", "forecasts", "fundamentals"])
         .about("Get analyst forecasts and fundamentals of portfolio shares")
+}
+
+fn income_cmd() -> Command {
+    Command::new(INCOME_CMD)
+        .aliases(["income", "passive"])
+        .about("Forecast passive income for a year: coupons, dividends and current yield")
 }
 
 fn risk_cmd() -> Command {
