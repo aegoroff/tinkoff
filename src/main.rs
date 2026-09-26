@@ -7,7 +7,7 @@ use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
-    client::{AccountPortfolio, InstrumentCatalog, TinkoffInvestment},
+    client::{AccountPortfolio, TinkoffInvestment},
     domain::{Instrument, LoadedPaper},
     parse_account_type,
     progress::Progresser,
@@ -81,11 +81,11 @@ fn run_subcommand<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     match name {
         ALL_CMD => Box::pin(all(config, !matches.get_flag("aggregate"))),
-        SHARES_CMD => Box::pin(asset(config, InstrumentCatalog::Shares)),
-        BONDS_CMD => Box::pin(asset(config, InstrumentCatalog::Bonds)),
-        ETFS_CMD => Box::pin(asset(config, InstrumentCatalog::Etfs)),
-        CURR_CMD => Box::pin(asset(config, InstrumentCatalog::Currencies)),
-        FUTURES_CMD => Box::pin(asset(config, InstrumentCatalog::Futures)),
+        SHARES_CMD => Box::pin(asset(config, "share")),
+        BONDS_CMD => Box::pin(asset(config, "bond")),
+        ETFS_CMD => Box::pin(asset(config, "etf")),
+        CURR_CMD => Box::pin(asset(config, "currency")),
+        FUTURES_CMD => Box::pin(asset(config, "futures")),
         HISTORY_CMD => Box::pin(history(config, matches)),
         DIVIDENDS_CMD => Box::pin(dividends(config)),
         COUPONS_CMD => Box::pin(coupons(config)),
@@ -95,17 +95,17 @@ fn run_subcommand<'a>(
     }
 }
 
-async fn asset(config: &AppConfig, catalog: InstrumentCatalog) -> Result<()> {
+/// Prints portfolio positions of the given API instrument type (`share`, `bond`, etc.).
+async fn asset(config: &AppConfig, instrument_type: &str) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio, instruments) = client
-        .get_portfolio_and_catalog(config.account, catalog)
-        .await?;
+    let portfolio = client.get_portfolio_until_done(config.account).await?;
 
     let positions = portfolio
         .positions
         .into_iter()
-        .filter(|p| p.instrument_type == catalog.instrument_type())
+        .filter(|p| p.instrument_type == instrument_type)
         .collect_vec();
+    let instruments = client.get_instruments_for_positions(&positions).await;
 
     print_positions(
         &client,

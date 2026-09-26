@@ -12,9 +12,9 @@ use tinkoff_invest_api::{
     tcs::{
         Account, AccountType, CandleInterval, Coupon, Dividend, FindInstrumentRequest,
         GetAccountsRequest, GetAccountsResponse, GetBondCouponsRequest, GetCandlesRequest,
-        GetDividendsRequest, GetLastPricesRequest, InstrumentShort, InstrumentStatus,
-        InstrumentType, InstrumentsRequest, Operation, OperationState, OperationType,
-        OperationsRequest, PortfolioPosition, PortfolioRequest,
+        GetDividendsRequest, GetLastPricesRequest, InstrumentIdType, InstrumentRequest,
+        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, Operation,
+        OperationState, OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
     },
 };
 use tokio::sync::{OnceCell, Semaphore};
@@ -30,7 +30,6 @@ const INVEST_API_ENDPOINT: &str = "https://invest-public-api.tbank.ru:443/";
 const RUSSIAN_TRUSTED_CAS: &[u8] = include_bytes!("../certs/russian_trusted_cas.pem");
 
 use crate::{
-    client::InstrumentCatalog::{Bonds, Currencies, Etfs, Futures, Shares},
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
@@ -123,36 +122,6 @@ impl<'a> CalendarBuilder<'a> {
     }
 }
 
-/// Instrument catalog slice returned by the Instruments API.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstrumentCatalog {
-    Bonds,
-    Shares,
-    Etfs,
-    Futures,
-    Currencies,
-}
-
-impl InstrumentCatalog {
-    #[must_use]
-    pub const fn instrument_type(self) -> &'static str {
-        match self {
-            Self::Bonds => "bond",
-            Self::Shares => "share",
-            Self::Etfs => "etf",
-            Self::Futures => "futures",
-            Self::Currencies => "currency",
-        }
-    }
-
-    async fn fetch_until_done(
-        self,
-        client: &TinkoffInvestment,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        with_retry(|| client.get_instruments(self)).await
-    }
-}
-
 #[derive(Default)]
 pub struct AccountPortfolio {
     pub account_id: String,
@@ -231,25 +200,6 @@ impl TryFrom<&PortfolioPosition> for Position {
             quantity,
         })
     }
-}
-
-macro_rules! collect {
-    ($response:ident) => {{
-        $response
-            .into_inner()
-            .instruments
-            .into_iter()
-            .map(|x| {
-                (
-                    x.figi.clone(),
-                    Instrument {
-                        name: x.name.clone(),
-                        ticker: Ticker::new(x.ticker.clone()),
-                    },
-                )
-            })
-            .collect::<HashMap<String, Instrument>>()
-    }};
 }
 
 /// Maximum number of attempts made by [`with_retry`].
@@ -355,119 +305,64 @@ impl TinkoffInvestment {
             .cloned()
     }
 
-    /// Fetches all instrument catalogs in parallel and merges them by FIGI.
+    /// Loads the portfolio and instruments of its positions.
     ///
     /// # Errors
     ///
-    /// Returns an error if any catalog request fails after retries.
-    pub async fn get_all_instruments_until_done(
+    /// Returns an error if the portfolio request fails after retries.
+    pub async fn get_portfolio_and_instruments(
         &self,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
-        let (bonds, shares, etfs, currencies, futures) = tokio::join!(
-            Bonds.fetch_until_done(self),
-            Shares.fetch_until_done(self),
-            Etfs.fetch_until_done(self),
-            Currencies.fetch_until_done(self),
-            Futures.fetch_until_done(self),
-        );
-
-        let mut all = bonds?;
-        all.extend(shares?);
-        all.extend(etfs?);
-        all.extend(currencies?);
-        all.extend(futures?);
-        Ok(all)
+        account: AccountType,
+    ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
+        let portfolio = self.get_portfolio_until_done(account).await?;
+        let instruments = self
+            .get_instruments_for_positions(&portfolio.positions)
+            .await;
+        Ok((portfolio, instruments))
     }
 
-    async fn get_instruments(
+    /// Looks up instruments of the given positions by FIGI concurrently.
+    ///
+    /// Instruments that could not be loaded are absent from the result;
+    /// callers fall back to FIGI for their name and ticker.
+    pub async fn get_instruments_for_positions(
         &self,
-        catalog: InstrumentCatalog,
-    ) -> color_eyre::Result<HashMap<String, Instrument>> {
+        positions: &[PortfolioPosition],
+    ) -> HashMap<String, Instrument> {
+        self.parallel_for_positions(positions, None, |client, position| async move {
+            let instrument =
+                with_retry(|| client.get_instrument_by_figi(position.figi.clone())).await;
+            (position.figi, instrument)
+        })
+        .await
+        .into_iter()
+        .filter_map(|(figi, instrument)| Some((figi, instrument.ok()?)))
+        .collect()
+    }
+
+    async fn get_instrument_by_figi(&self, figi: String) -> color_eyre::Result<Instrument> {
         let channel = self.create_channel().await?;
         let mut instruments = self
             .service
             .instruments(channel)
             .await
             .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
-
-        let request = InstrumentsRequest {
-            instrument_status: Some(InstrumentStatus::All as i32),
-            instrument_exchange: None,
-        };
-
-        match catalog {
-            Bonds => {
-                let resp = instruments
-                    .bonds(request)
-                    .await
-                    .wrap_err("Failed to fetch instruments")?;
-                Ok(collect!(resp))
-            }
-            Shares => {
-                let resp = instruments
-                    .shares(request)
-                    .await
-                    .wrap_err("Failed to fetch instruments")?;
-                Ok(collect!(resp))
-            }
-            Etfs => {
-                let resp = instruments
-                    .etfs(request)
-                    .await
-                    .wrap_err("Failed to fetch instruments")?;
-                Ok(collect!(resp))
-            }
-            Futures => {
-                let resp = instruments
-                    .futures(request)
-                    .await
-                    .wrap_err("Failed to fetch instruments")?;
-                Ok(collect!(resp))
-            }
-            Currencies => {
-                let resp = instruments
-                    .currencies(request)
-                    .await
-                    .wrap_err("Failed to fetch instruments")?;
-                Ok(collect!(resp))
-            }
-        }
-    }
-
-    /// Loads the portfolio and all instrument catalogs concurrently.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the portfolio or any catalog request fails after retries.
-    pub async fn get_portfolio_and_instruments(
-        &self,
-        account: AccountType,
-    ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
-        Box::pin(async {
-            let (instruments, portfolio) = tokio::join!(
-                self.get_all_instruments_until_done(),
-                self.get_portfolio_until_done(account),
-            );
-            Ok((portfolio?, instruments?))
+        let response = instruments
+            .get_instrument_by(InstrumentRequest {
+                id_type: InstrumentIdType::Figi as i32,
+                class_code: None,
+                id: figi.clone(),
+            })
+            .await
+            .wrap_err_with(|| format!("Failed to get instrument {figi}"))?;
+        let instrument = response
+            .into_inner()
+            .instrument
+            .ok_or_else(|| eyre::eyre!("Instrument {figi} not found"))?;
+        Ok(Instrument {
+            name: instrument.name,
+            ticker: Ticker::new(instrument.ticker),
         })
-        .await
-    }
-
-    /// Loads the portfolio and one instrument catalog concurrently.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the portfolio or catalog request fails after retries.
-    pub async fn get_portfolio_and_catalog(
-        &self,
-        account: AccountType,
-        catalog: InstrumentCatalog,
-    ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
-        let (instruments, portfolio) = tokio::join!(
-            catalog.fetch_until_done(self),
-            self.get_portfolio_until_done(account),
-        );
-        Ok((portfolio?, instruments?))
     }
 
     /// Fetches data for each position in parallel,
@@ -824,14 +719,7 @@ impl TinkoffInvestment {
 
         let totals = self.reduce(fx, &executed_ops).await?;
 
-        // An instrument missing from the catalog must not drop the position from totals.
-        let instrument = instruments
-            .get(&portfolio_position.figi)
-            .cloned()
-            .unwrap_or_else(|| Instrument {
-                name: portfolio_position.figi.clone(),
-                ticker: Ticker::new(portfolio_position.figi.clone()),
-            });
+        let instrument = instrument_or_figi(instruments, &portfolio_position.figi);
         Ok(Paper {
             name: instrument.name,
             ticker: instrument.ticker,
@@ -1113,9 +1001,7 @@ impl TinkoffInvestment {
 
         let mut upcoming = Vec::new();
         for (position, dividends) in pairs {
-            let Some(instrument) = instruments.get(&position.figi) else {
-                continue;
-            };
+            let instrument = instrument_or_figi(&instruments, &position.figi);
             for dividend in dividends {
                 let dividend_per_share = dividend
                     .dividend_net
@@ -1211,9 +1097,7 @@ impl TinkoffInvestment {
 
         let mut upcoming = Vec::new();
         for (position, coupons) in pairs {
-            let Some(instrument) = instruments.get(&position.figi) else {
-                continue;
-            };
+            let instrument = instrument_or_figi(&instruments, &position.figi);
             for coupon in coupons {
                 let coupon_value = coupon
                     .pay_one_bond
@@ -1276,6 +1160,18 @@ impl TinkoffInvestment {
             .wrap_err("Failed to get bond coupons")?;
         Ok(response.into_inner().events)
     }
+}
+
+/// Returns the instrument for `figi` or, when it failed to load, one named after the FIGI,
+/// so a position is never dropped only because its name is unknown.
+fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> Instrument {
+    instruments
+        .get(figi)
+        .cloned()
+        .unwrap_or_else(|| Instrument {
+            name: figi.to_string(),
+            ticker: Ticker::new(figi),
+        })
 }
 
 fn money_value_amount(mv: &tinkoff_invest_api::tcs::MoneyValue) -> Decimal {
@@ -1518,6 +1414,38 @@ mod tests {
             message.contains("Unsupported instrument type 'option'"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn instrument_or_figi_returns_known_instrument() {
+        // Arrange
+        let instruments = HashMap::from([(
+            "FIGI1".to_string(),
+            Instrument {
+                name: "Sber".to_string(),
+                ticker: Ticker::new("SBER"),
+            },
+        )]);
+
+        // Act
+        let instrument = instrument_or_figi(&instruments, "FIGI1");
+
+        // Assert
+        assert_eq!(instrument.name, "Sber");
+        assert_eq!(instrument.ticker.as_str(), "SBER");
+    }
+
+    #[test]
+    fn instrument_or_figi_falls_back_to_figi() {
+        // Arrange
+        let instruments = HashMap::new();
+
+        // Act
+        let instrument = instrument_or_figi(&instruments, "FIGI2");
+
+        // Assert
+        assert_eq!(instrument.name, "FIGI2");
+        assert_eq!(instrument.ticker.as_str(), "FIGI2");
     }
 
     fn rub(units: i64) -> MoneyValue {
