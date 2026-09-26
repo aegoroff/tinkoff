@@ -1,10 +1,10 @@
-use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
 use color_eyre::eyre::{self, WrapErr};
 use iso_currency::Currency;
 use itertools::Itertools;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use tinkoff_invest_api::{
@@ -12,9 +12,10 @@ use tinkoff_invest_api::{
     tcs::{
         Account, AccountStatus, AccountType, CandleInterval, Coupon, Dividend,
         FindInstrumentRequest, GetAccountsRequest, GetAccountsResponse, GetBondCouponsRequest,
-        GetCandlesRequest, GetDividendsRequest, InstrumentIdType, InstrumentRequest,
-        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, Operation,
-        OperationState, OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
+        GetCandlesRequest, GetDividendsRequest, GetOperationsByCursorRequest,
+        GetOperationsByCursorResponse, HistoricCandle, InstrumentIdType, InstrumentRequest,
+        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, OperationItem,
+        OperationState, OperationType, PortfolioPosition, PortfolioRequest,
         portfolio_request::CurrencyRequest,
     },
 };
@@ -44,13 +45,26 @@ use crate::{
     to_currency, to_datetime_utc, to_decimal, to_money, to_optional_datetime_utc,
 };
 
+/// How many days back to look for an FX candle; covers the New Year holidays.
+const FX_LOOKBACK_DAYS: i64 = 14;
+
+/// Operations requested per page, the maximum the API allows.
+const OPERATIONS_PAGE_SIZE: i32 = 1000;
+
 /// Maximum number of concurrent API requests when loading portfolio positions or calendars.
 pub const MAX_CONCURRENT_REQUESTS: usize = 10;
+
+/// Daily close rates to RUB by date.
+type DailyRates = BTreeMap<NaiveDate, Decimal>;
+
+/// Lazily loaded daily rates of one currency for one calendar year.
+type YearRates = Arc<OnceCell<DailyRates>>;
 
 /// FX instrument map + per-request cache of daily rates.
 pub struct FxBook {
     instruments: HashMap<Currency, FxInstrument>,
-    hist: Mutex<HashMap<(Currency, NaiveDate), Decimal>>,
+    /// Rates loaded once per currency and calendar year; concurrent requests share one load.
+    daily: Mutex<HashMap<(Currency, i32), YearRates>>,
 }
 
 /// How the account to work with is chosen.
@@ -485,7 +499,7 @@ impl TinkoffInvestment {
                 eprintln!("Failed to load FX book: {e:?}");
                 Arc::new(FxBook {
                     instruments: HashMap::new(),
-                    hist: Mutex::new(HashMap::new()),
+                    daily: Mutex::new(HashMap::new()),
                 })
             }
         };
@@ -653,42 +667,54 @@ impl TinkoffInvestment {
         with_retry(|| self.get_portfolio(&account.id)).await
     }
 
-    async fn get_operations(
+    async fn get_operations_page(
         &self,
-        account_id: String,
-        figi: String,
-    ) -> color_eyre::Result<Vec<Operation>> {
+        account_id: &str,
+        figi: &str,
+        cursor: Option<String>,
+    ) -> color_eyre::Result<GetOperationsByCursorResponse> {
         let channel = self.create_channel().await?;
         let mut operations = self
             .service
             .operations(channel)
             .await
             .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
-        let operations = operations
-            .get_operations(OperationsRequest {
-                account_id,
-                from: None,
-                to: None,
+        let response = operations
+            .get_operations_by_cursor(GetOperationsByCursorRequest {
+                account_id: account_id.to_string(),
+                instrument_id: Some(figi.to_string()),
+                cursor,
+                limit: Some(OPERATIONS_PAGE_SIZE),
                 state: Some(OperationState::Executed as i32),
-                figi: Some(figi),
+                without_trades: Some(true),
+                ..Default::default()
             })
             .await
             .wrap_err("Failed to get operations")?;
-
-        Ok(operations.into_inner().operations)
+        Ok(response.into_inner())
     }
 
-    /// Get operations until done with retry logic.
+    /// Gets all executed operations of an instrument page by page, retrying each page.
     ///
     /// # Errors
     ///
-    /// This function will return an error if operations cannot be retrieved after multiple retries.
+    /// This function will return an error if a page cannot be retrieved after multiple retries.
     pub async fn get_operations_until_done(
         &self,
         account_id: String,
         figi: String,
-    ) -> color_eyre::Result<Vec<Operation>> {
-        with_retry(|| self.get_operations(account_id.clone(), figi.clone())).await
+    ) -> color_eyre::Result<Vec<OperationItem>> {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page =
+                with_retry(|| self.get_operations_page(&account_id, &figi, cursor.clone())).await?;
+            items.extend(page.items);
+            if !page.has_next || page.next_cursor.is_empty() {
+                return Ok(items);
+            }
+            cursor = Some(page.next_cursor);
+        }
     }
 
     /// Creates a paper from a portfolio position with prices and operation totals in RUB.
@@ -751,7 +777,11 @@ impl TinkoffInvestment {
         }
     }
 
-    async fn reduce(&self, fx: &FxBook, operations: &[Operation]) -> color_eyre::Result<Totals> {
+    async fn reduce(
+        &self,
+        fx: &FxBook,
+        operations: &[OperationItem],
+    ) -> color_eyre::Result<Totals> {
         let mut income = Vec::new();
         let mut fees = Vec::new();
         for op in operations {
@@ -763,7 +793,7 @@ impl TinkoffInvestment {
                 income.push(self.money_to_rub(fx, accrued_interest, at).await?);
             }
             let payment = self.money_to_rub(fx, payment, at).await?;
-            match to_influence(op.operation_type()) {
+            match to_influence(op.r#type()) {
                 OperationInfluence::PureIncome => income.push(payment),
                 OperationInfluence::Fees => fees.push(payment),
                 OperationInfluence::Unspecified => {}
@@ -824,7 +854,7 @@ impl TinkoffInvestment {
     /// Returns an error if FX conversion fails.
     pub async fn history_in_rub(
         &self,
-        operations: &[Operation],
+        operations: &[OperationItem],
         instrument: &InstrumentShort,
     ) -> color_eyre::Result<Option<History>> {
         let fx = self.load_fx_book().await?;
@@ -887,7 +917,7 @@ impl TinkoffInvestment {
 
         Ok(Arc::new(FxBook {
             instruments: build_fx_map(candidates),
-            hist: Mutex::new(HashMap::new()),
+            daily: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -929,59 +959,70 @@ impl TinkoffInvestment {
         at: DateTime<Utc>,
     ) -> color_eyre::Result<Decimal> {
         let date = at.date_naive();
-        for offset in 0i64..3 {
+        // Weekends and holidays have no candle: take the closest earlier trading day.
+        for offset in 0..=FX_LOOKBACK_DAYS {
             let day = date
                 .checked_sub_signed(ChronoDuration::days(offset))
                 .unwrap_or(date);
-            if let Ok(guard) = fx.hist.lock()
-                && let Some(rate) = guard.get(&(currency, day)).copied()
-            {
-                return Ok(rate);
-            }
-
-            let from = day
-                .and_hms_opt(0, 0, 0)
-                .map(|naive| naive.and_utc())
-                .ok_or_else(|| eyre::eyre!("Invalid date {day}"))?;
-            let to = day
-                .succ_opt()
-                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .map(|naive| naive.and_utc())
-                .ok_or_else(|| eyre::eyre!("Invalid date {day}"))?;
-
-            let channel = self.create_channel().await?;
-            let mut market = self
-                .service
-                .marketdata(channel)
-                .await
-                .map_err(|e| eyre::eyre!("Failed to get marketdata service: {e:?}"))?;
-            let response = market
-                .get_candles(GetCandlesRequest {
-                    from: Some(prost_types::Timestamp {
-                        seconds: from.timestamp(),
-                        nanos: 0,
-                    }),
-                    to: Some(prost_types::Timestamp {
-                        seconds: to.timestamp(),
-                        nanos: 0,
-                    }),
-                    interval: CandleInterval::Day as i32,
-                    instrument_id: Some(instr.instrument_id.clone()),
-                    ..Default::default()
-                })
-                .await
-                .wrap_err_with(|| format!("GetCandles failed for {currency:?}"))?;
-
-            let candles = response.into_inner().candles;
-            if let Some(close) = candles.last().and_then(|c| c.close.as_ref()) {
-                let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.lot, instr.nominal);
-                if let Ok(mut guard) = fx.hist.lock() {
-                    guard.insert((currency, day), rate);
-                }
+            if let Some(rate) = self.daily_rate(fx, currency, instr, day).await? {
                 return Ok(rate);
             }
         }
         Err(eyre::eyre!("No FX candle for {currency:?} around {date}"))
+    }
+
+    /// Rate of `day` from the daily candles of its year, loading them on first use.
+    async fn daily_rate(
+        &self,
+        fx: &FxBook,
+        currency: Currency,
+        instr: &FxInstrument,
+        day: NaiveDate,
+    ) -> color_eyre::Result<Option<Decimal>> {
+        let year = day.year();
+        let cell = {
+            let mut cells = fx
+                .daily
+                .lock()
+                .map_err(|e| eyre::eyre!("FX cache is poisoned: {e}"))?;
+            Arc::clone(cells.entry((currency, year)).or_default())
+        };
+        let rates = cell
+            .get_or_try_init(|| with_retry(|| self.get_year_rates(currency, instr, year)))
+            .await?;
+        Ok(rates.get(&day).copied())
+    }
+
+    async fn get_year_rates(
+        &self,
+        currency: Currency,
+        instr: &FxInstrument,
+        year: i32,
+    ) -> color_eyre::Result<DailyRates> {
+        let (from, to) = year_bounds(year).ok_or_else(|| eyre::eyre!("Invalid year {year}"))?;
+        let channel = self.create_channel().await?;
+        let mut market = self
+            .service
+            .marketdata(channel)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get marketdata service: {e:?}"))?;
+        let response = market
+            .get_candles(GetCandlesRequest {
+                from: Some(prost_types::Timestamp {
+                    seconds: from.timestamp(),
+                    nanos: 0,
+                }),
+                to: Some(prost_types::Timestamp {
+                    seconds: to.timestamp(),
+                    nanos: 0,
+                }),
+                interval: CandleInterval::Day as i32,
+                instrument_id: Some(instr.instrument_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .wrap_err_with(|| format!("GetCandles failed for {currency:?} in {year}"))?;
+        Ok(daily_rates(&response.into_inner().candles, instr))
     }
 
     /// Internal method for fetching dividend calendar with optional date filtering.
@@ -1198,32 +1239,46 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
     Ok(())
 }
 
-/// Accrued coupon interest (NKD) included into a bond trade payment.
+/// Accrued coupon interest (NKD) paid on a bond buy (negative) or received on a sell (positive).
 ///
-/// Negative when paid on a buy, positive when received on a sell, so adding it to
-/// coupons gives the net coupon income. The payment of a bond trade is
-/// `price × quantity` plus NKD, while the price itself excludes it.
-fn trade_accrued_interest(op: &Operation) -> Option<Money> {
+/// A bond trade payment includes NKD besides `price × quantity`, so adding it to coupons
+/// gives the net coupon income.
+fn trade_accrued_interest(op: &OperationItem) -> Option<Money> {
     if op.instrument_type != "bond" {
         return None;
     }
-    let direction = match op.operation_type() {
+    let direction = match op.r#type() {
         OperationType::Buy | OperationType::BuyCard | OperationType::BuyMargin => {
             Decimal::NEGATIVE_ONE
         }
         OperationType::Sell | OperationType::SellCard | OperationType::SellMargin => Decimal::ONE,
         _ => return None,
     };
-    let payment = to_money(op.payment.as_ref())?;
-    let price = to_money(op.price.as_ref())?;
-    if payment.currency != price.currency {
-        return None;
-    }
-    let accrued =
-        (payment.value - direction * price.value * Decimal::from(op.quantity)).round_dp(2);
-    // A result of the wrong sign means the payment does not follow the formula above.
-    let expected_sign = accrued.is_sign_negative() == direction.is_sign_negative();
-    (!accrued.is_zero() && expected_sign).then(|| Money::from_value(accrued, payment.currency))
+    let accrued = to_money(op.accrued_int.as_ref())?;
+    (!accrued.value.is_zero()).then(|| accrued * direction)
+}
+
+/// Start of `year` and start of the next one in UTC.
+fn year_bounds(year: i32) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let start = |y: i32| {
+        NaiveDate::from_ymd_opt(y, 1, 1)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|d| d.and_utc())
+    };
+    Some((start(year)?, start(year.checked_add(1)?)?))
+}
+
+/// Maps daily candles to RUB rates by candle date; the last candle of a date wins.
+fn daily_rates(candles: &[HistoricCandle], instr: &FxInstrument) -> DailyRates {
+    candles
+        .iter()
+        .filter_map(|c| {
+            let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
+            let close = c.close.as_ref()?;
+            let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.lot, instr.nominal);
+            Some((date, rate))
+        })
+        .collect()
 }
 
 /// Whether a payment on `date` is still upcoming at `cutoff`; payments due today are included.
@@ -1461,7 +1516,7 @@ mod tests {
         let client = TinkoffInvestment::new(String::new());
         let fx = FxBook {
             instruments: HashMap::new(),
-            hist: Mutex::new(HashMap::new()),
+            daily: Mutex::new(HashMap::new()),
         };
         let instruments = HashMap::from([(
             "OPT1".to_string(),
@@ -1780,42 +1835,30 @@ mod tests {
     fn trade(
         instrument_type: &str,
         operation_type: OperationType,
-        price: Decimal,
-        quantity: i64,
-        payment: Decimal,
-    ) -> Operation {
-        let money = |value: Decimal| {
-            let units = value.trunc();
-            let nano = ((value - units) * dec!(1_000_000_000)).trunc();
-            MoneyValue {
-                currency: "rub".to_string(),
-                units: units.to_string().parse().unwrap(),
-                nano: nano.to_string().parse().unwrap(),
-            }
-        };
-        Operation {
+        accrued_int: Option<i64>,
+    ) -> OperationItem {
+        OperationItem {
             instrument_type: instrument_type.to_string(),
-            operation_type: operation_type as i32,
-            price: Some(money(price)),
-            payment: Some(money(payment)),
-            quantity,
+            r#type: operation_type as i32,
+            accrued_int: accrued_int.map(rub),
             ..Default::default()
         }
     }
 
     #[rstest]
-    #[case::buy_pays_nkd(OperationType::Buy, dec!(-12903.54), Some(dec!(-86.84)))]
-    #[case::sell_receives_nkd(OperationType::Sell, dec!(12903.54), Some(dec!(86.84)))]
-    #[case::buy_without_nkd(OperationType::Buy, dec!(-12816.70), None)]
-    #[case::coupon_is_not_a_trade(OperationType::Coupon, dec!(1037.62), None)]
-    #[case::wrong_sign(OperationType::Buy, dec!(-12800), None)]
+    #[case::buy_pays_nkd(OperationType::Buy, Some(19), Some(dec!(-19)))]
+    #[case::buy_card_pays_nkd(OperationType::BuyCard, Some(19), Some(dec!(-19)))]
+    #[case::sell_receives_nkd(OperationType::Sell, Some(19), Some(dec!(19)))]
+    #[case::buy_without_nkd(OperationType::Buy, None, None)]
+    #[case::zero_nkd(OperationType::Buy, Some(0), None)]
+    #[case::coupon_is_not_a_trade(OperationType::Coupon, Some(19), None)]
     fn trade_accrued_interest_of_bond(
         #[case] operation_type: OperationType,
-        #[case] payment: Decimal,
+        #[case] accrued_int: Option<i64>,
         #[case] expected: Option<Decimal>,
     ) {
         // Arrange
-        let op = trade("bond", operation_type, dec!(985.90), 13, payment);
+        let op = trade("bond", operation_type, accrued_int);
 
         // Act
         let accrued = trade_accrued_interest(&op);
@@ -1827,13 +1870,87 @@ mod tests {
     #[test]
     fn trade_accrued_interest_ignores_shares() {
         // Arrange
-        let op = trade("share", OperationType::Buy, dec!(100), 10, dec!(-1005));
+        let op = trade("share", OperationType::Buy, Some(19));
 
         // Act
         let accrued = trade_accrued_interest(&op);
 
         // Assert
         assert!(accrued.is_none());
+    }
+
+    #[test]
+    fn year_bounds_cover_whole_year() {
+        // Arrange
+        let year = 2024;
+
+        // Act
+        let (from, to) = year_bounds(year).unwrap();
+
+        // Assert
+        assert_eq!(from.to_rfc3339(), "2024-01-01T00:00:00+00:00");
+        assert_eq!(to.to_rfc3339(), "2025-01-01T00:00:00+00:00");
+    }
+
+    fn candle(time: &str, close_units: i64) -> HistoricCandle {
+        let time: DateTime<Utc> = time.parse().unwrap();
+        HistoricCandle {
+            time: Some(prost_types::Timestamp {
+                seconds: time.timestamp(),
+                nanos: 0,
+            }),
+            close: Some(Quotation {
+                units: close_units,
+                nano: 0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn daily_rates_keyed_by_candle_date() {
+        // Arrange
+        let instr = FxInstrument {
+            instrument_id: "USD".to_string(),
+            lot: 1,
+            nominal: dec!(1),
+        };
+        let candles = [
+            candle("2026-09-24T07:00:00Z", 90),
+            candle("2026-09-25T07:00:00Z", 91),
+            HistoricCandle::default(),
+        ];
+
+        // Act
+        let rates = daily_rates(&candles, &instr);
+
+        // Assert
+        let expected: DailyRates = [
+            (NaiveDate::from_ymd_opt(2026, 9, 24).unwrap(), dec!(90)),
+            (NaiveDate::from_ymd_opt(2026, 9, 25).unwrap(), dec!(91)),
+        ]
+        .into();
+        assert_eq!(rates, expected);
+    }
+
+    #[test]
+    fn daily_rates_apply_lot_and_nominal() {
+        // Arrange
+        let instr = FxInstrument {
+            instrument_id: "KZT".to_string(),
+            lot: 1,
+            nominal: dec!(100),
+        };
+        let candles = [candle("2026-09-25T07:00:00Z", 18)];
+
+        // Act
+        let rates = daily_rates(&candles, &instr);
+
+        // Assert
+        assert_eq!(
+            rates.get(&NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()),
+            Some(&dec!(0.18))
+        );
     }
 
     fn rub(units: i64) -> MoneyValue {
