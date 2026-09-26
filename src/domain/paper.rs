@@ -94,6 +94,8 @@ pub struct Instrument {
     pub ticker: Ticker,
     /// Trading currency; `None` when the API returned an unknown code
     pub currency: Option<Currency>,
+    /// Asset the instrument belongs to; `None` when unknown
+    pub asset_uid: Option<String>,
 }
 
 #[derive(Clone, Copy)]

@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod bond;
 pub mod calendar;
 pub mod display;

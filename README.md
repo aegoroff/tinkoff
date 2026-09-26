@@ -13,6 +13,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 📋 **Bond Payments Calendar**: Coupons, amortizations and maturities of portfolio bonds
 - 📐 **Returns**: Annual return (XIRR) per position, asset type and portfolio; yield to maturity and to offer for bonds
 - 📋 **Trading History**: Detailed history of all trading operations
+- 🔭 **Share Analytics**: Analyst consensus forecasts and fundamentals (P/E, P/B, EV/EBITDA, ROE, dividend yield) of portfolio shares
 - 🎯 **Risk Analysis**: Portfolio risk metrics and rebalancing recommendations
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
 - ⚡ **High Performance**: Optimized with MiMalloc for Linux systems
@@ -87,6 +88,9 @@ tinkoff j
 # Analyze portfolio risk metrics
 tinkoff r
 
+# Analyst forecasts and fundamentals of portfolio shares
+tinkoff an
+
 # Risk metrics plus rebalancing recommendations to your target allocation
 tinkoff r --target bonds=60,shares=30,etfs=10
 
@@ -112,6 +116,7 @@ Commands:
   j     Get combined dividend and bond payments calendar
   r     Analyze portfolio risk metrics
   ac    List accounts
+  an    Get analyst forecasts and fundamentals of portfolio shares
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -173,6 +178,7 @@ The application provides rich, formatted output including:
 - **Trading History**: Detailed operation history with dates, prices, and quantities
 - **Dividend Calendar**: Upcoming dividend payments for portfolio instruments
 - **Bond Payments Calendar**: Coupons, amortizations and maturities within `--days` (365 by default); offers are not included as they are not guaranteed payments
+- **Share Analytics**: Consensus recommendation, 12 months target price, upside and target range of investment houses; P/E, P/B, EV/EBITDA, Net debt/EBITDA, ROE, 12 months dividend yield and beta (`n/a` when not provided)
 - **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations to the target set with `--target`: a preset (`conservative`, `balanced`) or percents (asset types: bonds, shares, etfs, currencies, futures; omitted ones are 0%, the sum must be 100%)
 
 ## Project Structure
@@ -185,6 +191,7 @@ src/
 ├── progress.rs          # Progress indicators
 ├── ux.rs                # Formatting utilities
 └── domain/
+    ├── analytics.rs     # Analyst forecasts and fundamentals
     ├── bond.rs          # Bond events, yield to maturity and to offer
     ├── calendar.rs      # Dividend and bond payments calendars
     ├── money.rs         # Money, Income types
@@ -192,6 +199,7 @@ src/
     ├── risk.rs          # Risk analysis
     ├── xirr.rs          # Annual return of irregular cash flows
     └── display/
+        ├── analytics.rs # Forecasts and fundamentals tables
         ├── calendar.rs  # Calendar display formatting
         └── risk.rs      # Risk display formatting
 ```

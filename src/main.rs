@@ -71,6 +71,7 @@ const COUPONS_CMD: &str = "p";
 const COMBINED_CMD: &str = "j";
 const RISK_CMD: &str = "r";
 const ACCOUNTS_CMD: &str = "ac";
+const ANALYTICS_CMD: &str = "an";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -103,6 +104,7 @@ fn run_subcommand<'a>(
         COMBINED_CMD => Box::pin(calendar(config, matches, CalendarKind::Combined)),
         RISK_CMD => Box::pin(risk(config, matches)),
         ACCOUNTS_CMD => Box::pin(accounts(config)),
+        ANALYTICS_CMD => Box::pin(analytics(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -221,6 +223,22 @@ async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> R
         .get_calendar(&portfolio, &instruments, kind, days)
         .await?;
     println!("{calendar}");
+    report_failures(&failures);
+    Ok(())
+}
+
+/// Prints analyst forecasts and fundamentals of the portfolio shares.
+async fn analytics(config: &AppConfig) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
+    let portfolio = client.get_portfolio_until_done(&config.account).await?;
+    let shares = portfolio
+        .positions
+        .into_iter()
+        .filter(|p| p.instrument_type == "share")
+        .collect_vec();
+    let instruments = client.get_instruments_for_positions(&shares).await;
+    let (analytics, failures) = client.get_share_analytics(&shares, &instruments).await;
+    print!("{analytics}");
     report_failures(&failures);
     Ok(())
 }
@@ -359,6 +377,7 @@ fn build_cli() -> Command {
         .subcommand(combined_cmd())
         .subcommand(risk_cmd())
         .subcommand(accounts_cmd())
+        .subcommand(analytics_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -444,6 +463,12 @@ fn accounts_cmd() -> Command {
     Command::new(ACCOUNTS_CMD)
         .aliases(["accounts"])
         .about("List accounts")
+}
+
+fn analytics_cmd() -> Command {
+    Command::new(ANALYTICS_CMD)
+        .aliases(["analytics", "forecasts", "fundamentals"])
+        .about("Get analyst forecasts and fundamentals of portfolio shares")
 }
 
 fn risk_cmd() -> Command {

@@ -126,6 +126,16 @@ pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
     iso_currency::Currency::from_code(&mv.as_ref()?.currency.to_ascii_uppercase())
 }
 
+/// Converts an API metric to a decimal rounded to 2 places; `None` for zero,
+/// which the API returns for unknown metrics, and for non-finite values.
+#[must_use]
+pub fn to_metric(value: f64) -> Option<Decimal> {
+    Decimal::try_from(value)
+        .ok()
+        .filter(|d| !d.is_zero())
+        .map(|d| d.round_dp(2))
+}
+
 /// Converts an API timestamp to UTC date time; `None` when it is absent or unset (zero).
 #[must_use]
 pub fn to_optional_datetime_utc(timestamp: Option<&Timestamp>) -> Option<DateTime<Utc>> {
@@ -199,6 +209,22 @@ mod tests {
 
         // Act
         let result = to_optional_datetime_utc(timestamp.as_ref());
+
+        // Assert
+        assert_eq!(result, expected);
+    }
+
+    #[rstest::rstest]
+    #[case::ratio(4.567, Some(dec!(4.57)))]
+    #[case::negative(-1.2, Some(dec!(-1.2)))]
+    #[case::unset(0.0, None)]
+    #[case::not_a_number(f64::NAN, None)]
+    #[case::infinite(f64::INFINITY, None)]
+    fn to_metric_cases(#[case] value: f64, #[case] expected: Option<Decimal>) {
+        // Arrange
+
+        // Act
+        let result = to_metric(value);
 
         // Assert
         assert_eq!(result, expected);

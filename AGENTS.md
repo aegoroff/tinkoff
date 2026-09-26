@@ -105,6 +105,7 @@ src/
     ├── money.rs       # Money and Income
     ├── paper.rs       # Paper, Position, Instrument, Profit kinds
     ├── portfolio.rs   # Portfolio and Asset containers, LoadedPaper
+    ├── analytics.rs   # Analyst forecasts and fundamentals of shares
     ├── bond.rs        # Bond events, YTM and yield to offer
     ├── calendar.rs    # Dividend and bond payments calendars
     ├── history.rs     # Instrument operations history
@@ -137,7 +138,7 @@ src/
 ## CLI Guidelines
 
 - Use `clap` for argument parsing
-- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`
+- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`
 - Provide aliases for better UX
 - Token from `-t` flag or `TINKOFF_TOKEN_V2` environment variable
 

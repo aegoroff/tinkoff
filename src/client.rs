@@ -11,11 +11,13 @@ use t_invest_sdk::{
     TInvestInterceptor,
     api::{
         Account, AccountStatus, AccountType, CandleInterval, Dividend, FindInstrumentRequest,
-        GetAccountsRequest, GetAccountsResponse, GetBondEventsRequest, GetCandlesRequest,
-        GetDividendsRequest, GetOperationsByCursorRequest, GetOperationsByCursorResponse,
-        HistoricCandle, InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus,
-        InstrumentType, InstrumentsRequest, OperationItem, OperationState, OperationType,
-        PortfolioPosition, PortfolioRequest, get_bond_events_request::EventType,
+        GetAccountsRequest, GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest,
+        GetCandlesRequest, GetDividendsRequest, GetForecastRequest, GetForecastResponse,
+        GetOperationsByCursorRequest, GetOperationsByCursorResponse, HistoricCandle,
+        InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType,
+        InstrumentsRequest, OperationItem, OperationState, OperationType, PortfolioPosition,
+        PortfolioRequest, Quotation, Recommendation as ApiRecommendation,
+        get_asset_fundamentals_response::StatisticResponse, get_bond_events_request::EventType,
         get_bond_events_response::BondEvent as ApiBondEvent,
         instruments_service_client::InstrumentsServiceClient,
         market_data_service_client::MarketDataServiceClient,
@@ -41,6 +43,7 @@ use crate::{
         BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
         Position, Ticker, Totals,
+        analytics::{Analytics, Forecast, Fundamentals, Recommendation, ShareAnalytics},
         bond::{BondEvent, BondEventKind, bond_info, mark_amortizations},
         calendar::{Calendar, CalendarKind, CombinedCalendar},
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
@@ -48,7 +51,7 @@ use crate::{
         xirr::CashFlow,
     },
     progress::Progress,
-    to_currency, to_datetime_utc, to_decimal, to_money, to_optional_datetime_utc,
+    to_currency, to_datetime_utc, to_decimal, to_metric, to_money, to_optional_datetime_utc,
 };
 
 /// How many days back to look for an FX candle; covers the New Year holidays.
@@ -56,6 +59,9 @@ const FX_LOOKBACK_DAYS: i64 = 14;
 
 /// How far ahead bond events are requested; covers the longest bond maturities.
 const BOND_EVENTS_HORIZON_DAYS: i64 = 50 * 365;
+
+/// Most assets accepted by a single fundamentals request.
+const MAX_FUNDAMENTALS_ASSETS: usize = 100;
 
 /// Operations requested per page, the maximum the API allows.
 const OPERATIONS_PAGE_SIZE: i32 = 1000;
@@ -418,7 +424,133 @@ impl TinkoffInvestment {
             currency: Currency::from_code(&instrument.currency.to_ascii_uppercase()),
             name: instrument.name,
             ticker: Ticker::new(instrument.ticker),
+            asset_uid: Some(instrument.asset_uid).filter(|uid| !uid.is_empty()),
         })
+    }
+
+    /// Loads analyst forecasts and fundamentals of the given share positions.
+    ///
+    /// Shares without a forecast or fundamentals are kept with `None`; failed requests
+    /// are returned alongside so the caller can tell the user that the output is incomplete.
+    pub async fn get_share_analytics(
+        &self,
+        positions: &[PortfolioPosition],
+        instruments: &HashMap<String, Instrument>,
+    ) -> (Analytics, Vec<eyre::Report>) {
+        let asset_uids = positions
+            .iter()
+            .filter_map(|p| instruments.get(&p.figi)?.asset_uid.clone())
+            .unique()
+            .collect_vec();
+        let currencies: Arc<HashMap<String, Currency>> = Arc::new(
+            instruments
+                .iter()
+                .filter_map(|(figi, i)| Some((figi.clone(), i.currency?)))
+                .collect(),
+        );
+        let (forecasts, fundamentals) = tokio::join!(
+            self.parallel_for_positions(positions, None, move |client, position| {
+                let currency = currencies.get(&position.figi).copied();
+                async move {
+                    let forecast = with_retry(|| {
+                        client.get_forecast(position.instrument_uid.clone(), currency)
+                    })
+                    .await;
+                    (position.figi, forecast)
+                }
+            }),
+            self.get_fundamentals_until_done(&asset_uids),
+        );
+
+        let mut failures = Vec::new();
+        let fundamentals = fundamentals.unwrap_or_else(|e| {
+            failures.push(e);
+            HashMap::new()
+        });
+        let mut forecasts_by_figi = HashMap::new();
+        for (figi, forecast) in forecasts {
+            match forecast {
+                Ok(forecast) => {
+                    forecasts_by_figi.insert(figi, forecast);
+                }
+                Err(e) => {
+                    let ticker = instrument_or_figi(instruments, &figi).ticker;
+                    failures.push(e.wrap_err(format!("Forecast for {ticker} not loaded")));
+                }
+            }
+        }
+
+        let shares = positions
+            .iter()
+            .map(|p| {
+                let instrument = instrument_or_figi(instruments, &p.figi);
+                ShareAnalytics {
+                    forecast: forecasts_by_figi.get(&p.figi).cloned().flatten(),
+                    fundamentals: instrument
+                        .asset_uid
+                        .as_ref()
+                        .and_then(|uid| fundamentals.get(uid))
+                        .copied(),
+                    name: instrument.name,
+                    ticker: instrument.ticker,
+                }
+            })
+            .collect();
+        (Analytics::new(shares), failures)
+    }
+
+    /// Consensus forecast of an instrument; `None` when investment houses give none.
+    /// `currency` is used when the API does not specify the forecast currency.
+    async fn get_forecast(
+        &self,
+        instrument_uid: String,
+        currency: Option<Currency>,
+    ) -> color_eyre::Result<Option<Forecast>> {
+        let mut instruments = self
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
+        match instruments
+            .get_forecast_by(GetForecastRequest {
+                instrument_id: instrument_uid,
+            })
+            .await
+        {
+            Ok(response) => Ok(to_forecast(&response.into_inner(), currency)),
+            Err(status) if status.code() == Code::NotFound => Ok(None),
+            Err(status) => Err(status).wrap_err("Failed to get forecast"),
+        }
+    }
+
+    /// Fundamentals by asset UID, requested in batches of [`MAX_FUNDAMENTALS_ASSETS`].
+    async fn get_fundamentals_until_done(
+        &self,
+        asset_uids: &[String],
+    ) -> color_eyre::Result<HashMap<String, Fundamentals>> {
+        let mut result = HashMap::new();
+        for chunk in asset_uids.chunks(MAX_FUNDAMENTALS_ASSETS) {
+            let items = with_retry(|| self.get_fundamentals(chunk.to_vec())).await?;
+            result.extend(items);
+        }
+        Ok(result)
+    }
+
+    async fn get_fundamentals(
+        &self,
+        asset_uids: Vec<String>,
+    ) -> color_eyre::Result<Vec<(String, Fundamentals)>> {
+        let mut instruments = self
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
+        let response = instruments
+            .get_asset_fundamentals(GetAssetFundamentalsRequest { assets: asset_uids })
+            .await
+            .wrap_err("Failed to get fundamentals")?;
+        Ok(response
+            .into_inner()
+            .fundamentals
+            .iter()
+            .map(|s| (s.asset_uid.clone(), to_fundamentals(s)))
+            .collect())
     }
 
     /// Fetches data for each position in parallel with retries,
@@ -1354,6 +1486,49 @@ fn skipped(e: eyre::Report, instrument: &Instrument, figi: &str) -> eyre::Report
 
 /// Returns the instrument for `figi` or, when it failed to load, one named after the FIGI,
 /// so a position is never dropped only because its name is unknown.
+fn to_recommendation(recommendation: ApiRecommendation) -> Option<Recommendation> {
+    match recommendation {
+        ApiRecommendation::Buy => Some(Recommendation::Buy),
+        ApiRecommendation::Hold => Some(Recommendation::Hold),
+        ApiRecommendation::Sell => Some(Recommendation::Sell),
+        ApiRecommendation::Unspecified => None,
+    }
+}
+
+/// Consensus forecast; `None` without a consensus target price or a known currency.
+///
+/// The API may leave the consensus currency empty, then the currency of investment house
+/// forecasts is used and `fallback` as the last resort.
+fn to_forecast(response: &GetForecastResponse, fallback: Option<Currency>) -> Option<Forecast> {
+    let consensus = response.consensus.as_ref()?;
+    let currency = std::iter::once(&consensus.currency)
+        .chain(response.targets.iter().map(|t| &t.currency))
+        .find_map(|code| Currency::from_code(&code.to_ascii_uppercase()))
+        .or(fallback)?;
+    let money = |q: Option<&Quotation>| Money::from_value(to_decimal(q), currency);
+    let forecast = Forecast {
+        recommendation: to_recommendation(consensus.recommendation()),
+        current_price: money(consensus.current_price.as_ref()),
+        target_price: money(consensus.consensus.as_ref()),
+        min_target: money(consensus.min_target.as_ref()),
+        max_target: money(consensus.max_target.as_ref()),
+        analysts: response.targets.len(),
+    };
+    Some(forecast).filter(|f| !f.target_price.value.is_zero())
+}
+
+fn to_fundamentals(statistic: &StatisticResponse) -> Fundamentals {
+    Fundamentals {
+        pe: to_metric(statistic.pe_ratio_ttm),
+        pb: to_metric(statistic.price_to_book_ttm),
+        ev_to_ebitda: to_metric(statistic.ev_to_ebitda_mrq),
+        net_debt_to_ebitda: to_metric(statistic.net_debt_to_ebitda),
+        roe: to_metric(statistic.roe),
+        dividend_yield: to_metric(statistic.dividend_yield_daily_ttm),
+        beta: to_metric(statistic.beta),
+    }
+}
+
 fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> Instrument {
     instruments
         .get(figi)
@@ -1362,6 +1537,7 @@ fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> 
             name: figi.to_string(),
             ticker: Ticker::new(figi),
             currency: None,
+            asset_uid: None,
         })
 }
 
@@ -1394,7 +1570,10 @@ mod tests {
     use rstest::rstest;
     use rust_decimal_macros::dec;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use t_invest_sdk::api::{MoneyValue, Quotation};
+    use t_invest_sdk::api::{
+        MoneyValue,
+        get_forecast_response::{ConsensusItem, TargetItem},
+    };
 
     #[test]
     fn invest_tls_config_accepts_embedded_cas() {
@@ -1631,6 +1810,7 @@ mod tests {
                 name: "Option".to_string(),
                 ticker: Ticker::new("OPTX"),
                 currency: Some(Currency::RUB),
+                asset_uid: None,
             },
         )]);
         let position = PortfolioPosition {
@@ -1662,6 +1842,7 @@ mod tests {
                 name: "Sber".to_string(),
                 ticker: Ticker::new("SBER"),
                 currency: Some(Currency::RUB),
+                asset_uid: None,
             },
         )]);
 
@@ -1759,6 +1940,7 @@ mod tests {
             name: "Sber".to_string(),
             ticker: Ticker::new("SBER"),
             currency: Some(Currency::RUB),
+            asset_uid: None,
         };
 
         // Act
@@ -1828,6 +2010,145 @@ mod tests {
         // Assert
         let message = format!("{:#}", result.err().unwrap());
         assert_eq!(message, "Expected position prices in RUB, got USD");
+    }
+
+    fn consensus(currency: &str, target: i64) -> GetForecastResponse {
+        GetForecastResponse {
+            targets: vec![],
+            consensus: Some(ConsensusItem {
+                recommendation: ApiRecommendation::Buy as i32,
+                currency: currency.to_string(),
+                current_price: Some(Quotation {
+                    units: 100,
+                    nano: 0,
+                }),
+                consensus: Some(Quotation {
+                    units: target,
+                    nano: 0,
+                }),
+                min_target: Some(Quotation { units: 90, nano: 0 }),
+                max_target: Some(Quotation {
+                    units: 150,
+                    nano: 0,
+                }),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn to_forecast_maps_consensus() {
+        // Arrange
+        let response = consensus("usd", 120);
+
+        // Act
+        let forecast = to_forecast(&response, Some(Currency::RUB)).unwrap();
+
+        // Assert
+        assert_eq!(forecast.recommendation, Some(Recommendation::Buy));
+        assert_eq!(
+            forecast.current_price,
+            Money::from_value(dec!(100), Currency::USD)
+        );
+        assert_eq!(forecast.target_price.value, dec!(120));
+        assert_eq!(forecast.min_target.value, dec!(90));
+        assert_eq!(forecast.max_target.value, dec!(150));
+        assert_eq!(forecast.analysts, 0);
+    }
+
+    #[test]
+    fn to_forecast_takes_currency_from_targets() {
+        // Arrange
+        let mut response = consensus("", 120);
+        response.targets = vec![TargetItem {
+            currency: "eur".to_string(),
+            ..Default::default()
+        }];
+
+        // Act
+        let forecast = to_forecast(&response, Some(Currency::RUB)).unwrap();
+
+        // Assert
+        assert_eq!(forecast.target_price.currency, Currency::EUR);
+        assert_eq!(forecast.analysts, 1);
+    }
+
+    #[rstest]
+    #[case::fallback(Some(Currency::RUB), Some(Currency::RUB))]
+    #[case::unknown(None, None)]
+    fn to_forecast_uses_fallback_currency(
+        #[case] fallback: Option<Currency>,
+        #[case] expected: Option<Currency>,
+    ) {
+        // Arrange
+        let response = consensus("", 120);
+
+        // Act
+        let forecast = to_forecast(&response, fallback);
+
+        // Assert
+        assert_eq!(forecast.map(|f| f.target_price.currency), expected);
+    }
+
+    #[rstest]
+    #[case::no_consensus(GetForecastResponse::default())]
+    #[case::zero_target(consensus("rub", 0))]
+    fn to_forecast_without_target(#[case] response: GetForecastResponse) {
+        // Arrange
+
+        // Act
+        let forecast = to_forecast(&response, Some(Currency::RUB));
+
+        // Assert
+        assert_eq!(forecast, None);
+    }
+
+    #[test]
+    fn to_fundamentals_maps_known_metrics() {
+        // Arrange
+        let statistic = StatisticResponse {
+            pe_ratio_ttm: 3.194,
+            price_to_book_ttm: 0.7,
+            roe: 23.44,
+            dividend_yield_daily_ttm: 13.61,
+            beta: 0.55,
+            ..Default::default()
+        };
+
+        // Act
+        let fundamentals = to_fundamentals(&statistic);
+
+        // Assert
+        assert_eq!(
+            fundamentals,
+            Fundamentals {
+                pe: Some(dec!(3.19)),
+                pb: Some(dec!(0.7)),
+                ev_to_ebitda: None,
+                net_debt_to_ebitda: None,
+                roe: Some(dec!(23.44)),
+                dividend_yield: Some(dec!(13.61)),
+                beta: Some(dec!(0.55)),
+            }
+        );
+    }
+
+    #[rstest]
+    #[case(ApiRecommendation::Buy, Some(Recommendation::Buy))]
+    #[case(ApiRecommendation::Hold, Some(Recommendation::Hold))]
+    #[case(ApiRecommendation::Sell, Some(Recommendation::Sell))]
+    #[case(ApiRecommendation::Unspecified, None)]
+    fn to_recommendation_cases(
+        #[case] recommendation: ApiRecommendation,
+        #[case] expected: Option<Recommendation>,
+    ) {
+        // Arrange
+
+        // Act
+        let result = to_recommendation(recommendation);
+
+        // Assert
+        assert_eq!(result, expected);
     }
 
     #[test]
