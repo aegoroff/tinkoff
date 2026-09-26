@@ -112,6 +112,7 @@ src/
     ├── income.rs      # Passive income forecast and portfolio yield
     ├── fx.rs          # FX instrument selection and rate math
     ├── risk.rs        # Risk analysis, target allocation, rebalancing
+    ├── tax.rs         # Income and taxes withheld by year
     ├── xirr.rs        # XIRR solver on Decimal
     └── display/       # Display implementations for domain types
 ```
@@ -139,7 +140,7 @@ src/
 ## CLI Guidelines
 
 - Use `clap` for argument parsing
-- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`, `in`
+- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`, `in`, `tx`
 - Provide aliases for better UX
 - Token from `-t` flag or `TINKOFF_TOKEN_V2` environment variable
 

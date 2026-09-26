@@ -73,6 +73,7 @@ const RISK_CMD: &str = "r";
 const ACCOUNTS_CMD: &str = "ac";
 const ANALYTICS_CMD: &str = "an";
 const INCOME_CMD: &str = "in";
+const TAXES_CMD: &str = "tx";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -107,6 +108,7 @@ fn run_subcommand<'a>(
         ACCOUNTS_CMD => Box::pin(accounts(config)),
         ANALYTICS_CMD => Box::pin(analytics(config)),
         INCOME_CMD => Box::pin(income(config)),
+        TAXES_CMD => Box::pin(taxes(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -238,6 +240,14 @@ async fn income(config: &AppConfig) -> Result<()> {
     let (forecast, failures) = client.get_income_forecast(&portfolio, &instruments).await?;
     println!("{forecast}");
     report_failures(&failures);
+    Ok(())
+}
+
+/// Prints income and taxes withheld by year.
+async fn taxes(config: &AppConfig) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
+    let report = client.get_tax_report(&config.account).await?;
+    println!("{report}");
     Ok(())
 }
 
@@ -393,6 +403,7 @@ fn build_cli() -> Command {
         .subcommand(accounts_cmd())
         .subcommand(analytics_cmd())
         .subcommand(income_cmd())
+        .subcommand(taxes_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -490,6 +501,12 @@ fn income_cmd() -> Command {
     Command::new(INCOME_CMD)
         .aliases(["income", "passive"])
         .about("Forecast passive income for a year: coupons, dividends and current yield")
+}
+
+fn taxes_cmd() -> Command {
+    Command::new(TAXES_CMD)
+        .aliases(["taxes", "tax"])
+        .about("Get income and taxes withheld by year")
 }
 
 fn risk_cmd() -> Command {

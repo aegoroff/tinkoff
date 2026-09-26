@@ -51,6 +51,7 @@ use crate::{
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
         history::{History, HistoryItem},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
+        tax::{TaxOperation, TaxOperationKind, TaxReport},
         xirr::CashFlow,
     },
     progress::Progress,
@@ -191,6 +192,57 @@ fn to_influence(op: OperationType) -> OperationInfluence {
         | t_invest_sdk::api::OperationType::AdviceFee
         | t_invest_sdk::api::OperationType::OutputPenalty => OperationInfluence::Fees,
         _ => OperationInfluence::Unspecified,
+    }
+}
+
+/// Operation types that affect taxes: income and taxes on it, taxes and their corrections.
+const TAX_OPERATION_TYPES: [OperationType; 20] = [
+    OperationType::Dividend,
+    OperationType::DivExt,
+    OperationType::Coupon,
+    OperationType::DividendTax,
+    OperationType::DividendTaxProgressive,
+    OperationType::BondTax,
+    OperationType::BondTaxProgressive,
+    OperationType::TaxCorrectionCoupon,
+    OperationType::Tax,
+    OperationType::TaxProgressive,
+    OperationType::TaxCorrection,
+    OperationType::TaxCorrectionProgressive,
+    OperationType::BenefitTax,
+    OperationType::BenefitTaxProgressive,
+    OperationType::TaxRepo,
+    OperationType::TaxRepoProgressive,
+    OperationType::TaxRepoHold,
+    OperationType::TaxRepoHoldProgressive,
+    OperationType::TaxRepoRefund,
+    OperationType::TaxRepoRefundProgressive,
+];
+
+/// Tax kind of an operation; `None` for operations that do not affect taxes.
+fn tax_operation_kind(op: OperationType) -> Option<TaxOperationKind> {
+    match op {
+        OperationType::Dividend | OperationType::DivExt => Some(TaxOperationKind::Dividend),
+        OperationType::Coupon => Some(TaxOperationKind::Coupon),
+        OperationType::DividendTax | OperationType::DividendTaxProgressive => {
+            Some(TaxOperationKind::DividendTax)
+        }
+        OperationType::BondTax
+        | OperationType::BondTaxProgressive
+        | OperationType::TaxCorrectionCoupon => Some(TaxOperationKind::CouponTax),
+        OperationType::Tax
+        | OperationType::TaxProgressive
+        | OperationType::TaxCorrection
+        | OperationType::TaxCorrectionProgressive
+        | OperationType::BenefitTax
+        | OperationType::BenefitTaxProgressive
+        | OperationType::TaxRepo
+        | OperationType::TaxRepoProgressive
+        | OperationType::TaxRepoHold
+        | OperationType::TaxRepoHoldProgressive
+        | OperationType::TaxRepoRefund
+        | OperationType::TaxRepoRefundProgressive => Some(TaxOperationKind::OtherTax),
+        _ => None,
     }
 }
 
@@ -878,26 +930,79 @@ impl TinkoffInvestment {
 
     async fn get_operations_page(
         &self,
-        account_id: &str,
-        figi: &str,
-        cursor: Option<String>,
+        request: GetOperationsByCursorRequest,
     ) -> color_eyre::Result<GetOperationsByCursorResponse> {
         let mut operations = self
             .client(OperationsServiceClient::with_interceptor)
             .await?;
         let response = operations
-            .get_operations_by_cursor(GetOperationsByCursorRequest {
-                account_id: account_id.to_string(),
-                instrument_id: Some(figi.to_string()),
-                cursor,
-                limit: Some(OPERATIONS_PAGE_SIZE),
-                state: Some(OperationState::Executed as i32),
-                without_trades: Some(true),
-                ..Default::default()
-            })
+            .get_operations_by_cursor(request)
             .await
             .wrap_err("Failed to get operations")?;
         Ok(response.into_inner())
+    }
+
+    /// Gets all executed operations matching `request` page by page, retrying each page.
+    async fn get_all_operations(
+        &self,
+        request: GetOperationsByCursorRequest,
+    ) -> color_eyre::Result<Vec<OperationItem>> {
+        let request = GetOperationsByCursorRequest {
+            limit: Some(OPERATIONS_PAGE_SIZE),
+            state: Some(OperationState::Executed as i32),
+            without_trades: Some(true),
+            ..request
+        };
+        let mut items = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = with_retry(|| {
+                self.get_operations_page(GetOperationsByCursorRequest {
+                    cursor: cursor.clone(),
+                    ..request.clone()
+                })
+            })
+            .await?;
+            items.extend(page.items);
+            if !page.has_next || page.next_cursor.is_empty() {
+                return Ok(items);
+            }
+            cursor = Some(page.next_cursor);
+        }
+    }
+
+    /// Income and taxes of the account by year, converted to RUB at operation dates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the account, its operations or FX rates cannot be loaded.
+    pub async fn get_tax_report(
+        &self,
+        selector: &AccountSelector,
+    ) -> color_eyre::Result<TaxReport> {
+        let account = self.get_account(selector).await?;
+        let operations = self
+            .get_all_operations(GetOperationsByCursorRequest {
+                account_id: account.id,
+                operation_types: TAX_OPERATION_TYPES.map(|t| t as i32).to_vec(),
+                ..Default::default()
+            })
+            .await?;
+        let fx = self.load_fx_book().await?;
+
+        let mut items = Vec::new();
+        for op in operations.iter().unique_by(|op| &op.id) {
+            let kind = OperationType::try_from(op.r#type)
+                .ok()
+                .and_then(tax_operation_kind);
+            let (Some(kind), Some(payment)) = (kind, to_money(op.payment.as_ref())) else {
+                continue;
+            };
+            let date = to_datetime_utc(op.date.as_ref());
+            let amount = self.money_to_rub(&fx, payment, date).await?;
+            items.push(TaxOperation { date, kind, amount });
+        }
+        Ok(TaxReport::new(&items))
     }
 
     /// Gets all executed operations of an instrument page by page, retrying each page.
@@ -910,17 +1015,12 @@ impl TinkoffInvestment {
         account_id: String,
         figi: String,
     ) -> color_eyre::Result<Vec<OperationItem>> {
-        let mut items = Vec::new();
-        let mut cursor = None;
-        loop {
-            let page =
-                with_retry(|| self.get_operations_page(&account_id, &figi, cursor.clone())).await?;
-            items.extend(page.items);
-            if !page.has_next || page.next_cursor.is_empty() {
-                return Ok(items);
-            }
-            cursor = Some(page.next_cursor);
-        }
+        self.get_all_operations(GetOperationsByCursorRequest {
+            account_id,
+            instrument_id: Some(figi),
+            ..Default::default()
+        })
+        .await
     }
 
     /// Creates a paper from a portfolio position with prices and operation totals in RUB.

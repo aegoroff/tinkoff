@@ -14,6 +14,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 💵 **Passive Income Forecast**: Coupons and dividends expected by month within a year and the current portfolio yield
 - 📐 **Returns**: Annual return (XIRR) per position, asset type and portfolio; yield to maturity and to offer, duration and rate sensitivity for bonds
 - 📋 **Trading History**: Detailed history of all trading operations
+- 🧾 **Taxes**: Dividends, coupons and taxes withheld by the broker by year
 - 🔭 **Share Analytics**: Analyst consensus forecasts and fundamentals (P/E, P/B, EV/EBITDA, ROE, dividend yield) of portfolio shares
 - 🎯 **Risk Analysis**: Portfolio risk metrics, currency and sector allocation, rebalancing recommendations
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
@@ -89,6 +90,9 @@ tinkoff j
 # Forecast passive income for a year and the current portfolio yield
 tinkoff in
 
+# Income and taxes withheld by year
+tinkoff tx
+
 # Analyze portfolio risk metrics
 tinkoff r
 
@@ -122,6 +126,7 @@ Commands:
   ac    List accounts
   an    Get analyst forecasts and fundamentals of portfolio shares
   in    Forecast passive income for a year: coupons, dividends and current yield
+  tx    Get income and taxes withheld by year
   help  Print this message or the help of the given subcommand(s)
 
 Options:
