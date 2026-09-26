@@ -196,7 +196,7 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
 
 async fn dividends(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let calendar = client
+    let (calendar, failures) = client
         .calendar()
         .dividends()
         .fetch(&portfolio, Arc::new(instruments))
@@ -216,12 +216,13 @@ async fn dividends(config: &AppConfig) -> Result<()> {
             upcoming: dividend_calendar
         }
     );
+    report_failures(&failures);
     Ok(())
 }
 
 async fn coupons(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let calendar = client
+    let (calendar, failures) = client
         .calendar()
         .coupons()
         .fetch(&portfolio, Arc::new(instruments))
@@ -241,18 +242,20 @@ async fn coupons(config: &AppConfig) -> Result<()> {
             upcoming: coupon_calendar
         }
     );
+    report_failures(&failures);
     Ok(())
 }
 
 async fn combined(config: &AppConfig) -> Result<()> {
     let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let calendar = client
+    let (calendar, failures) = client
         .calendar()
         .dividends()
         .coupons()
         .fetch(&portfolio, Arc::new(instruments))
         .await?;
     println!("{calendar}");
+    report_failures(&failures);
     Ok(())
 }
 
@@ -353,13 +356,13 @@ async fn print_positions(
     report_failures(&failures);
 }
 
-/// Warns that portfolio totals are incomplete because some positions failed to load.
+/// Warns that the output is incomplete because some positions failed to load.
 fn report_failures(failures: &[eyre::Report]) {
     if failures.is_empty() {
         return;
     }
     eprintln!(
-        "Warning: {} position(s) failed to load, totals above are incomplete:",
+        "Warning: {} position(s) failed to load, output above is incomplete:",
         failures.len()
     );
     for e in failures {

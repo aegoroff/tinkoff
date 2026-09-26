@@ -84,41 +84,53 @@ impl<'a> CalendarBuilder<'a> {
 
     /// Fetches the calendar based on the builder configuration.
     ///
+    /// Positions whose payments failed to load are not included into the calendar;
+    /// their errors are returned alongside so the caller can report an incomplete result.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the calendar cannot be fetched from the API.
+    /// Returns an error if FX rates cannot be loaded or converted.
     pub async fn fetch(
         self,
         portfolio: &AccountPortfolio,
         instruments: Arc<HashMap<String, Instrument>>,
-    ) -> color_eyre::Result<CombinedCalendar> {
+    ) -> color_eyre::Result<(CombinedCalendar, Vec<eyre::Report>)> {
         let now = Some(chrono::Utc::now());
 
         let fx = self.client.load_fx_book().await?;
         let mut payments = Vec::new();
+        let mut failures = Vec::new();
 
         if self.include_dividends {
-            let dividend_calendar = self
+            let (dividend_calendar, errors) = self
                 .client
                 .get_dividend_calendar(portfolio, instruments.clone(), now, fx.clone())
                 .await?;
-            for dividend in dividend_calendar.upcoming {
-                payments.push(CombinedPayment::Dividend(dividend));
-            }
+            payments.extend(
+                dividend_calendar
+                    .upcoming
+                    .into_iter()
+                    .map(CombinedPayment::Dividend),
+            );
+            failures.extend(errors);
         }
 
         if self.include_coupons {
-            let coupon_calendar = self
+            let (coupon_calendar, errors) = self
                 .client
                 .get_coupon_calendar(portfolio, instruments, now, fx)
                 .await?;
-            for coupon in coupon_calendar.upcoming {
-                payments.push(CombinedPayment::Coupon(coupon));
-            }
+            payments.extend(
+                coupon_calendar
+                    .upcoming
+                    .into_iter()
+                    .map(CombinedPayment::Coupon),
+            );
+            failures.extend(errors);
         }
 
         payments.sort_by_key(CalendarPayment::payment_date);
-        Ok(CombinedCalendar { upcoming: payments })
+        Ok((CombinedCalendar { upcoming: payments }, failures))
     }
 }
 
@@ -365,16 +377,15 @@ impl TinkoffInvestment {
         })
     }
 
-    /// Fetches data for each position in parallel,
+    /// Fetches data for each position in parallel with retries,
     /// limiting concurrent requests with a semaphore.
     ///
-    /// Returns pairs of (position, list of items). Positions with errors
-    /// are skipped (empty vector), and task panics are logged to stderr.
+    /// Returns pairs of (position, fetch result); task panics are logged to stderr.
     async fn fetch_parallel<T, F, Fut>(
         &self,
         positions: &[PortfolioPosition],
         fetch: F,
-    ) -> Vec<(PortfolioPosition, Vec<T>)>
+    ) -> Vec<(PortfolioPosition, color_eyre::Result<Vec<T>>)>
     where
         T: Send + 'static,
         F: Fn(Self, String) -> Fut + Send + Sync + 'static,
@@ -383,10 +394,9 @@ impl TinkoffInvestment {
         let fetch = Arc::new(fetch);
         self.parallel_for_positions(positions, None, {
             move |client, position| {
-                let figi = position.figi.clone();
                 let fetch = Arc::clone(&fetch);
                 async move {
-                    let items = fetch(client, figi).await.unwrap_or_default();
+                    let items = with_retry(|| fetch(client.clone(), position.figi.clone())).await;
                     (position, items)
                 }
             }
@@ -535,11 +545,12 @@ impl TinkoffInvestment {
                 .map(LoadedPaper::Future),
             other => Err(eyre::eyre!("Unsupported instrument type '{other}'")),
         };
-        paper.wrap_err_with(|| {
-            let ticker = instruments
-                .get(&position.figi)
-                .map_or("?", |i| i.ticker.as_str());
-            format!("Position {ticker} ({}) skipped", position.figi)
+        paper.map_err(|e| {
+            skipped(
+                e,
+                &instrument_or_figi(instruments, &position.figi),
+                &position.figi,
+            )
         })
     }
 
@@ -990,18 +1001,32 @@ impl TinkoffInvestment {
         instruments: Arc<HashMap<String, Instrument>>,
         filter_after: Option<DateTime<Utc>>,
         fx: Arc<FxBook>,
-    ) -> color_eyre::Result<DividendCalendar> {
-        let instruments = instruments.clone();
+    ) -> color_eyre::Result<(DividendCalendar, Vec<eyre::Report>)> {
+        // The API rejects dividend requests for anything but shares and ETFs.
+        let dividend_positions: Vec<PortfolioPosition> = portfolio
+            .positions
+            .iter()
+            .filter(|p| p.instrument_type == "share" || p.instrument_type == "etf")
+            .cloned()
+            .collect();
 
         let pairs = self
-            .fetch_parallel(&portfolio.positions, |client, figi| async move {
+            .fetch_parallel(&dividend_positions, |client, figi| async move {
                 client.get_dividends_for_figi(figi).await
             })
             .await;
 
         let mut upcoming = Vec::new();
+        let mut failures = Vec::new();
         for (position, dividends) in pairs {
             let instrument = instrument_or_figi(&instruments, &position.figi);
+            let dividends = match dividends {
+                Ok(dividends) => dividends,
+                Err(e) => {
+                    failures.push(skipped(e, &instrument, &position.figi));
+                    continue;
+                }
+            };
             for dividend in dividends {
                 let dividend_per_share = dividend
                     .dividend_net
@@ -1050,7 +1075,7 @@ impl TinkoffInvestment {
         }
 
         upcoming.sort_by_key(|a| a.ex_dividend_date);
-        Ok(DividendCalendar { upcoming })
+        Ok((DividendCalendar { upcoming }, failures))
     }
 
     async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
@@ -1079,9 +1104,7 @@ impl TinkoffInvestment {
         instruments: Arc<HashMap<String, Instrument>>,
         filter_after: Option<DateTime<Utc>>,
         fx: Arc<FxBook>,
-    ) -> color_eyre::Result<CouponCalendar> {
-        let instruments = instruments.clone();
-
+    ) -> color_eyre::Result<(CouponCalendar, Vec<eyre::Report>)> {
         let bond_positions: Vec<PortfolioPosition> = portfolio
             .positions
             .iter()
@@ -1096,8 +1119,16 @@ impl TinkoffInvestment {
             .await;
 
         let mut upcoming = Vec::new();
+        let mut failures = Vec::new();
         for (position, coupons) in pairs {
             let instrument = instrument_or_figi(&instruments, &position.figi);
+            let coupons = match coupons {
+                Ok(coupons) => coupons,
+                Err(e) => {
+                    failures.push(skipped(e, &instrument, &position.figi));
+                    continue;
+                }
+            };
             for coupon in coupons {
                 let coupon_value = coupon
                     .pay_one_bond
@@ -1139,7 +1170,7 @@ impl TinkoffInvestment {
         }
 
         upcoming.sort_by_key(|a| a.coupon_date);
-        Ok(CouponCalendar { upcoming })
+        Ok((CouponCalendar { upcoming }, failures))
     }
 
     async fn get_coupons_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Coupon>> {
@@ -1160,6 +1191,11 @@ impl TinkoffInvestment {
             .wrap_err("Failed to get bond coupons")?;
         Ok(response.into_inner().events)
     }
+}
+
+/// Adds to `e` which position was skipped because of it.
+fn skipped(e: eyre::Report, instrument: &Instrument, figi: &str) -> eyre::Report {
+    e.wrap_err(format!("Position {} ({figi}) skipped", instrument.ticker))
 }
 
 /// Returns the instrument for `figi` or, when it failed to load, one named after the FIGI,
@@ -1446,6 +1482,87 @@ mod tests {
         // Assert
         assert_eq!(instrument.name, "FIGI2");
         assert_eq!(instrument.ticker.as_str(), "FIGI2");
+    }
+
+    fn positions(figis: &[&str]) -> Vec<PortfolioPosition> {
+        figis
+            .iter()
+            .map(|figi| PortfolioPosition {
+                figi: (*figi).to_string(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn fetch_parallel_keeps_failed_positions_as_errors() {
+        // Arrange
+        let client = TinkoffInvestment::new(String::new());
+        let positions = positions(&["OK", "BAD"]);
+
+        // Act
+        let results = client
+            .fetch_parallel(&positions, |_, figi| async move {
+                if figi == "BAD" {
+                    Err(status_error(Code::InvalidArgument))
+                } else {
+                    Ok(vec![figi])
+                }
+            })
+            .await;
+
+        // Assert
+        let results: HashMap<_, _> = results
+            .into_iter()
+            .map(|(position, items)| (position.figi, items))
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results["OK"].as_ref().ok(), Some(&vec!["OK".to_string()]));
+        assert!(results["BAD"].is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_parallel_retries_rate_limited_requests() {
+        // Arrange
+        let client = TinkoffInvestment::new(String::new());
+        let positions = positions(&["FIGI"]);
+        let calls = Arc::new(AtomicU32::new(0));
+
+        // Act
+        let results = client
+            .fetch_parallel(&positions, {
+                let calls = Arc::clone(&calls);
+                move |_, figi| {
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            Err(rate_limit_error("0"))
+                        } else {
+                            Ok(vec![figi])
+                        }
+                    }
+                }
+            })
+            .await;
+
+        // Assert
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(results[0].1.is_ok());
+    }
+
+    #[test]
+    fn skipped_names_position() {
+        // Arrange
+        let instrument = Instrument {
+            name: "Sber".to_string(),
+            ticker: Ticker::new("SBER"),
+        };
+
+        // Act
+        let error = skipped(eyre::eyre!("boom"), &instrument, "FIGI1");
+
+        // Assert
+        assert_eq!(format!("{error:#}"), "Position SBER (FIGI1) skipped: boom");
     }
 
     fn rub(units: i64) -> MoneyValue {
