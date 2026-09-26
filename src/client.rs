@@ -489,6 +489,7 @@ impl TinkoffInvestment {
     /// Position money fields and operation totals are converted to RUB via FX rates.
     /// Positions that failed to load are not included into the portfolio; their errors
     /// are returned alongside so the caller can tell the user that totals are incomplete.
+    /// Bond details are loaded only with `output_papers`, since only paper cards show them.
     pub async fn build_portfolio(
         &self,
         instruments: Arc<HashMap<String, Instrument>>,
@@ -519,7 +520,13 @@ impl TinkoffInvestment {
                     let fx = fx.clone();
                     async move {
                         client
-                            .paper_for_position(&instruments, &account_id, &position, &fx)
+                            .paper_for_position(
+                                &instruments,
+                                &account_id,
+                                &position,
+                                &fx,
+                                output_papers,
+                            )
                             .await
                     }
                 }
@@ -541,12 +548,15 @@ impl TinkoffInvestment {
         (portfolio, failures)
     }
 
+    /// Loads a position as a paper; bond details (events, YTM) only when `with_bond_details`,
+    /// as they are shown in paper cards only and cost a request per bond.
     async fn paper_for_position(
         &self,
         instruments: &HashMap<String, Instrument>,
         account_id: &str,
         position: &PortfolioPosition,
         fx: &FxBook,
+        with_bond_details: bool,
     ) -> color_eyre::Result<LoadedPaper> {
         let skip = |e| {
             skipped(
@@ -570,7 +580,7 @@ impl TinkoffInvestment {
             .create_paper_from_position(instruments, account_id.to_string(), position, fx)
             .await
             .map_err(skip)?;
-        if position.instrument_type == "bond" {
+        if with_bond_details && position.instrument_type == "bond" {
             // Bond details are informational: the position stays in totals without them.
             paper.bond = self
                 .load_bond_info(&position.figi, &paper.position, fx)
@@ -1597,7 +1607,7 @@ mod tests {
 
         // Act
         let result = client
-            .paper_for_position(&instruments, "account", &position, &fx)
+            .paper_for_position(&instruments, "account", &position, &fx, true)
             .await;
 
         // Assert
