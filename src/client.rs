@@ -11,13 +11,14 @@ use t_invest_sdk::{
     TInvestInterceptor,
     api::{
         Account, AccountStatus, AccountType, Bond as ApiBond, CandleInterval,
-        Currency as ApiCurrency, Dividend, FindInstrumentRequest, GetAccountsRequest,
-        GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest, GetCandlesRequest,
-        GetDividendsRequest, GetForecastRequest, GetForecastResponse, GetOperationsByCursorRequest,
-        GetOperationsByCursorResponse, HistoricCandle, Instrument as ApiInstrument,
-        InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType,
-        InstrumentsRequest, OperationItem, OperationState, OperationType, PortfolioPosition,
-        PortfolioRequest, Quotation, Recommendation as ApiRecommendation,
+        Currency as ApiCurrency, Dividend, Etf as ApiEtf, FindInstrumentRequest,
+        Future as ApiFuture, GetAccountsRequest, GetAccountsResponse, GetAssetFundamentalsRequest,
+        GetBondEventsRequest, GetCandlesRequest, GetDividendsRequest, GetForecastRequest,
+        GetForecastResponse, GetOperationsByCursorRequest, GetOperationsByCursorResponse,
+        HistoricCandle, Instrument as ApiInstrument, InstrumentIdType, InstrumentRequest,
+        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, OperationItem,
+        OperationState, OperationType, PortfolioPosition, PortfolioRequest, Quotation,
+        Recommendation as ApiRecommendation, Share as ApiShare,
         get_asset_fundamentals_response::StatisticResponse, get_bond_events_request::EventType,
         get_bond_events_response::BondEvent as ApiBondEvent,
         instruments_service_client::InstrumentsServiceClient,
@@ -411,8 +412,9 @@ impl TinkoffInvestment {
         .collect()
     }
 
-    /// Looks up an instrument by FIGI; bonds and currencies are requested by their own
-    /// methods, as only these return the nominal currency the position is exposed to.
+    /// Looks up an instrument by FIGI. Bonds and currencies are requested by their own
+    /// methods, as only these return the nominal currency the position is exposed to;
+    /// shares, ETFs and futures too, as only these return the sector.
     async fn get_instrument(
         &self,
         figi: String,
@@ -426,30 +428,33 @@ impl TinkoffInvestment {
             class_code: None,
             id: figi.clone(),
         };
-        let failed = || format!("Failed to get instrument {figi}");
         let instrument = match instrument_type {
             "bond" => instruments
                 .bond_by(request)
                 .await
-                .wrap_err_with(failed)?
-                .into_inner()
-                .instrument
-                .map(from_api_bond),
+                .map(|r| r.into_inner().instrument.map(from_api_bond)),
             "currency" => instruments
                 .currency_by(request)
                 .await
-                .wrap_err_with(failed)?
-                .into_inner()
-                .instrument
-                .map(from_api_currency),
+                .map(|r| r.into_inner().instrument.map(from_api_currency)),
+            "share" => instruments
+                .share_by(request)
+                .await
+                .map(|r| r.into_inner().instrument.map(from_api_share)),
+            "etf" => instruments
+                .etf_by(request)
+                .await
+                .map(|r| r.into_inner().instrument.map(from_api_etf)),
+            "futures" => instruments
+                .future_by(request)
+                .await
+                .map(|r| r.into_inner().instrument.map(from_api_future)),
             _ => instruments
                 .get_instrument_by(request)
                 .await
-                .wrap_err_with(failed)?
-                .into_inner()
-                .instrument
-                .map(from_api_instrument),
-        };
+                .map(|r| r.into_inner().instrument.map(from_api_instrument)),
+        }
+        .wrap_err_with(|| format!("Failed to get instrument {figi}"))?;
         instrument.ok_or_else(|| eyre::eyre!("Instrument {figi} not found"))
     }
 
@@ -952,6 +957,7 @@ impl TinkoffInvestment {
             totals,
             profit: NoneProfit,
             bond: None,
+            sector: instrument.sector,
         })
     }
 
@@ -1576,6 +1582,7 @@ fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> 
             ticker: Ticker::new(figi),
             currency: None,
             asset_uid: None,
+            sector: None,
         })
 }
 
@@ -1593,17 +1600,48 @@ fn instrument(
         name,
         ticker: Ticker::new(ticker),
         asset_uid: Some(asset_uid).filter(|uid| !uid.is_empty()),
+        sector: None,
     }
+}
+
+/// Sector code normalized to lower case; `None` when the API returned none.
+fn sector(code: &str) -> Option<String> {
+    Some(code.trim().to_lowercase()).filter(|s| !s.is_empty())
 }
 
 fn from_api_instrument(i: ApiInstrument) -> Instrument {
     instrument(i.name, i.ticker, i.asset_uid, &i.currency, &i.currency)
 }
 
+fn from_api_share(s: ApiShare) -> Instrument {
+    Instrument {
+        sector: sector(&s.sector),
+        ..instrument(s.name, s.ticker, s.asset_uid, &s.currency, &s.currency)
+    }
+}
+
+fn from_api_etf(e: ApiEtf) -> Instrument {
+    Instrument {
+        sector: sector(&e.sector),
+        ..instrument(e.name, e.ticker, e.asset_uid, &e.currency, &e.currency)
+    }
+}
+
+/// Futures have no asset of their own, only a basic one.
+fn from_api_future(f: ApiFuture) -> Instrument {
+    Instrument {
+        sector: sector(&f.sector),
+        ..instrument(f.name, f.ticker, String::new(), &f.currency, &f.currency)
+    }
+}
+
 /// Bond exposed to its nominal currency, e.g. USD for a replacement bond traded in RUB.
 fn from_api_bond(b: ApiBond) -> Instrument {
     let nominal = b.nominal.map(|n| n.currency).unwrap_or_default();
-    instrument(b.name, b.ticker, b.asset_uid, &nominal, &b.currency)
+    Instrument {
+        sector: sector(&b.sector),
+        ..instrument(b.name, b.ticker, b.asset_uid, &nominal, &b.currency)
+    }
 }
 
 /// Currency exposed to itself, not to RUB it is traded in.
@@ -1919,6 +1957,7 @@ mod tests {
                 ticker: Ticker::new("OPTX"),
                 currency: Some(Currency::RUB),
                 asset_uid: None,
+                sector: None,
             },
         )]);
         let position = PortfolioPosition {
@@ -1951,6 +1990,7 @@ mod tests {
                 ticker: Ticker::new("SBER"),
                 currency: Some(Currency::RUB),
                 asset_uid: None,
+                sector: None,
             },
         )]);
 
@@ -2049,6 +2089,7 @@ mod tests {
             ticker: Ticker::new("SBER"),
             currency: Some(Currency::RUB),
             asset_uid: None,
+            sector: None,
         };
 
         // Act
@@ -2324,6 +2365,56 @@ mod tests {
         // Assert
         assert_eq!(instrument.currency, Some(Currency::USD));
         assert_eq!(instrument.asset_uid, None);
+    }
+
+    #[test]
+    fn share_instrument_has_sector() {
+        // Arrange
+        let share = ApiShare {
+            name: "Sber".to_string(),
+            ticker: "SBER".to_string(),
+            currency: "rub".to_string(),
+            sector: "financial".to_string(),
+            ..Default::default()
+        };
+
+        // Act
+        let instrument = from_api_share(share);
+
+        // Assert
+        assert_eq!(instrument.sector.as_deref(), Some("financial"));
+        assert_eq!(instrument.currency, Some(Currency::RUB));
+    }
+
+    #[test]
+    fn bond_instrument_has_sector() {
+        // Arrange
+        let bond = ApiBond {
+            name: "OFZ".to_string(),
+            ticker: "SU26238RMFS4".to_string(),
+            currency: "rub".to_string(),
+            sector: "government".to_string(),
+            ..Default::default()
+        };
+
+        // Act
+        let instrument = from_api_bond(bond);
+
+        // Assert
+        assert_eq!(instrument.sector.as_deref(), Some("government"));
+    }
+
+    #[rstest]
+    #[case::lower("energy", Some("energy"))]
+    #[case::mixed_case_and_spaces(" Health_Care ", Some("health_care"))]
+    #[case::empty("", None)]
+    #[case::blank("  ", None)]
+    fn sector_is_normalized(#[case] code: &str, #[case] expected: Option<&str>) {
+        // Act
+        let result = sector(code);
+
+        // Assert
+        assert_eq!(result.as_deref(), expected);
     }
 
     #[test]

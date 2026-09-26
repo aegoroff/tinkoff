@@ -97,6 +97,8 @@ pub struct Instrument {
     pub currency: Option<Currency>,
     /// Asset the instrument belongs to; `None` when unknown
     pub asset_uid: Option<String>,
+    /// Economic sector code, e.g. `financial`; `None` when unknown or not applicable
+    pub sector: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +168,8 @@ pub struct Paper<P: Profit> {
     pub profit: P,
     /// Set for bonds when their events were loaded
     pub bond: Option<BondInfo>,
+    /// Economic sector code from the API, e.g. `financial`; `None` when unknown
+    pub sector: Option<String>,
 }
 
 impl Profit for DividendProfit {
@@ -301,6 +305,7 @@ impl<P: Profit> Paper<P> {
             totals: self.totals,
             profit,
             bond: self.bond,
+            sector: self.sector,
         }
     }
 }
@@ -335,6 +340,7 @@ mod tests {
             },
             profit: CouponProfit,
             bond: None,
+            sector: None,
         }
     }
 

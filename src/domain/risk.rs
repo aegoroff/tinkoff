@@ -17,6 +17,8 @@ pub struct RiskAnalysis {
     pub asset_allocation: AssetAllocation,
     /// Currency diversification analysis
     pub currency_allocation: CurrencyAllocation,
+    /// Sector diversification analysis
+    pub sector_allocation: SectorAllocation,
     /// Position concentration (top holdings)
     pub position_concentration: PositionConcentration,
     /// Risk metrics summary
@@ -62,6 +64,26 @@ pub struct CurrencyItem {
     pub percentage: Decimal,
 }
 
+/// Sector diversification analysis of all papers except currencies
+#[derive(Debug, Clone)]
+pub struct SectorAllocation {
+    /// Sorted by value descending
+    pub allocations: Vec<SectorItem>,
+    pub total_value: Money,
+    /// Herfindahl-Hirschman Index for sector concentration (0-1, lower is better diversified)
+    pub hhi: Decimal,
+}
+
+/// Single sector allocation item
+#[derive(Debug, Clone)]
+pub struct SectorItem {
+    /// Sector code from the API; `None` for papers of unknown sector
+    pub sector: Option<String>,
+    /// Value of papers of the sector, in RUB
+    pub value: Money,
+    pub percentage: Decimal,
+}
+
 /// Position concentration analysis
 #[derive(Debug, Clone)]
 pub struct PositionConcentration {
@@ -99,6 +121,8 @@ pub struct RiskMetrics {
     pub concentration_risk: Decimal,
     /// Asset type concentration risk (0-100, lower is better)
     pub asset_concentration_risk: Decimal,
+    /// Sector concentration risk (0-100, lower is better); `None` without papers having sectors
+    pub sector_risk: Option<Decimal>,
     /// Risk level assessment from allocation / HHI metrics only
     pub risk_level: RiskLevel,
 }
@@ -373,16 +397,19 @@ impl RiskAnalysis {
         let papers: Vec<LoadedPaper> = portfolio.papers().collect();
         let asset_allocation = AssetAllocation::from_portfolio(portfolio);
         let currency_allocation = CurrencyAllocation::from_papers(&papers);
+        let sector_allocation = SectorAllocation::from_papers(&papers);
         let position_concentration = PositionConcentration::from_papers(&papers);
         let risk_metrics = RiskMetrics::calculate(
             &asset_allocation,
             &currency_allocation,
+            &sector_allocation,
             &position_concentration,
         );
 
         Self {
             asset_allocation,
             currency_allocation,
+            sector_allocation,
             position_concentration,
             risk_metrics,
         }
@@ -476,6 +503,59 @@ impl CurrencyAllocation {
     }
 }
 
+impl SectorAllocation {
+    #[must_use]
+    fn from_papers(papers: &[LoadedPaper]) -> Self {
+        let mut sector_map: HashMap<Option<&str>, Decimal> = HashMap::new();
+        let mut total_value = Decimal::ZERO;
+
+        // Currencies are cash, not an exposure to any sector.
+        for paper in papers
+            .iter()
+            .filter(|p| !matches!(p, LoadedPaper::Currency(_)))
+        {
+            let (value, _) = paper.current_value_and_nominal_currency();
+            *sector_map.entry(paper.sector()).or_default() += value;
+            total_value += value;
+        }
+
+        let mut allocations: Vec<SectorItem> = sector_map
+            .into_iter()
+            .map(|(sector, value)| SectorItem {
+                sector: sector.map(str::to_string),
+                value: Money::from_value(value, Currency::RUB),
+                percentage: percentage_of(value, total_value),
+            })
+            .collect();
+        allocations.sort_by(|a, b| {
+            b.value
+                .value
+                .cmp(&a.value.value)
+                .then_with(|| a.sector.cmp(&b.sector))
+        });
+
+        let hhi = allocations.iter().fold(dec!(0), |acc, item| {
+            let share = item.percentage / dec!(100);
+            acc + share * share
+        });
+
+        Self {
+            allocations,
+            total_value: Money::from_value(total_value, Currency::RUB),
+            hhi,
+        }
+    }
+}
+
+/// Percentage of `value` in `total`; zero for zero `total`.
+fn percentage_of(value: Decimal, total: Decimal) -> Decimal {
+    if total.is_zero() {
+        dec!(0)
+    } else {
+        (value / total) * dec!(100)
+    }
+}
+
 impl PositionConcentration {
     #[must_use]
     fn from_papers(papers: &[LoadedPaper]) -> Self {
@@ -548,10 +628,16 @@ impl RiskMetrics {
     fn calculate(
         asset_alloc: &AssetAllocation,
         currency_alloc: &CurrencyAllocation,
+        sector_alloc: &SectorAllocation,
         position_conc: &PositionConcentration,
     ) -> Self {
-        let diversification_score =
-            Self::calculate_diversification_score(asset_alloc, currency_alloc, position_conc);
+        let sector_risk = Self::calculate_sector_risk(sector_alloc);
+        let diversification_score = Self::calculate_diversification_score(
+            asset_alloc,
+            currency_alloc,
+            sector_risk,
+            position_conc,
+        );
         let currency_risk = Self::calculate_currency_risk(currency_alloc);
         let concentration_risk = Self::calculate_concentration_risk(position_conc);
         let asset_concentration_risk = Self::calculate_asset_concentration_risk(asset_alloc);
@@ -567,6 +653,7 @@ impl RiskMetrics {
             currency_risk,
             concentration_risk,
             asset_concentration_risk,
+            sector_risk,
             risk_level,
         }
     }
@@ -574,6 +661,7 @@ impl RiskMetrics {
     fn calculate_diversification_score(
         asset_alloc: &AssetAllocation,
         currency_alloc: &CurrencyAllocation,
+        sector_risk: Option<Decimal>,
         position_conc: &PositionConcentration,
     ) -> Decimal {
         // Weight factors for diversification calculation
@@ -582,11 +670,19 @@ impl RiskMetrics {
         let currency_diversification = dec!(100) - currency_alloc.hhi * dec!(100);
         let position_diversification = dec!(100) - position_conc.hhi * dec!(100);
 
-        // Weighted average (positions matter most, then assets, then currency)
-        (asset_diversification * dec!(3)
+        // Weighted average (positions matter most, then assets, then currency and sectors)
+        let weighted = asset_diversification * dec!(3)
             + currency_diversification * dec!(2)
-            + position_diversification * dec!(5))
-            / dec!(10)
+            + position_diversification * dec!(5);
+        match sector_risk {
+            Some(risk) => (weighted + (dec!(100) - risk) * dec!(2)) / dec!(12),
+            None => weighted / dec!(10),
+        }
+    }
+
+    fn calculate_sector_risk(sector_alloc: &SectorAllocation) -> Option<Decimal> {
+        let known = sector_alloc.allocations.iter().any(|i| i.sector.is_some());
+        known.then(|| sector_alloc.hhi * dec!(100))
     }
 
     fn calculate_currency_risk(currency_alloc: &CurrencyAllocation) -> Decimal {
@@ -679,7 +775,8 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        CouponProfit, DividendProfit, Figi, LoadedPaper, Paper, Position, Ticker, Totals,
+        CouponProfit, DividendProfit, Figi, LoadedPaper, NoneProfit, Paper, Position, Profit,
+        Ticker, Totals,
     };
 
     #[test]
@@ -710,6 +807,7 @@ mod tests {
             },
             profit: CouponProfit,
             bond: None,
+            sector: None,
         });
         portfolio.bonds = bonds;
 
@@ -736,6 +834,7 @@ mod tests {
             },
             profit: DividendProfit,
             bond: None,
+            sector: None,
         });
         portfolio.shares = shares;
 
@@ -771,6 +870,7 @@ mod tests {
             },
             profit: DividendProfit,
             bond: None,
+            sector: None,
         })];
 
         let allocation = CurrencyAllocation::from_papers(&papers);
@@ -803,6 +903,7 @@ mod tests {
                 },
                 profit: DividendProfit,
                 bond: None,
+                sector: None,
             }),
             LoadedPaper::Share(Paper {
                 name: "Share 2".to_string(),
@@ -825,6 +926,7 @@ mod tests {
                 },
                 profit: DividendProfit,
                 bond: None,
+                sector: None,
             }),
         ];
 
@@ -837,8 +939,25 @@ mod tests {
 
     /// Share exposed to `currency` with prices converted to RUB, as loaded from the API.
     fn share_priced_in_rub(ticker: &str, currency: Currency, value: Decimal) -> LoadedPaper {
+        LoadedPaper::Share(rub_paper(ticker, currency, value, DividendProfit))
+    }
+
+    /// Paper of `sector` worth `value` RUB.
+    fn paper_in_sector<P: Profit>(sector: Option<&str>, value: Decimal, profit: P) -> Paper<P> {
+        Paper {
+            sector: sector.map(str::to_string),
+            ..rub_paper("TICKER", Currency::RUB, value, profit)
+        }
+    }
+
+    fn rub_paper<P: Profit>(
+        ticker: &str,
+        currency: Currency,
+        value: Decimal,
+        profit: P,
+    ) -> Paper<P> {
         let rub = Currency::RUB;
-        LoadedPaper::Share(Paper {
+        Paper {
             name: ticker.to_string(),
             ticker: Ticker::new(ticker),
             figi: Figi::new(ticker),
@@ -857,9 +976,10 @@ mod tests {
                 fees: Money::zero(rub),
                 cash_flows: vec![],
             },
-            profit: DividendProfit,
+            profit,
             bond: None,
-        })
+            sector: None,
+        }
     }
 
     #[test]
@@ -878,6 +998,123 @@ mod tests {
         assert_eq!(usd.currency, Currency::USD);
         assert_eq!(usd.value, Money::from_value(dec!(9000), Currency::RUB));
         assert_eq!(usd.percentage, dec!(90));
+    }
+
+    #[test]
+    fn sector_allocation_groups_papers_by_sector() {
+        // Arrange
+        let papers = vec![
+            LoadedPaper::Share(paper_in_sector(
+                Some("financial"),
+                dec!(300),
+                DividendProfit,
+            )),
+            LoadedPaper::Bond(paper_in_sector(Some("financial"), dec!(300), CouponProfit)),
+            LoadedPaper::Share(paper_in_sector(Some("energy"), dec!(400), DividendProfit)),
+        ];
+
+        // Act
+        let allocation = SectorAllocation::from_papers(&papers);
+
+        // Assert
+        let sectors = allocation
+            .allocations
+            .iter()
+            .map(|i| (i.sector.as_deref(), i.percentage))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sectors,
+            vec![(Some("financial"), dec!(60)), (Some("energy"), dec!(40))]
+        );
+        assert_eq!(
+            allocation.total_value,
+            Money::from_value(dec!(1000), Currency::RUB)
+        );
+        // HHI = 0.6^2 + 0.4^2 = 0.52
+        assert_eq!(allocation.hhi, dec!(0.52));
+    }
+
+    #[test]
+    fn sector_allocation_skips_currencies_and_keeps_unknown_sectors() {
+        // Arrange
+        let papers = vec![
+            LoadedPaper::Currency(paper_in_sector(None, dec!(5000), NoneProfit)),
+            LoadedPaper::Share(paper_in_sector(Some("it"), dec!(500), DividendProfit)),
+            LoadedPaper::Etf(paper_in_sector(None, dec!(500), DividendProfit)),
+        ];
+
+        // Act
+        let allocation = SectorAllocation::from_papers(&papers);
+
+        // Assert
+        let sectors = allocation
+            .allocations
+            .iter()
+            .map(|i| (i.sector.as_deref(), i.percentage))
+            .collect::<Vec<_>>();
+        assert_eq!(sectors, vec![(None, dec!(50)), (Some("it"), dec!(50))]);
+        assert_eq!(
+            allocation.total_value,
+            Money::from_value(dec!(1000), Currency::RUB)
+        );
+    }
+
+    #[test]
+    fn sector_allocation_of_empty_portfolio_is_empty() {
+        // Act
+        let allocation = SectorAllocation::from_papers(&[]);
+
+        // Assert
+        assert!(allocation.allocations.is_empty());
+        assert_eq!(allocation.hhi, dec!(0));
+    }
+
+    #[rstest]
+    #[case::single_sector(vec![Some("it")], Some(dec!(100)))]
+    #[case::two_equal_sectors(vec![Some("it"), Some("energy")], Some(dec!(50)))]
+    #[case::only_unknown_sectors(vec![None], None)]
+    #[case::no_papers(vec![], None)]
+    fn sector_risk_follows_sector_hhi(
+        #[case] sectors: Vec<Option<&str>>,
+        #[case] expected: Option<Decimal>,
+    ) {
+        // Arrange
+        let papers = sectors
+            .into_iter()
+            .map(|s| LoadedPaper::Share(paper_in_sector(s, dec!(100), DividendProfit)))
+            .collect::<Vec<_>>();
+        let allocation = SectorAllocation::from_papers(&papers);
+
+        // Act
+        let risk = RiskMetrics::calculate_sector_risk(&allocation);
+
+        // Assert
+        assert_eq!(risk, expected);
+    }
+
+    #[rstest]
+    #[case::without_sectors(None, dec!(70))]
+    #[case::diversified_sectors(Some(dec!(0)), dec!(75))]
+    #[case::single_sector(Some(dec!(100)), dec!(58.33))]
+    fn diversification_score_accounts_sector_risk(
+        #[case] sector_risk: Option<Decimal>,
+        #[case] expected: Decimal,
+    ) {
+        // Arrange: bonds only, no currencies and positions
+        let asset_alloc = allocation_with_currencies(dec!(0));
+        let currency_alloc = CurrencyAllocation::from_papers(&[]);
+        let position_conc = PositionConcentration::from_papers(&[]);
+
+        // Act
+        let score = RiskMetrics::calculate_diversification_score(
+            &asset_alloc,
+            &currency_alloc,
+            sector_risk,
+            &position_conc,
+        );
+
+        // Assert
+        assert_eq!(score.round_dp(2), expected);
     }
 
     #[test]
@@ -919,6 +1156,7 @@ mod tests {
                 },
                 profit: DividendProfit,
                 bond: None,
+                sector: None,
             }),
             LoadedPaper::Share(Paper {
                 name: "Small Position".to_string(),
@@ -941,6 +1179,7 @@ mod tests {
                 },
                 profit: DividendProfit,
                 bond: None,
+                sector: None,
             }),
         ];
 
@@ -1012,7 +1251,12 @@ mod tests {
             total_value: Money::from_value(dec!(1000), Currency::RUB),
         };
 
-        let metrics = RiskMetrics::calculate(&asset_alloc, &currency_alloc, &position_conc);
+        let metrics = RiskMetrics::calculate(
+            &asset_alloc,
+            &currency_alloc,
+            &SectorAllocation::from_papers(&[]),
+            &position_conc,
+        );
 
         // With diversified portfolio, risk should be relatively low
         assert!(metrics.diversification_score > dec!(50));
@@ -1077,7 +1321,12 @@ mod tests {
             total_value: Money::from_value(dec!(1000), Currency::RUB),
         };
 
-        let metrics = RiskMetrics::calculate(&asset_alloc, &currency_alloc, &position_conc);
+        let metrics = RiskMetrics::calculate(
+            &asset_alloc,
+            &currency_alloc,
+            &SectorAllocation::from_papers(&[]),
+            &position_conc,
+        );
         assert!(metrics.diversification_score > dec!(0));
         assert!(metrics.currency_risk > dec!(0));
         assert!(metrics.concentration_risk > dec!(0));

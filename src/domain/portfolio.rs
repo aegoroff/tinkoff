@@ -25,6 +25,16 @@ impl LoadedPaper {
             Self::Currency(p) | Self::Future(p) => (p.current().value, p.currency()),
         }
     }
+
+    /// Economic sector code; `None` when unknown.
+    #[must_use]
+    pub fn sector(&self) -> Option<&str> {
+        match self {
+            Self::Bond(p) => p.sector.as_deref(),
+            Self::Share(p) | Self::Etf(p) => p.sector.as_deref(),
+            Self::Currency(p) | Self::Future(p) => p.sector.as_deref(),
+        }
+    }
 }
 
 /// Portfolio is an [`Asset`]'s container
@@ -436,6 +446,7 @@ mod tests {
             },
             profit: CouponProfit,
             bond: None,
+            sector: None,
         });
         let mut shares = Asset::new("Shares", DividendProfit, true);
         shares.add_paper(Paper {
@@ -459,6 +470,7 @@ mod tests {
             },
             profit: DividendProfit,
             bond: None,
+            sector: None,
         });
 
         let etfs = Asset::new("Etfs", DividendProfit, true);

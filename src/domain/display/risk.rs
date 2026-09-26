@@ -11,7 +11,7 @@ use rust_decimal_macros::dec;
 
 use super::super::risk::{
     AssetAllocation, CurrencyAllocation, PositionConcentration, REBALANCE_THRESHOLD,
-    RebalanceAction, RebalancingAnalysis, RiskAnalysis, RiskLevel, RiskMetrics,
+    RebalanceAction, RebalancingAnalysis, RiskAnalysis, RiskLevel, RiskMetrics, SectorAllocation,
 };
 use crate::ux;
 
@@ -97,6 +97,14 @@ fn create_risk_summary_table(metrics: &RiskMetrics) -> Table {
         &ux::format_decimal(metrics.asset_concentration_risk).unwrap_or_default(),
         metrics.asset_concentration_risk,
     );
+    if let Some(sector_risk) = metrics.sector_risk {
+        add_risk_row(
+            &mut table,
+            "Sector Risk",
+            &ux::format_decimal(sector_risk).unwrap_or_default(),
+            sector_risk,
+        );
+    }
 
     table
 }
@@ -106,11 +114,13 @@ impl Display for RiskAnalysis {
         let risk_summary = create_risk_summary_table(&self.risk_metrics);
         let asset_allocation = create_asset_allocation_table(&self.asset_allocation);
         let currency_diversification = create_currency_table(&self.currency_allocation);
+        let sector_allocation = create_sector_table(&self.sector_allocation);
         let position_concentration = create_position_table(&self.position_concentration);
 
         writeln!(f, "\n{risk_summary}")?;
         writeln!(f, "\n{asset_allocation}")?;
         writeln!(f, "\n{currency_diversification}")?;
+        writeln!(f, "\n{sector_allocation}")?;
         writeln!(f, "\n{position_concentration}")?;
 
         Ok(())
@@ -202,23 +212,11 @@ fn create_currency_table(allocation: &CurrencyAllocation) -> Table {
         .fg(comfy_table::Color::DarkBlue);
     table.set_header([title]);
 
-    // Summary row
-    let hhi_formatted = ux::format_decimal(allocation.hhi).unwrap_or_default();
-    let mut hhi_cell = Cell::new(hhi_formatted);
-    // Lower HHI is better (more diversified)
-    if allocation.hhi < dec!(0.25) {
-        hhi_cell = hhi_cell.fg(comfy_table::Color::DarkGreen);
-    } else if allocation.hhi < dec!(0.5) {
-        hhi_cell = hhi_cell.fg(comfy_table::Color::DarkYellow);
-    } else {
-        hhi_cell = hhi_cell.fg(comfy_table::Color::DarkRed);
-    }
-
     table.add_row([
         Cell::new("Currencies"),
         Cell::new(allocation.currency_count.to_string()),
     ]);
-    table.add_row([Cell::new("HHI"), hhi_cell]);
+    table.add_row([Cell::new("HHI"), hhi_cell(allocation.hhi)]);
 
     // Column headers for allocations
     table.add_row([
@@ -242,6 +240,78 @@ fn create_currency_table(allocation: &CurrencyAllocation) -> Table {
     table
 }
 
+/// HHI cell colored by concentration: lower is better diversified
+fn hhi_cell(hhi: Decimal) -> Cell {
+    let cell = Cell::new(ux::format_decimal(hhi).unwrap_or_default());
+    if hhi < dec!(0.25) {
+        cell.fg(comfy_table::Color::DarkGreen)
+    } else if hhi < dec!(0.5) {
+        cell.fg(comfy_table::Color::DarkYellow)
+    } else {
+        cell.fg(comfy_table::Color::DarkRed)
+    }
+}
+
+/// Human readable name of a sector code from the API; unknown codes are shown as is.
+fn sector_name(code: Option<&str>) -> &str {
+    match code {
+        None => "Unknown",
+        Some("it") => "IT",
+        Some("consumer") => "Consumer",
+        Some("energy") => "Energy",
+        Some("financial") => "Financial",
+        Some("health_care") => "Health Care",
+        Some("industrials") => "Industrials",
+        Some("materials") => "Materials",
+        Some("real_estate") => "Real Estate",
+        Some("telecom") => "Telecom",
+        Some("utilities") => "Utilities",
+        Some("government") => "Government",
+        Some("municipal") => "Municipal",
+        Some("ecomaterials") => "Eco Materials",
+        Some("green_buildings") => "Green Buildings",
+        Some("green_energy") => "Green Energy",
+        Some("electrocars") => "Electric Vehicles",
+        Some("other") => "Other",
+        Some(code) => code,
+    }
+}
+
+/// Creates the sector allocation table
+fn create_sector_table(allocation: &SectorAllocation) -> Table {
+    let mut table = ux::new_table();
+
+    let title = Cell::new("Sector Allocation")
+        .add_attribute(Attribute::Bold)
+        .fg(comfy_table::Color::DarkBlue);
+    table.set_header([title]);
+
+    table.add_row([
+        Cell::new("Sectors"),
+        Cell::new(allocation.allocations.len().to_string()),
+    ]);
+    table.add_row([Cell::new("HHI"), hhi_cell(allocation.hhi)]);
+
+    table.add_row([
+        Cell::new("Sector").add_attribute(Attribute::Bold),
+        Cell::new("Value").add_attribute(Attribute::Bold),
+        Cell::new("%").add_attribute(Attribute::Bold),
+    ]);
+
+    for item in &allocation.allocations {
+        table.add_row([
+            Cell::new(sector_name(item.sector.as_deref())),
+            Cell::new(item.value.to_string()),
+            Cell::new(format!(
+                "{}%",
+                ux::format_decimal(item.percentage).unwrap_or_default()
+            )),
+        ]);
+    }
+
+    table
+}
+
 /// Creates the position concentration table
 fn create_position_table(concentration: &PositionConcentration) -> Table {
     let mut table = ux::new_table();
@@ -251,17 +321,6 @@ fn create_position_table(concentration: &PositionConcentration) -> Table {
         .add_attribute(Attribute::Bold)
         .fg(comfy_table::Color::DarkBlue);
     table.set_header([title]);
-
-    // Summary row
-    let hhi_formatted = ux::format_decimal(concentration.hhi).unwrap_or_default();
-    let mut hhi_cell = Cell::new(hhi_formatted);
-    if concentration.hhi < dec!(0.25) {
-        hhi_cell = hhi_cell.fg(comfy_table::Color::DarkGreen);
-    } else if concentration.hhi < dec!(0.5) {
-        hhi_cell = hhi_cell.fg(comfy_table::Color::DarkYellow);
-    } else {
-        hhi_cell = hhi_cell.fg(comfy_table::Color::DarkRed);
-    }
 
     table.add_row([
         Cell::new("Total Positions"),
@@ -281,7 +340,7 @@ fn create_position_table(concentration: &PositionConcentration) -> Table {
             ux::format_decimal(concentration.top_10_percentage).unwrap_or_default()
         )),
     ]);
-    table.add_row([Cell::new("HHI"), hhi_cell]);
+    table.add_row([Cell::new("HHI"), hhi_cell(concentration.hhi)]);
     table.add_row([Cell::new("")]);
 
     // Column headers for positions
@@ -412,4 +471,23 @@ fn create_rebalancing_table(analysis: &RebalancingAnalysis) -> Table {
     }
 
     table
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case::known(Some("health_care"), "Health Care")]
+    #[case::unmapped(Some("space"), "space")]
+    #[case::unknown(None, "Unknown")]
+    fn sector_name_is_human_readable(#[case] code: Option<&str>, #[case] expected: &str) {
+        // Act
+        let name = sector_name(code);
+
+        // Assert
+        assert_eq!(name, expected);
+    }
 }
