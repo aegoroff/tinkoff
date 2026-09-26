@@ -10,7 +10,7 @@ use crate::ux;
 use super::super::calendar::CalendarPayment;
 use super::super::money::Money;
 use super::super::{CouponCalendar, DividendCalendar};
-use crate::domain::calendar::CombinedCalendar;
+use crate::domain::calendar::{Calendar, CombinedCalendar};
 
 fn format_date(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d").to_string()
@@ -224,6 +224,16 @@ impl Display for CombinedCalendar {
     }
 }
 
+impl Display for Calendar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dividends(c) => c.fmt(f),
+            Self::Coupons(c) => c.fmt(f),
+            Self::Combined(c) => c.fmt(f),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
@@ -269,6 +279,35 @@ mod tests {
         let pos_2024 = output.find("2024").unwrap();
         let pos_2025 = output.find("2025").unwrap();
         assert!(pos_2024 < pos_2025);
+    }
+
+    #[test]
+    fn calendar_displays_its_kind() {
+        use crate::domain::calendar::{Calendar, CombinedCalendar, CouponCalendar};
+
+        // Arrange
+        let calendars = [
+            (
+                Calendar::Dividends(DividendCalendar { upcoming: vec![] }),
+                "Dividend Calendar",
+            ),
+            (
+                Calendar::Coupons(CouponCalendar { upcoming: vec![] }),
+                "Coupon Calendar",
+            ),
+            (
+                Calendar::Combined(CombinedCalendar { upcoming: vec![] }),
+                "Payments Calendar",
+            ),
+        ];
+
+        for (calendar, title) in calendars {
+            // Act
+            let output = calendar.to_string();
+
+            // Assert
+            assert!(output.contains(title), "{output}");
+        }
     }
 
     #[test]

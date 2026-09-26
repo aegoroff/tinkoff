@@ -239,6 +239,19 @@ impl<P: Profit> Paper<P> {
     pub fn average_buy_price(&self) -> Money {
         self.position.average_buy_price
     }
+
+    /// Returns the same paper tagged with another additional profit kind.
+    #[must_use]
+    pub fn with_profit<Q: Profit>(self, profit: Q) -> Paper<Q> {
+        Paper {
+            name: self.name,
+            ticker: self.ticker,
+            figi: self.figi,
+            position: self.position,
+            totals: self.totals,
+            profit,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +279,20 @@ mod tests {
             },
             profit: CouponProfit,
         }
+    }
+
+    #[test]
+    fn with_profit_keeps_paper_data() {
+        // Arrange
+        let paper = bond(dec!(15.5)).with_profit(NoneProfit);
+
+        // Act
+        let paper = paper.with_profit(CouponProfit);
+
+        // Assert
+        assert_eq!(paper.name, "Bond");
+        assert_eq!(paper.figi.as_str(), "FIGI");
+        assert_eq!(paper.current().value, dec!(10055));
     }
 
     #[test]

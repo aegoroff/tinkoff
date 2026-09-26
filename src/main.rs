@@ -7,9 +7,10 @@ use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
-    client::{AccountPortfolio, TinkoffInvestment},
+    client::TinkoffInvestment,
     domain::{
-        Instrument, LoadedPaper,
+        Instrument,
+        calendar::CalendarKind,
         risk::{TARGET_ASSET_TYPES, TargetAllocation},
     },
     parse_account_type,
@@ -90,9 +91,9 @@ fn run_subcommand<'a>(
         CURR_CMD => Box::pin(asset(config, "currency")),
         FUTURES_CMD => Box::pin(asset(config, "futures")),
         HISTORY_CMD => Box::pin(history(config, matches)),
-        DIVIDENDS_CMD => Box::pin(dividends(config)),
-        COUPONS_CMD => Box::pin(coupons(config)),
-        COMBINED_CMD => Box::pin(combined(config)),
+        DIVIDENDS_CMD => Box::pin(calendar(config, CalendarKind::Dividends)),
+        COUPONS_CMD => Box::pin(calendar(config, CalendarKind::Coupons)),
+        COMBINED_CMD => Box::pin(calendar(config, CalendarKind::Combined)),
         RISK_CMD => Box::pin(risk(config, matches)),
         _ => Box::pin(async { Ok(()) }),
     }
@@ -197,66 +198,10 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-async fn dividends(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let (calendar, failures) = client
-        .calendar()
-        .dividends()
-        .fetch(&portfolio, Arc::new(instruments))
-        .await?;
-    // Filter only dividend payments
-    let dividend_calendar = calendar
-        .upcoming
-        .iter()
-        .filter_map(|p| match p {
-            tinkoff::domain::calendar::CombinedPayment::Dividend(d) => Some(d.clone()),
-            tinkoff::domain::calendar::CombinedPayment::Coupon(_) => None,
-        })
-        .collect::<Vec<_>>();
-    println!(
-        "{}",
-        tinkoff::domain::DividendCalendar {
-            upcoming: dividend_calendar
-        }
-    );
-    report_failures(&failures);
-    Ok(())
-}
-
-async fn coupons(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let (calendar, failures) = client
-        .calendar()
-        .coupons()
-        .fetch(&portfolio, Arc::new(instruments))
-        .await?;
-    // Filter only coupon payments
-    let coupon_calendar = calendar
-        .upcoming
-        .iter()
-        .filter_map(|p| match p {
-            tinkoff::domain::calendar::CombinedPayment::Coupon(c) => Some(c.clone()),
-            tinkoff::domain::calendar::CombinedPayment::Dividend(_) => None,
-        })
-        .collect::<Vec<_>>();
-    println!(
-        "{}",
-        tinkoff::domain::CouponCalendar {
-            upcoming: coupon_calendar
-        }
-    );
-    report_failures(&failures);
-    Ok(())
-}
-
-async fn combined(config: &AppConfig) -> Result<()> {
-    let (client, portfolio, instruments) = Box::pin(portfolio_with_instruments(config)).await?;
-    let (calendar, failures) = client
-        .calendar()
-        .dividends()
-        .coupons()
-        .fetch(&portfolio, Arc::new(instruments))
-        .await?;
+async fn calendar(config: &AppConfig, kind: CalendarKind) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
+    let (portfolio, instruments) = client.get_portfolio_and_instruments(config.account).await?;
+    let (calendar, failures) = client.get_calendar(&portfolio, &instruments, kind).await?;
     println!("{calendar}");
     report_failures(&failures);
     Ok(())
@@ -268,16 +213,14 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio_data, instruments) =
         client.get_portfolio_and_instruments(config.account).await?;
-    let instruments = Arc::new(instruments);
 
     let positions = &portfolio_data.positions;
     let account_id = &portfolio_data.account_id;
 
-    // Build portfolio and collect all papers for risk analysis
     let progress = Arc::new(tinkoff::progress::Progresser::new(positions.len() as u64));
     let (container, failures) = client
         .build_portfolio(
-            instruments.clone(),
+            Arc::new(instruments),
             positions,
             account_id,
             false,
@@ -285,48 +228,7 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         )
         .await;
 
-    // Collect all papers for risk analysis
-    let all_papers: Vec<LoadedPaper> = container
-        .bonds
-        .papers()
-        .iter()
-        .cloned()
-        .map(LoadedPaper::Bond)
-        .chain(
-            container
-                .shares
-                .papers()
-                .iter()
-                .cloned()
-                .map(LoadedPaper::Share),
-        )
-        .chain(
-            container
-                .etfs
-                .papers()
-                .iter()
-                .cloned()
-                .map(LoadedPaper::Etf),
-        )
-        .chain(
-            container
-                .currencies
-                .papers()
-                .iter()
-                .cloned()
-                .map(LoadedPaper::Currency),
-        )
-        .chain(
-            container
-                .futures
-                .papers()
-                .iter()
-                .cloned()
-                .map(LoadedPaper::Future),
-        )
-        .collect();
-
-    let risk_analysis = RiskAnalysis::analyze(&container, &all_papers);
+    let risk_analysis = RiskAnalysis::analyze(&container);
     println!("{risk_analysis}");
 
     if let Some(target) = cmd.get_one::<TargetAllocation>("target") {
@@ -485,16 +387,4 @@ fn risk_cmd() -> Command {
                     TargetAllocation::presets_help()
                 )),
         )
-}
-
-async fn portfolio_with_instruments(
-    config: &AppConfig,
-) -> Result<(
-    TinkoffInvestment,
-    AccountPortfolio,
-    HashMap<String, Instrument>,
-)> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio, instruments) = client.get_portfolio_and_instruments(config.account).await?;
-    Ok((client, portfolio, instruments))
 }

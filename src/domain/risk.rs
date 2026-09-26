@@ -362,10 +362,11 @@ impl RebalancingAnalysis {
 impl RiskAnalysis {
     /// Analyze portfolio risk metrics
     #[must_use]
-    pub fn analyze(portfolio: &Portfolio, all_papers: &[LoadedPaper]) -> Self {
+    pub fn analyze(portfolio: &Portfolio) -> Self {
+        let papers: Vec<LoadedPaper> = portfolio.papers().collect();
         let asset_allocation = AssetAllocation::from_portfolio(portfolio);
-        let currency_allocation = CurrencyAllocation::from_papers(all_papers);
-        let position_concentration = PositionConcentration::from_papers(all_papers);
+        let currency_allocation = CurrencyAllocation::from_papers(&papers);
+        let position_concentration = PositionConcentration::from_papers(&papers);
         let risk_metrics = RiskMetrics::calculate(
             &asset_allocation,
             &currency_allocation,

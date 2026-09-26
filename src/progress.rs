@@ -7,8 +7,6 @@ pub trait Progress: Send + Sync {
     fn progress(&self);
     /// Finishes process
     fn finish(&self);
-    /// Sets the current message of the progress
-    fn message(&self, message: String);
 }
 
 pub struct Progresser {
@@ -44,9 +42,5 @@ impl Progress for Progresser {
 
     fn finish(&self) {
         self.bar.finish();
-    }
-
-    fn message(&self, message: String) {
-        self.bar.set_message(message);
     }
 }

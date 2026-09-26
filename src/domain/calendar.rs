@@ -216,6 +216,36 @@ pub struct CombinedCalendar {
     pub upcoming: Vec<CombinedPayment>,
 }
 
+impl CombinedCalendar {
+    /// Merges dividend and coupon calendars into one sorted by payment date.
+    #[must_use]
+    pub fn merge(dividends: DividendCalendar, coupons: CouponCalendar) -> Self {
+        let mut upcoming: Vec<CombinedPayment> = dividends
+            .upcoming
+            .into_iter()
+            .map(CombinedPayment::Dividend)
+            .chain(coupons.upcoming.into_iter().map(CombinedPayment::Coupon))
+            .collect();
+        upcoming.sort_by_key(CalendarPayment::payment_date);
+        Self { upcoming }
+    }
+}
+
+/// Which payments a calendar includes
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalendarKind {
+    Dividends,
+    Coupons,
+    Combined,
+}
+
+/// Calendar of upcoming payments of the requested [`CalendarKind`]
+pub enum Calendar {
+    Dividends(DividendCalendar),
+    Coupons(CouponCalendar),
+    Combined(CombinedCalendar),
+}
+
 impl CalendarPayment for CombinedPayment {
     fn payment_date(&self) -> DateTime<Utc> {
         match self {
@@ -297,5 +327,78 @@ impl Display for CombinedPayment {
                 c.currency.code()
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    fn dividend(name: &str, day: u32) -> DividendPayment {
+        let date = Utc.with_ymd_and_hms(2026, 10, day, 0, 0, 0).unwrap();
+        DividendPayment {
+            figi: Figi::new(name),
+            ticker: Ticker::new(name),
+            name: name.to_string(),
+            currency: Currency::RUB,
+            dividend_per_share: Money::from_value(dec!(1), Currency::RUB),
+            total_dividend: Money::from_value(dec!(10), Currency::RUB),
+            quantity: dec!(10),
+            ex_dividend_date: date,
+            payment_date: Some(date),
+            dividend_type: String::new(),
+        }
+    }
+
+    fn coupon(name: &str, day: u32) -> CouponPayment {
+        CouponPayment {
+            figi: Figi::new(name),
+            ticker: Ticker::new(name),
+            name: name.to_string(),
+            currency: Currency::RUB,
+            coupon_per_bond: Money::from_value(dec!(2), Currency::RUB),
+            total_coupon: Money::from_value(dec!(20), Currency::RUB),
+            quantity: dec!(10),
+            coupon_date: Utc.with_ymd_and_hms(2026, 10, day, 0, 0, 0).unwrap(),
+            coupon_type: String::new(),
+        }
+    }
+
+    #[test]
+    fn merge_sorts_payments_by_date() {
+        // Arrange
+        let dividends = DividendCalendar {
+            upcoming: vec![dividend("D20", 20), dividend("D5", 5)],
+        };
+        let coupons = CouponCalendar {
+            upcoming: vec![coupon("C10", 10)],
+        };
+
+        // Act
+        let combined = CombinedCalendar::merge(dividends, coupons);
+
+        // Assert
+        let names: Vec<&str> = combined
+            .upcoming
+            .iter()
+            .map(CalendarPayment::name)
+            .collect();
+        assert_eq!(names, ["D5", "C10", "D20"]);
+    }
+
+    #[test]
+    fn merge_empty_calendars() {
+        // Arrange
+        let dividends = DividendCalendar { upcoming: vec![] };
+        let coupons = CouponCalendar { upcoming: vec![] };
+
+        // Act
+        let combined = CombinedCalendar::merge(dividends, coupons);
+
+        // Assert
+        assert!(combined.upcoming.is_empty());
     }
 }

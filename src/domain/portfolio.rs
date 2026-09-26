@@ -103,6 +103,30 @@ impl Portfolio {
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(dividends, dividends, Money, Money::zero(Currency::RUB));
 
+    /// Iterates over copies of all papers in the portfolio tagged by instrument kind.
+    pub fn papers(&self) -> impl Iterator<Item = LoadedPaper> + '_ {
+        let bonds = self.bonds.papers().iter().cloned().map(LoadedPaper::Bond);
+        let shares = self.shares.papers().iter().cloned().map(LoadedPaper::Share);
+        let etfs = self.etfs.papers().iter().cloned().map(LoadedPaper::Etf);
+        let currencies = self
+            .currencies
+            .papers()
+            .iter()
+            .cloned()
+            .map(LoadedPaper::Currency);
+        let futures = self
+            .futures
+            .papers()
+            .iter()
+            .cloned()
+            .map(LoadedPaper::Future);
+        bonds
+            .chain(shares)
+            .chain(etfs)
+            .chain(currencies)
+            .chain(futures)
+    }
+
     #[must_use]
     pub fn count_not_empty_assets(&self) -> usize {
         self.assets().iter().filter(|a| !a.is_asset_empty()).count()
@@ -264,6 +288,31 @@ mod tests {
     #[rstest]
     fn portfolio_total_income(test_portfolio: Portfolio) {
         assert_eq!(dec!(1850), test_portfolio.total_income().current);
+    }
+
+    #[rstest]
+    fn portfolio_papers_includes_all_assets(test_portfolio: Portfolio) {
+        // Arrange
+
+        // Act
+        let papers: Vec<LoadedPaper> = test_portfolio.papers().collect();
+
+        // Assert
+        assert_eq!(papers.len(), 2);
+        assert!(matches!(&papers[0], LoadedPaper::Bond(p) if p.name == "1"));
+        assert!(matches!(&papers[1], LoadedPaper::Share(p) if p.name == "2"));
+    }
+
+    #[test]
+    fn empty_portfolio_has_no_papers() {
+        // Arrange
+        let portfolio = Portfolio::new(true);
+
+        // Act
+        let count = portfolio.papers().count();
+
+        // Assert
+        assert_eq!(count, 0);
     }
 
     #[fixture]

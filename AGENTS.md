@@ -36,24 +36,16 @@ This is a Rust console client for Tinkoff Investment API that provides portfolio
 
 #### Retry Logic
 
+Wrap API calls with `with_retry` (`src/client.rs`). It retries only transient failures
+(`is_transient`: gRPC `Unavailable`, `ResourceExhausted`, `DeadlineExceeded`, `Aborted`,
+`Internal`, `Unknown` and transport errors) with exponential backoff, waits for
+`x-ratelimit-reset` on `ResourceExhausted`, and returns other errors immediately.
+Keep `tonic::Status` in the error chain (`.wrap_err(...)`, not `eyre!("{e:?}")`),
+otherwise errors cannot be classified.
+
 ```rust
-async fn with_retry<T, F, Fut>(f: F) -> Result<T>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, TIError>>,
-{
-    let mut delay = Duration::from_millis(100);
-    for attempt in 1..=5 {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) if attempt == 5 => return Err(eyre::eyre!("{e:?}")),
-            Err(_) => {
-                sleep(delay).await;
-                delay *= 2;
-            }
-        }
-    }
-    unreachable!()
+pub async fn get_operations_until_done(&self, account_id: String, figi: String) -> Result<Vec<Operation>> {
+    with_retry(|| self.get_operations(account_id.clone(), figi.clone())).await
 }
 ```
 
@@ -80,13 +72,11 @@ while let Some(res) = set.join_next().await {
 }
 ```
 
-#### Macro Usage
+#### Macros
 
-The project uses macros for reducing boilerplate:
-
-- `collect!` - Transform API responses into HashMap
-- `impl_get_until_done!` - Generate methods with retry logic
-- `impl_get_instrument_method!` - Generate instrument fetching methods
+Do not add new macros. Reduce boilerplate with generic functions, fn pointers, closures
+or traits instead. The only existing macro is `impl_portfolio_aggregator!`
+(`src/domain/portfolio.rs`).
 
 ### Documentation
 
@@ -106,12 +96,21 @@ The project uses macros for reducing boilerplate:
 
 ```
 src/
-├── main.rs      # CLI entry point, command handling
-├── lib.rs       # Library exports, utility conversions
-├── client.rs    # Tinkoff API client implementation
-├── domain.rs    # Core types, business logic, Display implementations
-├── progress.rs  # Progress indicators and UI
-└── ux.rs        # User experience utilities, table formatting
+├── main.rs            # CLI entry point, command handling
+├── lib.rs             # Library exports, API value conversions
+├── client.rs          # T-Invest API client: requests, retries, FX conversion
+├── progress.rs        # Progress indicators
+├── ux.rs              # Table formatting, number formatting
+└── domain/
+    ├── mod.rs         # Re-exports, NumberRange trait
+    ├── money.rs       # Money and Income
+    ├── paper.rs       # Paper, Position, Instrument, Profit kinds
+    ├── portfolio.rs   # Portfolio and Asset containers, LoadedPaper
+    ├── calendar.rs    # Dividend/coupon payments and calendars
+    ├── history.rs     # Instrument operations history
+    ├── fx.rs          # FX instrument selection and rate math
+    ├── risk.rs        # Risk analysis, target allocation, rebalancing
+    └── display/       # Display implementations for domain types
 ```
 
 ## Important Conventions
@@ -137,7 +136,7 @@ src/
 ## CLI Guidelines
 
 - Use `clap` for argument parsing
-- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`
+- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`
 - Provide aliases for better UX
 - Token from `-t` flag or `TINKOFF_TOKEN_V2` environment variable
 
@@ -166,4 +165,5 @@ src/
 - Dont use unwrap or expect to get Option or Result
 - Dont search performmance, copy/paste, architecture problems in tests
 - Dont suppress clippy warnings using procedure macro like #[allow(clippy::unused_self)]
+- Dont create new macros
 - Dont write trivial code comments

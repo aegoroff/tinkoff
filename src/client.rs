@@ -34,8 +34,8 @@ use crate::{
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
-        Position, Profit, Ticker, Totals,
-        calendar::{CalendarPayment, CombinedCalendar, CombinedPayment},
+        Position, Ticker, Totals,
+        calendar::{Calendar, CalendarKind, CombinedCalendar},
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
         history::{History, HistoryItem},
     },
@@ -50,88 +50,6 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 10;
 pub struct FxBook {
     instruments: HashMap<Currency, FxInstrument>,
     hist: Mutex<HashMap<(Currency, NaiveDate), Decimal>>,
-}
-
-/// Builder for calendar queries with fluent API.
-pub struct CalendarBuilder<'a> {
-    client: &'a TinkoffInvestment,
-    include_dividends: bool,
-    include_coupons: bool,
-}
-
-impl<'a> CalendarBuilder<'a> {
-    fn new(client: &'a TinkoffInvestment) -> Self {
-        Self {
-            client,
-            include_dividends: false,
-            include_coupons: false,
-        }
-    }
-
-    /// Include dividend payments in the calendar.
-    #[must_use]
-    pub fn dividends(mut self) -> Self {
-        self.include_dividends = true;
-        self
-    }
-
-    /// Include coupon payments in the calendar.
-    #[must_use]
-    pub fn coupons(mut self) -> Self {
-        self.include_coupons = true;
-        self
-    }
-
-    /// Fetches the calendar based on the builder configuration.
-    ///
-    /// Positions whose payments failed to load are not included into the calendar;
-    /// their errors are returned alongside so the caller can report an incomplete result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if FX rates cannot be loaded or converted.
-    pub async fn fetch(
-        self,
-        portfolio: &AccountPortfolio,
-        instruments: Arc<HashMap<String, Instrument>>,
-    ) -> color_eyre::Result<(CombinedCalendar, Vec<eyre::Report>)> {
-        let now = Some(chrono::Utc::now());
-
-        let fx = self.client.load_fx_book().await?;
-        let mut payments = Vec::new();
-        let mut failures = Vec::new();
-
-        if self.include_dividends {
-            let (dividend_calendar, errors) = self
-                .client
-                .get_dividend_calendar(portfolio, instruments.clone(), now, fx.clone())
-                .await?;
-            payments.extend(
-                dividend_calendar
-                    .upcoming
-                    .into_iter()
-                    .map(CombinedPayment::Dividend),
-            );
-            failures.extend(errors);
-        }
-
-        if self.include_coupons {
-            let (coupon_calendar, errors) = self
-                .client
-                .get_coupon_calendar(portfolio, instruments, now, fx)
-                .await?;
-            payments.extend(
-                coupon_calendar
-                    .upcoming
-                    .into_iter()
-                    .map(CombinedPayment::Coupon),
-            );
-            failures.extend(errors);
-        }
-
-        payments.sort_by_key(CalendarPayment::payment_date);
-        Ok((CombinedCalendar { upcoming: payments }, failures))
-    }
 }
 
 #[derive(Default)]
@@ -555,37 +473,28 @@ impl TinkoffInvestment {
         position: &PortfolioPosition,
         fx: &FxBook,
     ) -> color_eyre::Result<LoadedPaper> {
-        let account_id = account_id.to_string();
-        let paper = match position.instrument_type.as_str() {
-            "bond" => self
-                .create_paper_from_position(instruments, account_id, position, CouponProfit, fx)
-                .await
-                .map(LoadedPaper::Bond),
-            "share" => self
-                .create_paper_from_position(instruments, account_id, position, DividendProfit, fx)
-                .await
-                .map(LoadedPaper::Share),
-            "etf" => self
-                .create_paper_from_position(instruments, account_id, position, DividendProfit, fx)
-                .await
-                .map(LoadedPaper::Etf),
-            "currency" => self
-                .create_paper_from_position(instruments, account_id, position, NoneProfit, fx)
-                .await
-                .map(LoadedPaper::Currency),
-            "futures" => self
-                .create_paper_from_position(instruments, account_id, position, NoneProfit, fx)
-                .await
-                .map(LoadedPaper::Future),
-            other => Err(eyre::eyre!("Unsupported instrument type '{other}'")),
-        };
-        paper.map_err(|e| {
+        let skip = |e| {
             skipped(
                 e,
                 &instrument_or_figi(instruments, &position.figi),
                 &position.figi,
             )
-        })
+        };
+        // Checked before any request, so unsupported positions cost no API calls.
+        let tag: fn(Paper<NoneProfit>) -> LoadedPaper = match position.instrument_type.as_str() {
+            "bond" => |p| LoadedPaper::Bond(p.with_profit(CouponProfit)),
+            "share" => |p| LoadedPaper::Share(p.with_profit(DividendProfit)),
+            "etf" => |p| LoadedPaper::Etf(p.with_profit(DividendProfit)),
+            "currency" => LoadedPaper::Currency,
+            "futures" => LoadedPaper::Future,
+            other => {
+                return Err(skip(eyre::eyre!("Unsupported instrument type '{other}'")));
+            }
+        };
+        self.create_paper_from_position(instruments, account_id.to_string(), position, fx)
+            .await
+            .map(tag)
+            .map_err(skip)
     }
 
     async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
@@ -730,18 +639,19 @@ impl TinkoffInvestment {
 
     /// Creates a paper from a portfolio position with prices and operation totals in RUB.
     ///
+    /// The paper has no additional profit kind; tag it with [`Paper::with_profit`].
+    ///
     /// # Errors
     ///
     /// Returns an error if position prices are missing, FX conversion fails,
     /// or operations cannot be loaded.
-    pub async fn create_paper_from_position<P: Profit>(
+    pub async fn create_paper_from_position(
         &self,
         instruments: &HashMap<String, Instrument>,
         account_id: String,
         portfolio_position: &PortfolioPosition,
-        profit: P,
         fx: &FxBook,
-    ) -> color_eyre::Result<Paper<P>> {
+    ) -> color_eyre::Result<Paper<NoneProfit>> {
         // Portfolio is requested in RUB; the instrument keeps its trading currency.
         let mut position = Position::try_from(portfolio_position)?;
         ensure_rub(&position)?;
@@ -763,7 +673,7 @@ impl TinkoffInvestment {
             figi: Figi::new(portfolio_position.figi.clone()),
             position,
             totals,
-            profit,
+            profit: NoneProfit,
         })
     }
 
@@ -805,10 +715,49 @@ impl TinkoffInvestment {
         Ok(Self::accumulate_totals_rub(income, fees))
     }
 
-    /// Creates a new calendar builder for fluent API.
-    #[must_use]
-    pub fn calendar(&self) -> CalendarBuilder<'_> {
-        CalendarBuilder::new(self)
+    /// Fetches upcoming payments of the given kind for portfolio positions.
+    ///
+    /// Positions whose payments failed to load are not included into the calendar;
+    /// their errors are returned alongside so the caller can report an incomplete result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if FX rates cannot be loaded or converted.
+    pub async fn get_calendar(
+        &self,
+        portfolio: &AccountPortfolio,
+        instruments: &HashMap<String, Instrument>,
+        kind: CalendarKind,
+    ) -> color_eyre::Result<(Calendar, Vec<eyre::Report>)> {
+        let now = Some(Utc::now());
+        let fx = self.load_fx_book().await?;
+        match kind {
+            CalendarKind::Dividends => {
+                let (calendar, failures) = self
+                    .get_dividend_calendar(portfolio, instruments, now, &fx)
+                    .await?;
+                Ok((Calendar::Dividends(calendar), failures))
+            }
+            CalendarKind::Coupons => {
+                let (calendar, failures) = self
+                    .get_coupon_calendar(portfolio, instruments, now, &fx)
+                    .await?;
+                Ok((Calendar::Coupons(calendar), failures))
+            }
+            CalendarKind::Combined => {
+                let (dividends, mut failures) = self
+                    .get_dividend_calendar(portfolio, instruments, now, &fx)
+                    .await?;
+                let (coupons, coupon_failures) = self
+                    .get_coupon_calendar(portfolio, instruments, now, &fx)
+                    .await?;
+                failures.extend(coupon_failures);
+                Ok((
+                    Calendar::Combined(CombinedCalendar::merge(dividends, coupons)),
+                    failures,
+                ))
+            }
+        }
     }
 
     /// Builds instrument history with all money fields converted to RUB.
@@ -982,9 +931,9 @@ impl TinkoffInvestment {
     async fn get_dividend_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: Arc<HashMap<String, Instrument>>,
+        instruments: &HashMap<String, Instrument>,
         filter_after: Option<DateTime<Utc>>,
-        fx: Arc<FxBook>,
+        fx: &FxBook,
     ) -> color_eyre::Result<(DividendCalendar, Vec<eyre::Report>)> {
         // The API rejects dividend requests for anything but shares and ETFs.
         let dividend_positions: Vec<PortfolioPosition> = portfolio
@@ -1003,7 +952,7 @@ impl TinkoffInvestment {
         let mut upcoming = Vec::new();
         let mut failures = Vec::new();
         for (position, dividends) in pairs {
-            let instrument = instrument_or_figi(&instruments, &position.figi);
+            let instrument = instrument_or_figi(instruments, &position.figi);
             let dividends = match dividends {
                 Ok(dividends) => dividends,
                 Err(e) => {
@@ -1040,7 +989,7 @@ impl TinkoffInvestment {
                 } else {
                     payment_date
                 };
-                let dividend_per_share = self.money_to_rub(&fx, dividend_per_share, at).await?;
+                let dividend_per_share = self.money_to_rub(fx, dividend_per_share, at).await?;
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(DividendPayment {
@@ -1085,9 +1034,9 @@ impl TinkoffInvestment {
     async fn get_coupon_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: Arc<HashMap<String, Instrument>>,
+        instruments: &HashMap<String, Instrument>,
         filter_after: Option<DateTime<Utc>>,
-        fx: Arc<FxBook>,
+        fx: &FxBook,
     ) -> color_eyre::Result<(CouponCalendar, Vec<eyre::Report>)> {
         let bond_positions: Vec<PortfolioPosition> = portfolio
             .positions
@@ -1105,7 +1054,7 @@ impl TinkoffInvestment {
         let mut upcoming = Vec::new();
         let mut failures = Vec::new();
         for (position, coupons) in pairs {
-            let instrument = instrument_or_figi(&instruments, &position.figi);
+            let instrument = instrument_or_figi(instruments, &position.figi);
             let coupons = match coupons {
                 Ok(coupons) => coupons,
                 Err(e) => {
@@ -1136,7 +1085,7 @@ impl TinkoffInvestment {
                 } else {
                     coupon_date
                 };
-                let coupon_value = self.money_to_rub(&fx, coupon_value, at).await?;
+                let coupon_value = self.money_to_rub(fx, coupon_value, at).await?;
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(CouponPayment {
