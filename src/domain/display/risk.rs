@@ -10,8 +10,8 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use super::super::risk::{
-    AssetAllocation, CurrencyAllocation, PositionConcentration, RebalanceAction,
-    RebalancingAnalysis, RiskAnalysis, RiskLevel, RiskMetrics,
+    AssetAllocation, CurrencyAllocation, PositionConcentration, REBALANCE_THRESHOLD,
+    RebalanceAction, RebalancingAnalysis, RiskAnalysis, RiskLevel, RiskMetrics,
 };
 use crate::ux;
 
@@ -387,7 +387,7 @@ fn create_rebalancing_table(analysis: &RebalancingAnalysis) -> Table {
         );
 
         let mut deviation_cell = Cell::new(deviation_str);
-        if rec.deviation.abs() < dec!(5) {
+        if rec.deviation.abs() < REBALANCE_THRESHOLD {
             deviation_cell = deviation_cell.fg(comfy_table::Color::DarkGreen);
         } else if rec.deviation.abs() < dec!(10) {
             deviation_cell = deviation_cell.fg(comfy_table::Color::DarkYellow);

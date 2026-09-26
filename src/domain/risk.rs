@@ -110,6 +110,12 @@ pub enum RiskLevel {
     VeryHigh,
 }
 
+/// Deviation from the target, in percentage points, that triggers a buy or sell recommendation.
+pub const REBALANCE_THRESHOLD: Decimal = dec!(5);
+
+/// Decimal places deviations are rounded to, the same as they are displayed with.
+const DEVIATION_DECIMAL_PLACES: u32 = 2;
+
 /// Asset type names accepted in a target allocation string.
 pub const TARGET_ASSET_TYPES: &str = "bonds, shares, etfs, currencies, futures";
 
@@ -305,7 +311,8 @@ impl RebalancingAnalysis {
         ];
 
         for (asset_type, current_pct, target_pct) in assets {
-            let deviation = current_pct - target_pct;
+            // Rounded as displayed, so the action always matches the shown deviation.
+            let deviation = (current_pct - target_pct).round_dp(DEVIATION_DECIMAL_PLACES);
             let abs_deviation = deviation.abs();
 
             if abs_deviation > max_deviation {
@@ -317,9 +324,7 @@ impl RebalancingAnalysis {
             let current_value = (current_pct / dec!(100)) * total_value.value;
             let rebalance_amount = (target_value - current_value).abs();
 
-            // Determine action based on deviation
-            // Threshold of 5% deviation before recommending action
-            let (action, rebalance_value) = if abs_deviation < dec!(5) {
+            let (action, rebalance_value) = if abs_deviation < REBALANCE_THRESHOLD {
                 (RebalanceAction::Hold, Money::zero(currency))
             } else if deviation > dec!(0) {
                 (
@@ -1232,6 +1237,55 @@ mod tests {
             .unwrap();
         assert_eq!(shares_rec.action, RebalanceAction::Sell);
         assert!(shares_rec.deviation > dec!(0)); // Overweight
+    }
+
+    /// Allocation with the given currencies share, the rest in bonds.
+    fn allocation_with_currencies(currencies_percentage: Decimal) -> AssetAllocation {
+        let item = |name, percentage: Decimal| AllocationItem {
+            name,
+            value: Money::from_value(percentage * dec!(10), Currency::RUB),
+            percentage,
+        };
+        AssetAllocation {
+            bonds: item("Bonds", dec!(100) - currencies_percentage),
+            shares: item("Shares", dec!(0)),
+            etfs: item("ETFs", dec!(0)),
+            currencies: item("Currencies", currencies_percentage),
+            futures: item("Futures", dec!(0)),
+            total_value: Money::from_value(dec!(1000), Currency::RUB),
+        }
+    }
+
+    #[rstest]
+    #[case::rounds_to_threshold(dec!(0.0038), dec!(-5.00), RebalanceAction::Buy)]
+    #[case::rounds_below_threshold(dec!(0.006), dec!(-4.99), RebalanceAction::Hold)]
+    #[case::exactly_threshold(dec!(0), dec!(-5), RebalanceAction::Buy)]
+    fn rebalancing_threshold_applies_to_displayed_deviation(
+        #[case] currencies_percentage: Decimal,
+        #[case] expected_deviation: Decimal,
+        #[case] expected_action: RebalanceAction,
+    ) {
+        // Arrange
+        let allocation = allocation_with_currencies(currencies_percentage);
+        let target = TargetAllocation {
+            bonds: dec!(95),
+            shares: dec!(0),
+            etfs: dec!(0),
+            currencies: dec!(5),
+            futures: dec!(0),
+        };
+
+        // Act
+        let analysis = RebalancingAnalysis::analyze(&allocation, &target);
+
+        // Assert
+        let currencies = analysis
+            .recommendations
+            .iter()
+            .find(|r| r.asset_type == "Currencies")
+            .unwrap();
+        assert_eq!(currencies.deviation, expected_deviation);
+        assert_eq!(currencies.action, expected_action);
     }
 
     #[test]
