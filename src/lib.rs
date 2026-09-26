@@ -4,7 +4,7 @@ use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tinkoff_invest_api::tcs::{AccountType, MoneyValue, Quotation};
+use tinkoff_invest_api::tcs::{AccountStatus, AccountType, MoneyValue, Quotation};
 
 pub mod client;
 pub mod domain;
@@ -37,6 +37,29 @@ pub fn parse_account_type(value: &str) -> Result<AccountType, String> {
     Err(format!(
         "unknown account type '{value}'; expected one of: {ACCOUNT_TYPE_HELP}"
     ))
+}
+
+/// Returns the CLI name of an account type, the inverse of [`parse_account_type`].
+#[must_use]
+pub fn account_type_name(account_type: AccountType) -> &'static str {
+    match account_type {
+        AccountType::Tinkoff => "tinkoff",
+        AccountType::TinkoffIis => "iis",
+        AccountType::InvestBox => "invest-box",
+        AccountType::InvestFund => "invest-fund",
+        AccountType::Unspecified => "unspecified",
+    }
+}
+
+/// Returns a short lowercase name of an account status.
+#[must_use]
+pub fn account_status_name(status: AccountStatus) -> &'static str {
+    match status {
+        AccountStatus::New => "new",
+        AccountStatus::Open => "open",
+        AccountStatus::Closed => "closed",
+        AccountStatus::Unspecified => "unspecified",
+    }
 }
 
 /// Converts an `Option<&Quotation>` to `Decimal`.
@@ -89,6 +112,14 @@ pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
     iso_currency::Currency::from_code(&mv.as_ref()?.currency.to_ascii_uppercase())
 }
 
+/// Converts an API timestamp to UTC date time; `None` when it is absent or unset (zero).
+#[must_use]
+pub fn to_optional_datetime_utc(timestamp: Option<&Timestamp>) -> Option<DateTime<Utc>> {
+    timestamp
+        .filter(|t| t.seconds != 0)
+        .and_then(|t| DateTime::<Utc>::from_timestamp(t.seconds, 0))
+}
+
 #[must_use]
 pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
     if let Some(dt) = opt_timespamp {
@@ -115,9 +146,45 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case(AccountType::Tinkoff)]
+    #[case(AccountType::TinkoffIis)]
+    #[case(AccountType::InvestBox)]
+    #[case(AccountType::InvestFund)]
+    fn account_type_name_round_trips(#[case] account_type: AccountType) {
+        // Arrange
+        let name = account_type_name(account_type);
+
+        // Act
+        let parsed = parse_account_type(name);
+
+        // Assert
+        assert_eq!(parsed, Ok(account_type));
+    }
+
     #[test]
     fn parse_account_type_unknown() {
         assert!(parse_account_type("savings").is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::absent(None, None)]
+    #[case::unset(Some(Timestamp { seconds: 0, nanos: 0 }), None)]
+    #[case::set(
+        Some(Timestamp { seconds: 1_790_000_000, nanos: 0 }),
+        DateTime::<Utc>::from_timestamp(1_790_000_000, 0)
+    )]
+    fn to_optional_datetime_utc_cases(
+        #[case] timestamp: Option<Timestamp>,
+        #[case] expected: Option<DateTime<Utc>>,
+    ) {
+        // Arrange
+
+        // Act
+        let result = to_optional_datetime_utc(timestamp.as_ref());
+
+        // Assert
+        assert_eq!(result, expected);
     }
 
     #[test]

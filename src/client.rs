@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 use tinkoff_invest_api::{
     TinkoffInvestService,
     tcs::{
-        Account, AccountType, CandleInterval, Coupon, Dividend, FindInstrumentRequest,
-        GetAccountsRequest, GetAccountsResponse, GetBondCouponsRequest, GetCandlesRequest,
-        GetDividendsRequest, InstrumentIdType, InstrumentRequest, InstrumentShort,
-        InstrumentStatus, InstrumentType, InstrumentsRequest, Operation, OperationState,
-        OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
+        Account, AccountStatus, AccountType, CandleInterval, Coupon, Dividend,
+        FindInstrumentRequest, GetAccountsRequest, GetAccountsResponse, GetBondCouponsRequest,
+        GetCandlesRequest, GetDividendsRequest, InstrumentIdType, InstrumentRequest,
+        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, Operation,
+        OperationState, OperationType, OperationsRequest, PortfolioPosition, PortfolioRequest,
         portfolio_request::CurrencyRequest,
     },
 };
@@ -31,6 +31,7 @@ const INVEST_API_ENDPOINT: &str = "https://invest-public-api.tbank.ru:443/";
 const RUSSIAN_TRUSTED_CAS: &[u8] = include_bytes!("../certs/russian_trusted_cas.pem");
 
 use crate::{
+    account_type_name,
     domain::{
         CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
@@ -40,7 +41,7 @@ use crate::{
         history::{History, HistoryItem},
     },
     progress::Progress,
-    to_currency, to_datetime_utc, to_decimal, to_money,
+    to_currency, to_datetime_utc, to_decimal, to_money, to_optional_datetime_utc,
 };
 
 /// Maximum number of concurrent API requests when loading portfolio positions or calendars.
@@ -50,6 +51,61 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 10;
 pub struct FxBook {
     instruments: HashMap<Currency, FxInstrument>,
     hist: Mutex<HashMap<(Currency, NaiveDate), Decimal>>,
+}
+
+/// How the account to work with is chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountSelector {
+    /// The only open account of this type.
+    Type(AccountType),
+    /// The account with this ID, whatever its type and status.
+    Id(String),
+}
+
+/// Picks the account matching `selector`.
+///
+/// # Errors
+///
+/// Returns an error listing available accounts if no account matches, or if several
+/// open accounts have the requested type and the choice would be ambiguous.
+pub fn select_account<'a>(
+    accounts: &'a [Account],
+    selector: &AccountSelector,
+) -> color_eyre::Result<&'a Account> {
+    let matching: Vec<&Account> = match selector {
+        AccountSelector::Id(id) => accounts.iter().filter(|a| &a.id == id).collect(),
+        AccountSelector::Type(account_type) => accounts
+            .iter()
+            .filter(|a| a.r#type() == *account_type && a.status() == AccountStatus::Open)
+            .collect(),
+    };
+    let wanted = match selector {
+        AccountSelector::Id(id) => format!("account with ID {id}"),
+        AccountSelector::Type(t) => format!("open {} account", account_type_name(*t)),
+    };
+    match matching.as_slice() {
+        [account] => Ok(account),
+        [] => Err(eyre::eyre!(
+            "No {wanted}; available accounts: {}",
+            describe_accounts(accounts.iter())
+        )),
+        several => Err(eyre::eyre!(
+            "Several accounts match: {}; choose one with --account-id",
+            describe_accounts(several.iter().copied())
+        )),
+    }
+}
+
+/// Formats accounts as `ID (name, type)` for error messages.
+fn describe_accounts<'a>(accounts: impl Iterator<Item = &'a Account>) -> String {
+    let described = accounts
+        .map(|a| format!("{} ({}, {})", a.id, a.name, account_type_name(a.r#type())))
+        .join(", ");
+    if described.is_empty() {
+        "none".to_string()
+    } else {
+        described
+    }
 }
 
 #[derive(Default)]
@@ -276,9 +332,9 @@ impl TinkoffInvestment {
     /// Returns an error if the portfolio request fails after retries.
     pub async fn get_portfolio_and_instruments(
         &self,
-        account: AccountType,
+        selector: &AccountSelector,
     ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
-        let portfolio = self.get_portfolio_until_done(account).await?;
+        let portfolio = self.get_portfolio_until_done(selector).await?;
         let instruments = self
             .get_instruments_for_positions(&portfolio.positions)
             .await;
@@ -497,32 +553,24 @@ impl TinkoffInvestment {
             .map_err(skip)
     }
 
-    async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
-        let (accounts_res, ops_res) = tokio::join!(self.get_accounts_response(), async {
-            let ch = self.create_channel().await?;
-            self.service
-                .operations(ch)
-                .await
-                .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))
-        },);
-
-        let accounts_res = accounts_res?;
-        let mut operations = ops_res?;
-
-        let Some(account) = accounts_res.accounts.iter().find(|a| a.r#type() == account) else {
-            return Ok(AccountPortfolio::default());
-        };
+    async fn get_portfolio(&self, account_id: &str) -> color_eyre::Result<AccountPortfolio> {
+        let channel = self.create_channel().await?;
+        let mut operations = self
+            .service
+            .operations(channel)
+            .await
+            .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
 
         // Money values in RUB, converted by the broker at the current rate.
         let portfolio = operations
             .get_portfolio(PortfolioRequest {
-                account_id: account.id.clone(),
+                account_id: account_id.to_string(),
                 currency: Some(CurrencyRequest::Rub as i32),
             })
             .await
             .wrap_err("Failed to get portfolio")?;
         Ok(AccountPortfolio {
-            account_id: account.id.clone(),
+            account_id: account_id.to_string(),
             positions: portfolio.into_inner().positions,
         })
     }
@@ -546,20 +594,25 @@ impl TinkoffInvestment {
         Ok(accounts.into_inner())
     }
 
-    /// Get an account by type.
+    /// Lists all accounts of the user.
     ///
     /// # Errors
     ///
-    /// This function will return an error if account cannot be get.
-    pub async fn get_account(&self, account_type: AccountType) -> color_eyre::Result<Account> {
-        let accounts = &self.get_accounts_response().await?;
-        let account = accounts
-            .accounts
-            .iter()
-            .find(|a| a.r#type() == account_type)
-            .or_else(|| accounts.accounts.first())
-            .ok_or_else(|| eyre::eyre!("No accounts found"))?;
-        Ok(account.clone())
+    /// Returns an error if accounts cannot be retrieved after retries.
+    pub async fn get_accounts(&self) -> color_eyre::Result<Vec<Account>> {
+        let response = with_retry(|| self.get_accounts_response()).await?;
+        Ok(response.accounts)
+    }
+
+    /// Gets the account chosen by `selector`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if accounts cannot be retrieved or the selector does not
+    /// match exactly one account (see [`select_account`]).
+    pub async fn get_account(&self, selector: &AccountSelector) -> color_eyre::Result<Account> {
+        let accounts = self.get_accounts().await?;
+        select_account(&accounts, selector).cloned()
     }
 
     /// Search instruments by ticker.
@@ -594,9 +647,10 @@ impl TinkoffInvestment {
     /// This function will return an error if portfolio cannot be retrieved after multiple retries.
     pub async fn get_portfolio_until_done(
         &self,
-        account: AccountType,
+        selector: &AccountSelector,
     ) -> color_eyre::Result<AccountPortfolio> {
-        with_retry(|| self.get_portfolio(account)).await
+        let account = self.get_account(selector).await?;
+        with_retry(|| self.get_portfolio(&account.id)).await
     }
 
     async fn get_operations(
@@ -705,6 +759,9 @@ impl TinkoffInvestment {
                 continue;
             };
             let at = to_datetime_utc(op.date.as_ref());
+            if let Some(accrued_interest) = trade_accrued_interest(op) {
+                income.push(self.money_to_rub(fx, accrued_interest, at).await?);
+            }
             let payment = self.money_to_rub(fx, payment, at).await?;
             match to_influence(op.operation_type()) {
                 OperationInfluence::PureIncome => income.push(payment),
@@ -967,27 +1024,24 @@ impl TinkoffInvestment {
                     .and_then(|d| to_money(Some(d)))
                     .unwrap_or_else(|| Money::zero(Currency::RUB));
 
-                let payment_date = dividend
-                    .payment_date
-                    .as_ref()
-                    .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
+                let payment_date = to_optional_datetime_utc(dividend.payment_date.as_ref());
+                let record_date = to_optional_datetime_utc(dividend.record_date.as_ref());
+                // Without any date a dividend cannot be placed into the calendar.
+                let Some(calendar_date) = payment_date.or(record_date) else {
+                    continue;
+                };
 
                 if let Some(cutoff) = filter_after
-                    && payment_date < cutoff
+                    && !is_upcoming(calendar_date, cutoff)
                 {
                     continue;
                 }
-
-                let ex_dividend_date = dividend
-                    .record_date
-                    .as_ref()
-                    .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
 
                 // Upcoming: today's rate; otherwise rate on payment date.
                 let at = if filter_after.is_some() {
                     Utc::now()
                 } else {
-                    payment_date
+                    calendar_date
                 };
                 let dividend_per_share = self.money_to_rub(fx, dividend_per_share, at).await?;
 
@@ -1000,8 +1054,8 @@ impl TinkoffInvestment {
                     dividend_per_share,
                     total_dividend: dividend_per_share * quantity,
                     quantity,
-                    ex_dividend_date,
-                    payment_date: Some(payment_date),
+                    ex_dividend_date: record_date.unwrap_or(calendar_date),
+                    payment_date,
                     dividend_type: dividend.dividend_type,
                 });
             }
@@ -1069,13 +1123,13 @@ impl TinkoffInvestment {
                     .and_then(|d| to_money(Some(d)))
                     .unwrap_or_else(|| Money::zero(Currency::RUB));
 
-                let coupon_date = coupon
-                    .coupon_date
-                    .as_ref()
-                    .map_or_else(chrono::Utc::now, |d| to_datetime_utc(Some(d)));
+                let Some(coupon_date) = to_optional_datetime_utc(coupon.coupon_date.as_ref())
+                else {
+                    continue;
+                };
 
                 if let Some(cutoff) = filter_after
-                    && coupon_date <= cutoff
+                    && !is_upcoming(coupon_date, cutoff)
                 {
                     continue;
                 }
@@ -1142,6 +1196,39 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Accrued coupon interest (NKD) included into a bond trade payment.
+///
+/// Negative when paid on a buy, positive when received on a sell, so adding it to
+/// coupons gives the net coupon income. The payment of a bond trade is
+/// `price × quantity` plus NKD, while the price itself excludes it.
+fn trade_accrued_interest(op: &Operation) -> Option<Money> {
+    if op.instrument_type != "bond" {
+        return None;
+    }
+    let direction = match op.operation_type() {
+        OperationType::Buy | OperationType::BuyCard | OperationType::BuyMargin => {
+            Decimal::NEGATIVE_ONE
+        }
+        OperationType::Sell | OperationType::SellCard | OperationType::SellMargin => Decimal::ONE,
+        _ => return None,
+    };
+    let payment = to_money(op.payment.as_ref())?;
+    let price = to_money(op.price.as_ref())?;
+    if payment.currency != price.currency {
+        return None;
+    }
+    let accrued =
+        (payment.value - direction * price.value * Decimal::from(op.quantity)).round_dp(2);
+    // A result of the wrong sign means the payment does not follow the formula above.
+    let expected_sign = accrued.is_sign_negative() == direction.is_sign_negative();
+    (!accrued.is_zero() && expected_sign).then(|| Money::from_value(accrued, payment.currency))
+}
+
+/// Whether a payment on `date` is still upcoming at `cutoff`; payments due today are included.
+fn is_upcoming(date: DateTime<Utc>, cutoff: DateTime<Utc>) -> bool {
+    date.date_naive() >= cutoff.date_naive()
 }
 
 /// Adds to `e` which position was skipped because of it.
@@ -1588,6 +1675,165 @@ mod tests {
 
         // Assert
         assert_eq!(instrument.currency, None);
+    }
+
+    fn account(id: &str, account_type: AccountType, status: AccountStatus) -> Account {
+        Account {
+            id: id.to_string(),
+            name: format!("Account {id}"),
+            r#type: account_type as i32,
+            status: status as i32,
+            ..Default::default()
+        }
+    }
+
+    fn accounts() -> Vec<Account> {
+        vec![
+            account("B1", AccountType::Tinkoff, AccountStatus::Open),
+            account("B2", AccountType::Tinkoff, AccountStatus::Open),
+            account("I1", AccountType::TinkoffIis, AccountStatus::Open),
+            account("I0", AccountType::TinkoffIis, AccountStatus::Closed),
+        ]
+    }
+
+    #[rstest]
+    #[case::only_open_of_type(AccountSelector::Type(AccountType::TinkoffIis), "I1")]
+    #[case::by_id(AccountSelector::Id("B2".to_string()), "B2")]
+    #[case::closed_by_id(AccountSelector::Id("I0".to_string()), "I0")]
+    fn select_account_picks_single_match(
+        #[case] selector: AccountSelector,
+        #[case] expected_id: &str,
+    ) {
+        // Arrange
+        let accounts = accounts();
+
+        // Act
+        let account = select_account(&accounts, &selector).unwrap();
+
+        // Assert
+        assert_eq!(account.id, expected_id);
+    }
+
+    #[rstest]
+    #[case::several_of_type(
+        AccountSelector::Type(AccountType::Tinkoff),
+        "Several accounts match: B1 (Account B1, tinkoff), B2 (Account B2, tinkoff); \
+         choose one with --account-id"
+    )]
+    #[case::no_open_of_type(
+        AccountSelector::Type(AccountType::InvestBox),
+        "No open invest-box account; available accounts: B1 (Account B1, tinkoff), \
+         B2 (Account B2, tinkoff), I1 (Account I1, iis), I0 (Account I0, iis)"
+    )]
+    #[case::unknown_id(
+        AccountSelector::Id("X".to_string()),
+        "No account with ID X; available accounts: B1 (Account B1, tinkoff), \
+         B2 (Account B2, tinkoff), I1 (Account I1, iis), I0 (Account I0, iis)"
+    )]
+    fn select_account_rejects_ambiguous_or_missing(
+        #[case] selector: AccountSelector,
+        #[case] expected: &str,
+    ) {
+        // Arrange
+        let accounts = accounts();
+
+        // Act
+        let error = select_account(&accounts, &selector).unwrap_err();
+
+        // Assert
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[test]
+    fn select_account_without_accounts() {
+        // Arrange
+        let accounts: Vec<Account> = vec![];
+
+        // Act
+        let error =
+            select_account(&accounts, &AccountSelector::Type(AccountType::Tinkoff)).unwrap_err();
+
+        // Assert
+        assert_eq!(
+            error.to_string(),
+            "No open tinkoff account; available accounts: none"
+        );
+    }
+
+    #[rstest]
+    #[case::yesterday("2026-09-25T23:59:59Z", false)]
+    #[case::earlier_today("2026-09-26T00:00:00Z", true)]
+    #[case::later_today("2026-09-26T23:00:00Z", true)]
+    #[case::tomorrow("2026-09-27T00:00:00Z", true)]
+    fn is_upcoming_includes_today(#[case] date: &str, #[case] expected: bool) {
+        // Arrange
+        let cutoff: DateTime<Utc> = "2026-09-26T12:00:00Z".parse().unwrap();
+        let date: DateTime<Utc> = date.parse().unwrap();
+
+        // Act
+        let upcoming = is_upcoming(date, cutoff);
+
+        // Assert
+        assert_eq!(upcoming, expected);
+    }
+
+    fn trade(
+        instrument_type: &str,
+        operation_type: OperationType,
+        price: Decimal,
+        quantity: i64,
+        payment: Decimal,
+    ) -> Operation {
+        let money = |value: Decimal| {
+            let units = value.trunc();
+            let nano = ((value - units) * dec!(1_000_000_000)).trunc();
+            MoneyValue {
+                currency: "rub".to_string(),
+                units: units.to_string().parse().unwrap(),
+                nano: nano.to_string().parse().unwrap(),
+            }
+        };
+        Operation {
+            instrument_type: instrument_type.to_string(),
+            operation_type: operation_type as i32,
+            price: Some(money(price)),
+            payment: Some(money(payment)),
+            quantity,
+            ..Default::default()
+        }
+    }
+
+    #[rstest]
+    #[case::buy_pays_nkd(OperationType::Buy, dec!(-12903.54), Some(dec!(-86.84)))]
+    #[case::sell_receives_nkd(OperationType::Sell, dec!(12903.54), Some(dec!(86.84)))]
+    #[case::buy_without_nkd(OperationType::Buy, dec!(-12816.70), None)]
+    #[case::coupon_is_not_a_trade(OperationType::Coupon, dec!(1037.62), None)]
+    #[case::wrong_sign(OperationType::Buy, dec!(-12800), None)]
+    fn trade_accrued_interest_of_bond(
+        #[case] operation_type: OperationType,
+        #[case] payment: Decimal,
+        #[case] expected: Option<Decimal>,
+    ) {
+        // Arrange
+        let op = trade("bond", operation_type, dec!(985.90), 13, payment);
+
+        // Act
+        let accrued = trade_accrued_interest(&op);
+
+        // Assert
+        assert_eq!(accrued.map(|m| m.value), expected);
+    }
+
+    #[test]
+    fn trade_accrued_interest_ignores_shares() {
+        // Arrange
+        let op = trade("share", OperationType::Buy, dec!(100), 10, dec!(-1005));
+
+        // Act
+        let accrued = trade_accrued_interest(&op);
+
+        // Assert
+        assert!(accrued.is_none());
     }
 
     fn rub(units: i64) -> MoneyValue {

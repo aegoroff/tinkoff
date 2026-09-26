@@ -107,12 +107,16 @@ Commands:
   p     Get coupon calendar for portfolio bonds
   j     Get combined dividend and coupon calendar
   r     Analyze portfolio risk metrics
+  ac    List accounts
   help  Print this message or the help of the given subcommand(s)
 
 Options:
-  -t, --token <VALUE>  Tinkoff API v2 token. If not set, TINKOFF_TOKEN_V2 environment variable will be used
-  -h, --help           Print help
-  -V, --version        Print version
+  -t, --token <VALUE>      Tinkoff API v2 token. If not set, TINKOFF_TOKEN_V2 environment variable will be used
+      --account <TYPE>     Account type: tinkoff (broker, default), iis, invest-box, invest-fund.
+                           Selects the only open account of this type
+      --account-id <ID>    Account ID (see the ac command); takes precedence over --account
+  -h, --help               Print help
+  -V, --version            Print version
 ```
 
 ### Examples
@@ -138,6 +142,13 @@ tinkoff j
 
 # Analyze portfolio risk metrics
 tinkoff r
+
+# List accounts, then pick one by ID when several accounts have the same type
+tinkoff ac
+tinkoff --account-id 2000000000 a
+
+# Portfolio of the individual investment account
+tinkoff --account iis a
 
 # Use custom token
 tinkoff -t "your_token" a

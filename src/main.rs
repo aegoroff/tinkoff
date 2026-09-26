@@ -7,7 +7,8 @@ use tokio::task::JoinSet;
 
 use itertools::Itertools;
 use tinkoff::{
-    client::TinkoffInvestment,
+    account_status_name, account_type_name,
+    client::{AccountSelector, TinkoffInvestment},
     domain::{
         Instrument,
         calendar::CalendarKind,
@@ -21,7 +22,7 @@ use tinkoff_invest_api::tcs::{AccountType, InstrumentShort, PortfolioPosition};
 
 struct AppConfig {
     token: String,
-    account: AccountType,
+    account: AccountSelector,
 }
 
 impl AppConfig {
@@ -34,10 +35,15 @@ impl AppConfig {
             })?
         };
 
-        let account = matches
-            .get_one::<AccountType>("account")
-            .copied()
-            .expect("account has a default value");
+        let account = if let Some(id) = matches.get_one::<String>("account-id") {
+            AccountSelector::Id(id.clone())
+        } else {
+            let account_type = matches
+                .get_one::<AccountType>("account")
+                .copied()
+                .ok_or_else(|| eyre::eyre!("Account type is not set"))?;
+            AccountSelector::Type(account_type)
+        };
 
         Ok(Self { token, account })
     }
@@ -64,6 +70,7 @@ const DIVIDENDS_CMD: &str = "d";
 const COUPONS_CMD: &str = "p";
 const COMBINED_CMD: &str = "j";
 const RISK_CMD: &str = "r";
+const ACCOUNTS_CMD: &str = "ac";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,6 +102,7 @@ fn run_subcommand<'a>(
         COUPONS_CMD => Box::pin(calendar(config, CalendarKind::Coupons)),
         COMBINED_CMD => Box::pin(calendar(config, CalendarKind::Combined)),
         RISK_CMD => Box::pin(risk(config, matches)),
+        ACCOUNTS_CMD => Box::pin(accounts(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -102,7 +110,7 @@ fn run_subcommand<'a>(
 /// Prints portfolio positions of the given API instrument type (`share`, `bond`, etc.).
 async fn asset(config: &AppConfig, instrument_type: &str) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.get_portfolio_until_done(config.account).await?;
+    let portfolio = client.get_portfolio_until_done(&config.account).await?;
 
     let positions = portfolio
         .positions
@@ -124,7 +132,9 @@ async fn asset(config: &AppConfig, instrument_type: &str) -> Result<()> {
 
 async fn all(config: &AppConfig, output_papers: bool) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio, instruments) = client.get_portfolio_and_instruments(config.account).await?;
+    let (portfolio, instruments) = client
+        .get_portfolio_and_instruments(&config.account)
+        .await?;
 
     print_positions(
         &client,
@@ -143,7 +153,7 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         .get_one::<String>("TICKER")
         .ok_or_else(|| eyre::eyre!("No ticker passed"))?;
     let (account, instruments) = tokio::join!(
-        client.get_account(config.account),
+        client.get_account(&config.account),
         client.find_instruments_by_ticker(ticker.clone()),
     );
     let account = account?;
@@ -200,10 +210,40 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
 
 async fn calendar(config: &AppConfig, kind: CalendarKind) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio, instruments) = client.get_portfolio_and_instruments(config.account).await?;
+    let (portfolio, instruments) = client
+        .get_portfolio_and_instruments(&config.account)
+        .await?;
     let (calendar, failures) = client.get_calendar(&portfolio, &instruments, kind).await?;
     println!("{calendar}");
     report_failures(&failures);
+    Ok(())
+}
+
+async fn accounts(config: &AppConfig) -> Result<()> {
+    let client = TinkoffInvestment::new(config.token.clone());
+    let accounts = client.get_accounts().await?;
+
+    let mut table = ux::new_table();
+    table.set_header(["ID", "Name", "Type", "Status", "Opened"]);
+    for account in &accounts {
+        let opened = account
+            .opened_date
+            .as_ref()
+            .map(|d| {
+                tinkoff::to_datetime_utc(Some(d))
+                    .format("%Y-%m-%d")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        table.add_row([
+            account.id.clone(),
+            account.name.clone(),
+            account_type_name(account.r#type()).to_string(),
+            account_status_name(account.status()).to_string(),
+            opened,
+        ]);
+    }
+    println!("{table}");
     Ok(())
 }
 
@@ -211,8 +251,9 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis};
 
     let client = TinkoffInvestment::new(config.token.clone());
-    let (portfolio_data, instruments) =
-        client.get_portfolio_and_instruments(config.account).await?;
+    let (portfolio_data, instruments) = client
+        .get_portfolio_and_instruments(&config.account)
+        .await?;
 
     let positions = &portfolio_data.positions;
     let account_id = &portfolio_data.account_id;
@@ -290,7 +331,15 @@ fn build_cli() -> Command {
                 .required(false)
                 .default_value("tinkoff")
                 .value_parser(parse_account_type)
-                .help("Account type: tinkoff (broker, default), iis, invest-box, invest-fund"),
+                .help(
+                    "Account type: tinkoff (broker, default), iis, invest-box, invest-fund. \
+                     Selects the only open account of this type",
+                ),
+        )
+        .arg(
+            arg!(--"account-id" <ID>)
+                .required(false)
+                .help("Account ID (see the ac command); takes precedence over --account"),
         )
         .subcommand(all_cmd())
         .subcommand(shares_cmd())
@@ -303,6 +352,7 @@ fn build_cli() -> Command {
         .subcommand(coupons_cmd())
         .subcommand(combined_cmd())
         .subcommand(risk_cmd())
+        .subcommand(accounts_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -370,6 +420,12 @@ fn combined_cmd() -> Command {
     Command::new(COMBINED_CMD)
         .aliases(["combined", "join"])
         .about("Get combined dividend and coupon calendar")
+}
+
+fn accounts_cmd() -> Command {
+    Command::new(ACCOUNTS_CMD)
+        .aliases(["accounts"])
+        .about("List accounts")
 }
 
 fn risk_cmd() -> Command {
