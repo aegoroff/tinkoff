@@ -106,10 +106,12 @@ src/
     ├── money.rs       # Money and Income
     ├── paper.rs       # Paper, Position, Instrument, Profit kinds
     ├── portfolio.rs   # Portfolio and Asset containers, LoadedPaper
-    ├── calendar.rs    # Dividend/coupon payments and calendars
+    ├── bond.rs        # Bond events, YTM and yield to offer
+    ├── calendar.rs    # Dividend and bond payments calendars
     ├── history.rs     # Instrument operations history
     ├── fx.rs          # FX instrument selection and rate math
     ├── risk.rs        # Risk analysis, target allocation, rebalancing
+    ├── xirr.rs        # XIRR solver on Decimal
     └── display/       # Display implementations for domain types
 ```
 

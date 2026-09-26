@@ -1,3 +1,4 @@
+pub mod bond;
 pub mod calendar;
 pub mod display;
 pub mod fx;
@@ -6,6 +7,7 @@ pub mod money;
 pub mod paper;
 pub mod portfolio;
 pub mod risk;
+pub mod xirr;
 
 pub use calendar::{
     CalendarPayment, CouponCalendar, CouponPayment, DividendCalendar, DividendPayment,
@@ -13,8 +15,8 @@ pub use calendar::{
 pub use history::{History, HistoryItem};
 pub use money::{Income, Money};
 pub use paper::{
-    CouponProfit, DividendProfit, Figi, Instrument, NoneProfit, Paper, Position, Profit, Ticker,
-    Totals,
+    BondInfo, CouponProfit, DividendProfit, Figi, Instrument, NoneProfit, Paper, Position, Profit,
+    Ticker, Totals,
 };
 pub use portfolio::{Asset, LoadedPaper, Portfolio};
 

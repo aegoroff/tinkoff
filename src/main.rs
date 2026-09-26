@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env, future::Future, pin::Pin, str::FromStr};
 
-use clap::{ArgAction, ArgMatches, Command, command};
+use clap::{Arg, ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
 use std::sync::Arc;
 use tokio::task::JoinSet;
@@ -98,9 +98,9 @@ fn run_subcommand<'a>(
         CURR_CMD => Box::pin(asset(config, "currency")),
         FUTURES_CMD => Box::pin(asset(config, "futures")),
         HISTORY_CMD => Box::pin(history(config, matches)),
-        DIVIDENDS_CMD => Box::pin(calendar(config, CalendarKind::Dividends)),
-        COUPONS_CMD => Box::pin(calendar(config, CalendarKind::Coupons)),
-        COMBINED_CMD => Box::pin(calendar(config, CalendarKind::Combined)),
+        DIVIDENDS_CMD => Box::pin(calendar(config, matches, CalendarKind::Dividends)),
+        COUPONS_CMD => Box::pin(calendar(config, matches, CalendarKind::Coupons)),
+        COMBINED_CMD => Box::pin(calendar(config, matches, CalendarKind::Combined)),
         RISK_CMD => Box::pin(risk(config, matches)),
         ACCOUNTS_CMD => Box::pin(accounts(config)),
         _ => Box::pin(async { Ok(()) }),
@@ -208,12 +208,18 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-async fn calendar(config: &AppConfig, kind: CalendarKind) -> Result<()> {
+async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> Result<()> {
+    let days = cmd
+        .get_one::<u32>("days")
+        .copied()
+        .ok_or_else(|| eyre::eyre!("Calendar horizon is not set"))?;
     let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio, instruments) = client
         .get_portfolio_and_instruments(&config.account)
         .await?;
-    let (calendar, failures) = client.get_calendar(&portfolio, &instruments, kind).await?;
+    let (calendar, failures) = client
+        .get_calendar(&portfolio, &instruments, kind, days)
+        .await?;
     println!("{calendar}");
     report_failures(&failures);
     Ok(())
@@ -404,22 +410,34 @@ fn history_cmd() -> Command {
         .arg(arg!([TICKER]).help("Instrument's tiker").required(true))
 }
 
+/// Calendar horizon in days.
+fn days_arg() -> Arg {
+    arg!(--days <N>)
+        .required(false)
+        .default_value("365")
+        .value_parser(value_parser!(u32).range(1..=36_500))
+        .help("Show payments due within N days from today")
+}
+
 fn dividends_cmd() -> Command {
     Command::new(DIVIDENDS_CMD)
         .aliases(["dividends"])
         .about("Get dividend calendar for portfolio")
+        .arg(days_arg())
 }
 
 fn coupons_cmd() -> Command {
     Command::new(COUPONS_CMD)
         .aliases(["coupons"])
-        .about("Get coupon calendar for portfolio bonds")
+        .about("Get bond payments calendar: coupons, amortizations and maturities")
+        .arg(days_arg())
 }
 
 fn combined_cmd() -> Command {
     Command::new(COMBINED_CMD)
         .aliases(["combined", "join"])
-        .about("Get combined dividend and coupon calendar")
+        .about("Get combined dividend and bond payments calendar")
+        .arg(days_arg())
 }
 
 fn accounts_cmd() -> Command {

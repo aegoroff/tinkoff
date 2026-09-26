@@ -1,7 +1,10 @@
+use chrono::{DateTime, Utc};
 use iso_currency::Currency;
+use rust_decimal::Decimal;
 
 use super::money::{Income, Money};
 use super::paper::{CouponProfit, DividendProfit, NoneProfit, Paper, Profit};
+use super::xirr::{CashFlow, xirr};
 
 /// A position loaded from the API, tagged by instrument kind.
 pub enum LoadedPaper {
@@ -102,6 +105,20 @@ impl Portfolio {
     impl_portfolio_aggregator!(balance, balance, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(dividends, dividends, Money, Money::zero(Currency::RUB));
+
+    /// Annual return (XIRR) of all papers as if the portfolio were sold at `at`.
+    #[must_use]
+    pub fn xirr(&self, at: DateTime<Utc>) -> Option<Decimal> {
+        let flows: Vec<CashFlow> = [
+            self.bonds.cash_flows_until(at),
+            self.shares.cash_flows_until(at),
+            self.etfs.cash_flows_until(at),
+            self.currencies.cash_flows_until(at),
+            self.futures.cash_flows_until(at),
+        ]
+        .concat();
+        xirr(&flows)
+    }
 
     /// Iterates over copies of all papers in the portfolio tagged by instrument kind.
     pub fn papers(&self) -> impl Iterator<Item = LoadedPaper> + '_ {
@@ -232,6 +249,21 @@ impl<P: Profit> Asset<P> {
         self.papers.is_empty()
     }
 
+    /// Payments of all papers followed by their current values received at `at`.
+    #[must_use]
+    pub fn cash_flows_until(&self, at: DateTime<Utc>) -> Vec<CashFlow> {
+        self.papers
+            .iter()
+            .flat_map(|p| p.cash_flows_until(at))
+            .collect()
+    }
+
+    /// Annual return (XIRR) of the asset as if all its papers were sold at `at`.
+    #[must_use]
+    pub fn xirr(&self, at: DateTime<Utc>) -> Option<Decimal> {
+        xirr(&self.cash_flows_until(at))
+    }
+
     #[must_use]
     pub fn papers(&self) -> &[Paper<P>] {
         &self.papers
@@ -315,6 +347,28 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    #[rstest]
+    fn portfolio_xirr_combines_all_papers(mut test_portfolio: Portfolio) {
+        // Arrange
+        let bought = chrono::TimeZone::with_ymd_and_hms(&Utc, 2025, 1, 1, 0, 0, 0).unwrap();
+        let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 1, 1, 0, 0, 0).unwrap();
+        // Current values are 1100 and 600: 1000 and 500 invested a year before give 13.33%.
+        test_portfolio.bonds.papers[0].totals.cash_flows = vec![CashFlow {
+            date: bought,
+            amount: dec!(-1000),
+        }];
+        test_portfolio.shares.papers[0].totals.cash_flows = vec![CashFlow {
+            date: bought,
+            amount: dec!(-500),
+        }];
+
+        // Act
+        let rate = test_portfolio.xirr(now);
+
+        // Assert
+        assert_eq!(rate.map(|r| r.round_dp(4)), Some(dec!(0.1333)));
+    }
+
     #[fixture]
     fn test_portfolio() -> Portfolio {
         let currency = Currency::RUB;
@@ -333,8 +387,10 @@ mod tests {
             totals: Totals {
                 additional_profit: Money::from_value(dec!(100), currency),
                 fees: Money::from_value(dec!(10), currency),
+                cash_flows: vec![],
             },
             profit: CouponProfit,
+            bond: None,
         });
         let mut shares = Asset::new("Shares", DividendProfit, true);
         shares.add_paper(Paper {
@@ -351,8 +407,10 @@ mod tests {
             totals: Totals {
                 additional_profit: Money::from_value(dec!(50), currency),
                 fees: Money::from_value(dec!(10), currency),
+                cash_flows: vec![],
             },
             profit: DividendProfit,
+            bond: None,
         });
 
         let etfs = Asset::new("Etfs", DividendProfit, true);

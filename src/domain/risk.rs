@@ -724,8 +724,10 @@ mod tests {
             totals: Totals {
                 additional_profit: Money::zero(currency),
                 fees: Money::zero(currency),
+                cash_flows: vec![],
             },
             profit: CouponProfit,
+            bond: None,
         });
         portfolio.bonds = bonds;
 
@@ -745,8 +747,10 @@ mod tests {
             totals: Totals {
                 additional_profit: Money::zero(currency),
                 fees: Money::zero(currency),
+                cash_flows: vec![],
             },
             profit: DividendProfit,
+            bond: None,
         });
         portfolio.shares = shares;
 
@@ -775,8 +779,10 @@ mod tests {
             totals: Totals {
                 additional_profit: Money::zero(Currency::RUB),
                 fees: Money::zero(Currency::RUB),
+                cash_flows: vec![],
             },
             profit: DividendProfit,
+            bond: None,
         })];
 
         let allocation = CurrencyAllocation::from_papers(&papers);
@@ -802,8 +808,10 @@ mod tests {
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
                     fees: Money::zero(Currency::RUB),
+                    cash_flows: vec![],
                 },
                 profit: DividendProfit,
+                bond: None,
             }),
             LoadedPaper::Share(Paper {
                 name: "Share 2".to_string(),
@@ -819,8 +827,10 @@ mod tests {
                 totals: Totals {
                     additional_profit: Money::zero(Currency::USD),
                     fees: Money::zero(Currency::USD),
+                    cash_flows: vec![],
                 },
                 profit: DividendProfit,
+                bond: None,
             }),
         ];
 
@@ -848,8 +858,10 @@ mod tests {
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
                     fees: Money::zero(Currency::RUB),
+                    cash_flows: vec![],
                 },
                 profit: DividendProfit,
+                bond: None,
             }),
             LoadedPaper::Share(Paper {
                 name: "Small Position".to_string(),
@@ -865,8 +877,10 @@ mod tests {
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
                     fees: Money::zero(Currency::RUB),
+                    cash_flows: vec![],
                 },
                 profit: DividendProfit,
+                bond: None,
             }),
         ];
 

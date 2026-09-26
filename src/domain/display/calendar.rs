@@ -71,14 +71,68 @@ fn add_month_header(table: &mut Table, month_name_str: &str) {
     ]);
 }
 
-/// Adds a payment row to the calendar table
+/// Color of bond redemption rows: they return the nominal and are not income
+const REDEMPTION_COLOR: comfy_table::Color = comfy_table::Color::DarkGrey;
+
+/// Income and bond redemptions of a period, summed separately
+struct PeriodTotals {
+    income: Money,
+    redemptions: Money,
+}
+
+impl PeriodTotals {
+    fn new() -> Self {
+        Self {
+            income: Money::zero(Currency::RUB),
+            redemptions: Money::zero(Currency::RUB),
+        }
+    }
+
+    fn add<P: CalendarPayment>(&mut self, payment: &P) {
+        if payment.is_redemption() {
+            self.redemptions += payment.total_payment();
+        } else {
+            self.income += payment.total_payment();
+        }
+    }
+
+    fn add_totals(&mut self, other: &Self) {
+        self.income += other.income;
+        self.redemptions += other.redemptions;
+    }
+}
+
+/// Adds a payment row to the calendar table; redemptions are grey
 fn add_payment_row<P: CalendarPayment>(table: &mut Table, payment: &P) {
+    let cells = [
+        format_date(payment.payment_date()),
+        format_date(payment.ex_date()),
+        payment.title(),
+        payment.payment_per_unit().to_string(),
+        payment.total_payment().to_string(),
+    ]
+    .map(|text| {
+        let cell = Cell::new(text);
+        if payment.is_redemption() {
+            cell.fg(REDEMPTION_COLOR)
+        } else {
+            cell
+        }
+    });
+    table.add_row(cells);
+}
+
+/// Adds a grey row with the redemptions of a period when there are any
+fn add_redemptions_total(table: &mut Table, label: String, total: Money) {
+    if total.value.is_zero() {
+        return;
+    }
     table.add_row([
-        Cell::new(format_date(payment.payment_date())),
-        Cell::new(format_date(payment.ex_date())),
-        Cell::new(payment.name().to_string()),
-        Cell::new(payment.payment_per_unit().to_string()),
-        Cell::new(payment.total_payment().to_string()),
+        Cell::new(""),
+        Cell::new(""),
+        Cell::new(label).fg(REDEMPTION_COLOR),
+        Cell::new(""),
+        Cell::new(total.to_string()).fg(REDEMPTION_COLOR),
     ]);
 }
 
@@ -165,7 +219,7 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
 
     let grouped = group_and_sort_payments(upcoming);
 
-    let mut grand_total = Money::zero(Currency::RUB);
+    let mut grand_total = PeriodTotals::new();
 
     for year in grouped.keys() {
         let Some(months) = grouped.get(year) else {
@@ -174,7 +228,7 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
 
         add_year_header(&mut table, *year);
 
-        let mut year_total = Money::zero(Currency::RUB);
+        let mut year_total = PeriodTotals::new();
 
         for month in months.keys() {
             let Some(payments) = months.get(month) else {
@@ -184,24 +238,39 @@ pub(super) fn format_calendar<P: CalendarPayment>(upcoming: &[P]) -> String {
             let month_name_str = month_name(*month);
             add_month_header(&mut table, month_name_str);
 
-            let mut month_total = Money::zero(Currency::RUB);
+            let mut month_total = PeriodTotals::new();
 
             for payment in payments {
                 add_payment_row(&mut table, *payment);
-                month_total += payment.total_payment();
+                month_total.add(*payment);
             }
 
-            add_month_total::<P>(&mut table, month_name_str, month_total);
+            add_month_total::<P>(&mut table, month_name_str, month_total.income);
+            add_redemptions_total(
+                &mut table,
+                format!("Month {month_name_str} Redemptions:"),
+                month_total.redemptions,
+            );
 
-            year_total += month_total;
-            grand_total += month_total;
+            year_total.add_totals(&month_total);
         }
 
-        add_year_total::<P>(&mut table, *year, year_total);
+        add_year_total::<P>(&mut table, *year, year_total.income);
+        add_redemptions_total(
+            &mut table,
+            format!("Year {year} Redemptions:"),
+            year_total.redemptions,
+        );
         add_separator_row(&mut table);
+        grand_total.add_totals(&year_total);
     }
 
-    add_grand_total(&mut table, grand_total);
+    add_grand_total(&mut table, grand_total.income);
+    add_redemptions_total(
+        &mut table,
+        "Redemptions Total".to_string(),
+        grand_total.redemptions,
+    );
 
     table.to_string()
 }
@@ -293,7 +362,7 @@ mod tests {
             ),
             (
                 Calendar::Coupons(CouponCalendar { upcoming: vec![] }),
-                "Coupon Calendar",
+                "Bond Payments Calendar",
             ),
             (
                 Calendar::Combined(CombinedCalendar { upcoming: vec![] }),
@@ -308,6 +377,79 @@ mod tests {
             // Assert
             assert!(output.contains(title), "{output}");
         }
+    }
+
+    fn bond_payment(
+        kind: crate::domain::bond::BondEventKind,
+        day: u32,
+        total: rust_decimal::Decimal,
+    ) -> crate::domain::calendar::CouponPayment {
+        use super::super::super::money::Money;
+
+        crate::domain::calendar::CouponPayment {
+            figi: Figi::new("2".to_string()),
+            ticker: Ticker::new("BOND".to_string()),
+            name: "OFZ Bond".to_string(),
+            currency: Currency::RUB,
+            coupon_per_bond: Money::from_value(total / dec!(10), Currency::RUB),
+            total_coupon: Money::from_value(total, Currency::RUB),
+            quantity: dec!(10),
+            coupon_date: Utc.with_ymd_and_hms(2027, 2, day, 0, 0, 0).unwrap(),
+            kind,
+        }
+    }
+
+    /// Text of the total column in the row whose name column is `label`.
+    fn total_of(output: &str, label: &str) -> Option<String> {
+        output
+            .lines()
+            .find(|line| line.contains(label))
+            .and_then(|line| line.split_whitespace().rev().nth(1).map(str::to_string))
+    }
+
+    #[test]
+    fn bond_calendar_totals_income_without_redemptions() {
+        use crate::domain::bond::BondEventKind;
+
+        // Arrange
+        let calendar = crate::domain::CouponCalendar {
+            upcoming: vec![
+                bond_payment(BondEventKind::Coupon, 3, dec!(300)),
+                bond_payment(BondEventKind::Amortization, 3, dec!(2500)),
+                bond_payment(BondEventKind::Maturity, 3, dec!(7500)),
+            ],
+        };
+
+        // Act
+        let output = calendar.to_string();
+
+        // Assert
+        assert_eq!(total_of(&output, "Grand Total").as_deref(), Some("300"));
+        assert_eq!(
+            total_of(&output, "Month February Total:").as_deref(),
+            Some("300")
+        );
+        assert!(output.contains("Month February Redemptions:"));
+        assert!(output.contains("Year 2027 Redemptions:"));
+        assert!(output.contains("Redemptions Total"));
+        assert!(output.contains("OFZ Bond · Maturity"));
+        assert!(output.contains("OFZ Bond · Amortization"));
+    }
+
+    #[test]
+    fn bond_calendar_without_redemptions_has_no_redemption_totals() {
+        use crate::domain::bond::BondEventKind;
+
+        // Arrange
+        let calendar = crate::domain::CouponCalendar {
+            upcoming: vec![bond_payment(BondEventKind::Coupon, 3, dec!(300))],
+        };
+
+        // Act
+        let output = calendar.to_string();
+
+        // Assert
+        assert!(!output.contains("Redemptions"));
     }
 
     #[test]
@@ -348,7 +490,7 @@ mod tests {
             total_coupon: Money::from_value(dec!(50), Currency::RUB),
             quantity: dec!(10),
             coupon_date: Utc.with_ymd_and_hms(2025, 2, 1, 0, 0, 0).unwrap(),
-            coupon_type: "Constant".to_string(),
+            kind: crate::domain::bond::BondEventKind::Coupon,
         };
 
         let calendar = CombinedCalendar {
@@ -403,7 +545,7 @@ mod tests {
             total_coupon: Money::from_value(dec!(50), Currency::RUB),
             quantity: dec!(10),
             coupon_date: Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
-            coupon_type: "Constant".to_string(),
+            kind: crate::domain::bond::BondEventKind::Coupon,
         };
 
         let calendar = CombinedCalendar {

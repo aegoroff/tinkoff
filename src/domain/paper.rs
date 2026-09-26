@@ -1,8 +1,10 @@
+use chrono::{DateTime, Utc};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
 use std::fmt;
 
 use super::money::{Income, Money};
+use super::xirr::{CashFlow, xirr};
 
 /// Newtype for FIGI (Financial Instrument Global Identifier)
 /// Provides type safety and prevents mixing up with other string identifiers
@@ -111,6 +113,19 @@ pub struct Totals {
     pub additional_profit: Money,
     /// Taxes and fees
     pub fees: Money,
+    /// All payments of the paper's operations in RUB, for XIRR
+    pub cash_flows: Vec<CashFlow>,
+}
+
+/// Bond specific data
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BondInfo {
+    pub maturity_date: Option<DateTime<Utc>>,
+    pub next_offer_date: Option<DateTime<Utc>>,
+    /// Annual yield to maturity; `None` for unknown future coupons or no maturity
+    pub ytm: Option<Decimal>,
+    /// Annual yield to the next offer if the bond is redeemed there
+    pub yield_to_offer: Option<Decimal>,
 }
 
 /// Represents additional asset profit
@@ -140,6 +155,8 @@ pub struct Paper<P: Profit> {
     pub position: Position,
     pub totals: Totals,
     pub profit: P,
+    /// Set for bonds when their events were loaded
+    pub bond: Option<BondInfo>,
 }
 
 impl Profit for DividendProfit {
@@ -240,6 +257,23 @@ impl<P: Profit> Paper<P> {
         self.position.average_buy_price
     }
 
+    /// Annual return (XIRR) of the paper's payments with its current value received at `at`.
+    #[must_use]
+    pub fn xirr(&self, at: DateTime<Utc>) -> Option<Decimal> {
+        xirr(&self.cash_flows_until(at))
+    }
+
+    /// Operation payments followed by the current value as if the paper were sold at `at`.
+    #[must_use]
+    pub fn cash_flows_until(&self, at: DateTime<Utc>) -> Vec<CashFlow> {
+        let mut flows = self.totals.cash_flows.clone();
+        flows.push(CashFlow {
+            date: at,
+            amount: self.current().value,
+        });
+        flows
+    }
+
     /// Returns the same paper tagged with another additional profit kind.
     #[must_use]
     pub fn with_profit<Q: Profit>(self, profit: Q) -> Paper<Q> {
@@ -250,6 +284,7 @@ impl<P: Profit> Paper<P> {
             position: self.position,
             totals: self.totals,
             profit,
+            bond: self.bond,
         }
     }
 }
@@ -276,9 +311,41 @@ mod tests {
             totals: Totals {
                 additional_profit: Money::zero(currency),
                 fees: Money::zero(currency),
+                cash_flows: vec![],
             },
             profit: CouponProfit,
+            bond: None,
         }
+    }
+
+    #[test]
+    fn xirr_includes_current_value() {
+        // Arrange
+        let bought = chrono::TimeZone::with_ymd_and_hms(&Utc, 2025, 1, 1, 0, 0, 0).unwrap();
+        let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 1, 1, 0, 0, 0).unwrap();
+        let mut paper = bond(Decimal::ZERO);
+        paper.totals.cash_flows = vec![CashFlow {
+            date: bought,
+            amount: dec!(-9000),
+        }];
+
+        // Act
+        let rate = paper.xirr(now);
+
+        // Assert
+        assert_eq!(rate.map(|r| r.round_dp(4)), Some(dec!(0.1)));
+    }
+
+    #[test]
+    fn xirr_without_operations_is_undefined() {
+        // Arrange
+        let paper = bond(Decimal::ZERO);
+
+        // Act
+        let rate = paper.xirr(Utc::now());
+
+        // Assert
+        assert_eq!(rate, None);
     }
 
     #[test]

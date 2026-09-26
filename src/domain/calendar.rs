@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
 
+use super::bond::BondEventKind;
 use super::money::Money;
 use super::paper::{Figi, Ticker};
 
@@ -38,7 +39,8 @@ pub struct CouponPayment {
     pub total_coupon: Money,
     pub quantity: Decimal,
     pub coupon_date: DateTime<Utc>,
-    pub coupon_type: String,
+    /// Coupon, amortization or maturity
+    pub kind: BondEventKind,
 }
 
 /// Coupon calendar with upcoming payments
@@ -56,6 +58,16 @@ pub trait CalendarPayment: Clone {
 
     /// Get the instrument name
     fn name(&self) -> &str;
+
+    /// Text of the name column: the instrument name, for non-regular payments with their kind
+    fn title(&self) -> String {
+        self.name().to_string()
+    }
+
+    /// Whether the payment returns the bond nominal (amortization or maturity) instead of income
+    fn is_redemption(&self) -> bool {
+        false
+    }
 
     /// Get the payment amount per unit (dividend per share, coupon per bond)
     fn payment_per_unit(&self) -> Money;
@@ -149,6 +161,20 @@ impl CalendarPayment for CouponPayment {
         &self.name
     }
 
+    fn is_redemption(&self) -> bool {
+        matches!(
+            self.kind,
+            BondEventKind::Amortization | BondEventKind::Maturity
+        )
+    }
+
+    fn title(&self) -> String {
+        match self.kind {
+            BondEventKind::Coupon => self.name.clone(),
+            kind => format!("{} · {}", self.name, kind.label()),
+        }
+    }
+
     fn payment_per_unit(&self) -> Money {
         self.coupon_per_bond
     }
@@ -158,7 +184,7 @@ impl CalendarPayment for CouponPayment {
     }
 
     fn calendar_title() -> &'static str {
-        "Coupon Calendar"
+        "Bond Payments Calendar"
     }
 
     fn column_headers() -> (
@@ -172,8 +198,8 @@ impl CalendarPayment for CouponPayment {
             "Payment Date",
             "Coupon Date",
             "Company",
-            "Coupon per Bond",
-            "Total Coupon",
+            "Payment per Bond",
+            "Total Payment",
         )
     }
 }
@@ -265,6 +291,20 @@ impl CalendarPayment for CombinedPayment {
         match self {
             Self::Dividend(d) => d.name(),
             Self::Coupon(c) => c.name(),
+        }
+    }
+
+    fn is_redemption(&self) -> bool {
+        match self {
+            Self::Dividend(d) => d.is_redemption(),
+            Self::Coupon(c) => c.is_redemption(),
+        }
+    }
+
+    fn title(&self) -> String {
+        match self {
+            Self::Dividend(d) => d.title(),
+            Self::Coupon(c) => c.title(),
         }
     }
 
@@ -363,7 +403,7 @@ mod tests {
             total_coupon: Money::from_value(dec!(20), Currency::RUB),
             quantity: dec!(10),
             coupon_date: Utc.with_ymd_and_hms(2026, 10, day, 0, 0, 0).unwrap(),
-            coupon_type: String::new(),
+            kind: BondEventKind::Coupon,
         }
     }
 

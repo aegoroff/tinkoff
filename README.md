@@ -10,7 +10,8 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 📈 **Asset Categories**: Separate views for shares, bonds, ETFs, currencies, and futures
 - 💰 **Income Tracking**: Track dividends and coupons with dedicated calendar views
 - 📅 **Dividend Calendar**: View upcoming dividend payments for your portfolio
-- 📋 **Coupon Calendar**: Track bond coupon payments
+- 📋 **Bond Payments Calendar**: Coupons, amortizations and maturities of portfolio bonds
+- 📐 **Returns**: Annual return (XIRR) per position, asset type and portfolio; yield to maturity and to offer for bonds
 - 📋 **Trading History**: Detailed history of all trading operations
 - 🎯 **Risk Analysis**: Portfolio risk metrics and rebalancing recommendations
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
@@ -74,10 +75,13 @@ tinkoff hi <TICKER>
 # Get dividend calendar
 tinkoff d
 
-# Get coupon calendar
+# Get bond payments calendar (coupons, amortizations, maturities) for the next year
 tinkoff p
 
-# Get combined dividend and coupon calendar
+# ... or for the next three years
+tinkoff p --days 1095
+
+# Get combined dividend and bond payments calendar
 tinkoff j
 
 # Analyze portfolio risk metrics
@@ -104,8 +108,8 @@ Commands:
   f     Get portfolio futures
   hi    Get trading history for an instrument
   d     Get dividend calendar for portfolio
-  p     Get coupon calendar for portfolio bonds
-  j     Get combined dividend and coupon calendar
+  p     Get bond payments calendar: coupons, amortizations and maturities
+  j     Get combined dividend and bond payments calendar
   r     Analyze portfolio risk metrics
   ac    List accounts
   help  Print this message or the help of the given subcommand(s)
@@ -134,10 +138,10 @@ tinkoff hi SBER
 # View dividend calendar
 tinkoff d
 
-# View coupon calendar
+# View bond payments calendar
 tinkoff p
 
-# Get combined dividend and coupon calendar
+# Get combined dividend and bond payments calendar
 tinkoff j
 
 # Analyze portfolio risk metrics
@@ -161,10 +165,12 @@ The application provides rich, formatted output including:
 - **Portfolio Summary**: Total balance, current value, and income
 - **Asset Breakdown**: Detailed view by asset type (shares, bonds, ETFs, etc.)
 - **Profit/Loss**: Current profit/loss with percentage calculations
+- **Annual Return (XIRR)**: Return of all payments of a position (buys, sells, dividends, coupons, taxes, fees) plus its current value, per year; also for asset types and the whole portfolio
+- **Bond Details**: Maturity date, next offer date, yield to maturity and yield to offer (not shown when future coupons are not known yet, e.g. floating ones)
 - **Income Sources**: Dividends, coupons, and other income
 - **Trading History**: Detailed operation history with dates, prices, and quantities
 - **Dividend Calendar**: Upcoming dividend payments for portfolio instruments
-- **Coupon Calendar**: Bond coupon payment schedule
+- **Bond Payments Calendar**: Coupons, amortizations and maturities within `--days` (365 by default); offers are not included as they are not guaranteed payments
 - **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations to the target set with `--target`: a preset (`conservative`, `balanced`) or percents (asset types: bonds, shares, etfs, currencies, futures; omitted ones are 0%, the sum must be 100%)
 
 ## Project Structure
@@ -177,10 +183,12 @@ src/
 ├── progress.rs          # Progress indicators
 ├── ux.rs                # Formatting utilities
 └── domain/
-    ├── calendar.rs      # Dividend and coupon calendars
+    ├── bond.rs          # Bond events, yield to maturity and to offer
+    ├── calendar.rs      # Dividend and bond payments calendars
     ├── money.rs         # Money, Income types
     ├── paper.rs         # Paper, Position, Profit types
     ├── risk.rs          # Risk analysis
+    ├── xirr.rs          # Annual return of irregular cash flows
     └── display/
         ├── calendar.rs  # Calendar display formatting
         └── risk.rs      # Risk display formatting

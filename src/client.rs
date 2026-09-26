@@ -10,13 +10,13 @@ use std::sync::{Arc, Mutex};
 use tinkoff_invest_api::{
     TinkoffInvestService,
     tcs::{
-        Account, AccountStatus, AccountType, CandleInterval, Coupon, Dividend,
-        FindInstrumentRequest, GetAccountsRequest, GetAccountsResponse, GetBondCouponsRequest,
-        GetCandlesRequest, GetDividendsRequest, GetOperationsByCursorRequest,
-        GetOperationsByCursorResponse, HistoricCandle, InstrumentIdType, InstrumentRequest,
-        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, OperationItem,
-        OperationState, OperationType, PortfolioPosition, PortfolioRequest,
-        portfolio_request::CurrencyRequest,
+        Account, AccountStatus, AccountType, CandleInterval, Dividend, FindInstrumentRequest,
+        GetAccountsRequest, GetAccountsResponse, GetBondEventsRequest, GetCandlesRequest,
+        GetDividendsRequest, GetOperationsByCursorRequest, GetOperationsByCursorResponse,
+        HistoricCandle, InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus,
+        InstrumentType, InstrumentsRequest, OperationItem, OperationState, OperationType,
+        PortfolioPosition, PortfolioRequest, get_bond_events_request::EventType,
+        get_bond_events_response::BondEvent as ApiBondEvent, portfolio_request::CurrencyRequest,
     },
 };
 use tokio::sync::{OnceCell, Semaphore};
@@ -34,12 +34,14 @@ const RUSSIAN_TRUSTED_CAS: &[u8] = include_bytes!("../certs/russian_trusted_cas.
 use crate::{
     account_type_name,
     domain::{
-        CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
+        BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
         Position, Ticker, Totals,
+        bond::{BondEvent, BondEventKind, bond_info, mark_amortizations},
         calendar::{Calendar, CalendarKind, CombinedCalendar},
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
         history::{History, HistoryItem},
+        xirr::CashFlow,
     },
     progress::Progress,
     to_currency, to_datetime_utc, to_decimal, to_money, to_optional_datetime_utc,
@@ -47,6 +49,9 @@ use crate::{
 
 /// How many days back to look for an FX candle; covers the New Year holidays.
 const FX_LOOKBACK_DAYS: i64 = 14;
+
+/// How far ahead bond events are requested; covers the longest bond maturities.
+const BOND_EVENTS_HORIZON_DAYS: i64 = 50 * 365;
 
 /// Operations requested per page, the maximum the API allows.
 const OPERATIONS_PAGE_SIZE: i32 = 1000;
@@ -561,10 +566,18 @@ impl TinkoffInvestment {
                 return Err(skip(eyre::eyre!("Unsupported instrument type '{other}'")));
             }
         };
-        self.create_paper_from_position(instruments, account_id.to_string(), position, fx)
+        let mut paper = self
+            .create_paper_from_position(instruments, account_id.to_string(), position, fx)
             .await
-            .map(tag)
-            .map_err(skip)
+            .map_err(skip)?;
+        if position.instrument_type == "bond" {
+            // Bond details are informational: the position stays in totals without them.
+            paper.bond = self
+                .load_bond_info(&position.figi, &paper.position, fx)
+                .await
+                .ok();
+        }
+        Ok(tag(paper))
     }
 
     async fn get_portfolio(&self, account_id: &str) -> color_eyre::Result<AccountPortfolio> {
@@ -754,6 +767,7 @@ impl TinkoffInvestment {
             position,
             totals,
             profit: NoneProfit,
+            bond: None,
         })
     }
 
@@ -774,6 +788,7 @@ impl TinkoffInvestment {
         Totals {
             additional_profit,
             fees: fee_total,
+            cash_flows: Vec::new(),
         }
     }
 
@@ -784,6 +799,7 @@ impl TinkoffInvestment {
     ) -> color_eyre::Result<Totals> {
         let mut income = Vec::new();
         let mut fees = Vec::new();
+        let mut cash_flows = Vec::new();
         for op in operations {
             let Some(payment) = crate::to_money(op.payment.as_ref()) else {
                 continue;
@@ -793,16 +809,25 @@ impl TinkoffInvestment {
                 income.push(self.money_to_rub(fx, accrued_interest, at).await?);
             }
             let payment = self.money_to_rub(fx, payment, at).await?;
+            if !payment.value.is_zero() {
+                cash_flows.push(CashFlow {
+                    date: at,
+                    amount: payment.value,
+                });
+            }
             match to_influence(op.r#type()) {
                 OperationInfluence::PureIncome => income.push(payment),
                 OperationInfluence::Fees => fees.push(payment),
                 OperationInfluence::Unspecified => {}
             }
         }
-        Ok(Self::accumulate_totals_rub(income, fees))
+        Ok(Totals {
+            cash_flows,
+            ..Self::accumulate_totals_rub(income, fees)
+        })
     }
 
-    /// Fetches upcoming payments of the given kind for portfolio positions.
+    /// Fetches payments of the given kind for portfolio positions due within `days` from today.
     ///
     /// Positions whose payments failed to load are not included into the calendar;
     /// their errors are returned alongside so the caller can report an incomplete result.
@@ -815,28 +840,29 @@ impl TinkoffInvestment {
         portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
         kind: CalendarKind,
+        days: u32,
     ) -> color_eyre::Result<(Calendar, Vec<eyre::Report>)> {
-        let now = Some(Utc::now());
+        let period = CalendarPeriod::days_ahead(Utc::now(), days);
         let fx = self.load_fx_book().await?;
         match kind {
             CalendarKind::Dividends => {
                 let (calendar, failures) = self
-                    .get_dividend_calendar(portfolio, instruments, now, &fx)
+                    .get_dividend_calendar(portfolio, instruments, &period, &fx)
                     .await?;
                 Ok((Calendar::Dividends(calendar), failures))
             }
             CalendarKind::Coupons => {
                 let (calendar, failures) = self
-                    .get_coupon_calendar(portfolio, instruments, now, &fx)
+                    .get_coupon_calendar(portfolio, instruments, &period, &fx)
                     .await?;
                 Ok((Calendar::Coupons(calendar), failures))
             }
             CalendarKind::Combined => {
                 let (dividends, mut failures) = self
-                    .get_dividend_calendar(portfolio, instruments, now, &fx)
+                    .get_dividend_calendar(portfolio, instruments, &period, &fx)
                     .await?;
                 let (coupons, coupon_failures) = self
-                    .get_coupon_calendar(portfolio, instruments, now, &fx)
+                    .get_coupon_calendar(portfolio, instruments, &period, &fx)
                     .await?;
                 failures.extend(coupon_failures);
                 Ok((
@@ -1030,7 +1056,7 @@ impl TinkoffInvestment {
         &self,
         portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
-        filter_after: Option<DateTime<Utc>>,
+        period: &CalendarPeriod,
         fx: &FxBook,
     ) -> color_eyre::Result<(DividendCalendar, Vec<eyre::Report>)> {
         // The API rejects dividend requests for anything but shares and ETFs.
@@ -1072,19 +1098,14 @@ impl TinkoffInvestment {
                     continue;
                 };
 
-                if let Some(cutoff) = filter_after
-                    && !is_upcoming(calendar_date, cutoff)
-                {
+                if !period.contains(calendar_date) {
                     continue;
                 }
 
-                // Upcoming: today's rate; otherwise rate on payment date.
-                let at = if filter_after.is_some() {
-                    Utc::now()
-                } else {
-                    calendar_date
-                };
-                let dividend_per_share = self.money_to_rub(fx, dividend_per_share, at).await?;
+                // Future payments are converted at today's rate.
+                let dividend_per_share = self
+                    .money_to_rub(fx, dividend_per_share, period.from)
+                    .await?;
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(DividendPayment {
@@ -1130,7 +1151,7 @@ impl TinkoffInvestment {
         &self,
         portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
-        filter_after: Option<DateTime<Utc>>,
+        period: &CalendarPeriod,
         fx: &FxBook,
     ) -> color_eyre::Result<(CouponCalendar, Vec<eyre::Report>)> {
         let bond_positions: Vec<PortfolioPosition> = portfolio
@@ -1142,45 +1163,30 @@ impl TinkoffInvestment {
 
         let pairs = self
             .fetch_parallel(&bond_positions, |client, figi| async move {
-                client.get_coupons_for_figi(figi).await
+                client.get_bond_events(figi).await
             })
             .await;
 
         let mut upcoming = Vec::new();
         let mut failures = Vec::new();
-        for (position, coupons) in pairs {
+        for (position, events) in pairs {
             let instrument = instrument_or_figi(instruments, &position.figi);
-            let coupons = match coupons {
-                Ok(coupons) => coupons,
+            let events = match events {
+                Ok(events) => events,
                 Err(e) => {
                     failures.push(skipped(e, &instrument, &position.figi));
                     continue;
                 }
             };
-            for coupon in coupons {
-                let coupon_value = coupon
-                    .pay_one_bond
-                    .as_ref()
-                    .and_then(|d| to_money(Some(d)))
-                    .unwrap_or_else(|| Money::zero(Currency::RUB));
+            for event in events.into_iter().filter(|e| e.kind.is_payment()) {
+                let coupon_value = event.per_bond;
+                let coupon_date = event.date;
 
-                let Some(coupon_date) = to_optional_datetime_utc(coupon.coupon_date.as_ref())
-                else {
-                    continue;
-                };
-
-                if let Some(cutoff) = filter_after
-                    && !is_upcoming(coupon_date, cutoff)
-                {
+                if !period.contains(coupon_date) {
                     continue;
                 }
 
-                let at = if filter_after.is_some() {
-                    Utc::now()
-                } else {
-                    coupon_date
-                };
-                let coupon_value = self.money_to_rub(fx, coupon_value, at).await?;
+                let coupon_value = self.money_to_rub(fx, coupon_value, period.from).await?;
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(CouponPayment {
@@ -1192,7 +1198,7 @@ impl TinkoffInvestment {
                     total_coupon: coupon_value * quantity,
                     quantity,
                     coupon_date,
-                    coupon_type: coupon_type_to_str(coupon.coupon_type()).to_string(),
+                    kind: event.kind,
                 });
             }
         }
@@ -1201,23 +1207,59 @@ impl TinkoffInvestment {
         Ok((CouponCalendar { upcoming }, failures))
     }
 
-    async fn get_coupons_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Coupon>> {
+    /// Bond events from today on; redemptions but the last one are marked as amortization.
+    async fn get_bond_events(&self, figi: String) -> color_eyre::Result<Vec<BondEvent>> {
         let channel = self.create_channel().await?;
         let mut instruments = self
             .service
             .instruments(channel)
             .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+            .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
+        let today = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map(|d| d.and_utc())
+            .ok_or_else(|| eyre::eyre!("Invalid current date"))?;
+        let until = today + ChronoDuration::days(BOND_EVENTS_HORIZON_DAYS);
         let response = instruments
-            .get_bond_coupons(GetBondCouponsRequest {
+            .get_bond_events(GetBondEventsRequest {
+                from: Some(prost_types::Timestamp {
+                    seconds: today.timestamp(),
+                    nanos: 0,
+                }),
+                to: Some(prost_types::Timestamp {
+                    seconds: until.timestamp(),
+                    nanos: 0,
+                }),
                 instrument_id: figi,
-                from: None,
-                to: None,
-                ..Default::default()
+                r#type: EventType::Unspecified as i32,
             })
             .await
-            .wrap_err("Failed to get bond coupons")?;
-        Ok(response.into_inner().events)
+            .wrap_err("Failed to get bond events")?;
+        let mut events: Vec<BondEvent> = response
+            .into_inner()
+            .events
+            .iter()
+            .filter_map(to_bond_event)
+            .collect();
+        mark_amortizations(&mut events);
+        Ok(events)
+    }
+
+    /// Maturity, next offer and YTM of a bond at its current dirty price.
+    async fn load_bond_info(
+        &self,
+        figi: &str,
+        position: &Position,
+        fx: &FxBook,
+    ) -> color_eyre::Result<BondInfo> {
+        let now = Utc::now();
+        let mut events = with_retry(|| self.get_bond_events(figi.to_string())).await?;
+        for event in &mut events {
+            event.per_bond = self.money_to_rub(fx, event.per_bond, now).await?;
+        }
+        let dirty_price = position.current_instrument_price.value + position.accrued_interest.value;
+        Ok(bond_info(&events, dirty_price, now))
     }
 }
 
@@ -1281,9 +1323,25 @@ fn daily_rates(candles: &[HistoricCandle], instr: &FxInstrument) -> DailyRates {
         .collect()
 }
 
-/// Whether a payment on `date` is still upcoming at `cutoff`; payments due today are included.
-fn is_upcoming(date: DateTime<Utc>, cutoff: DateTime<Utc>) -> bool {
-    date.date_naive() >= cutoff.date_naive()
+/// Dates a calendar covers: from `from`'s day to `until`'s day inclusive.
+struct CalendarPeriod {
+    from: DateTime<Utc>,
+    until: DateTime<Utc>,
+}
+
+impl CalendarPeriod {
+    fn days_ahead(from: DateTime<Utc>, days: u32) -> Self {
+        Self {
+            from,
+            until: from + ChronoDuration::days(i64::from(days)),
+        }
+    }
+
+    /// Whether a payment on `date` falls into the period; payments due today are included.
+    fn contains(&self, date: DateTime<Utc>) -> bool {
+        let day = date.date_naive();
+        day >= self.from.date_naive() && day <= self.until.date_naive()
+    }
 }
 
 /// Adds to `e` which position was skipped because of it.
@@ -1308,18 +1366,23 @@ fn money_value_amount(mv: &tinkoff_invest_api::tcs::MoneyValue) -> Decimal {
     Decimal::from(mv.units) + Decimal::from(mv.nano) / dec!(1_000_000_000)
 }
 
-#[must_use]
-fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'static str {
-    match coupon_type {
-        tinkoff_invest_api::tcs::CouponType::Unspecified => "Unspecified",
-        tinkoff_invest_api::tcs::CouponType::Constant => "Constant",
-        tinkoff_invest_api::tcs::CouponType::Floating => "Floating",
-        tinkoff_invest_api::tcs::CouponType::Discount => "Discount",
-        tinkoff_invest_api::tcs::CouponType::Mortgage => "Mortgage",
-        tinkoff_invest_api::tcs::CouponType::Fix => "Fix",
-        tinkoff_invest_api::tcs::CouponType::Variable => "Variable",
-        tinkoff_invest_api::tcs::CouponType::Other => "Other",
-    }
+/// Converts an API bond event; conversions and events without a date are skipped.
+fn to_bond_event(event: &ApiBondEvent) -> Option<BondEvent> {
+    let kind = match event.event_type {
+        t if t == EventType::Cpn as i32 => BondEventKind::Coupon,
+        t if t == EventType::Call as i32 => BondEventKind::Offer,
+        t if t == EventType::Mty as i32 => BondEventKind::Maturity,
+        _ => return None,
+    };
+    let date = to_optional_datetime_utc(event.pay_date.as_ref())
+        .or_else(|| to_optional_datetime_utc(event.event_date.as_ref()))?;
+    let per_bond =
+        to_money(event.pay_one_bond.as_ref()).unwrap_or_else(|| Money::zero(Currency::RUB));
+    Some(BondEvent {
+        kind,
+        date,
+        per_bond,
+    })
 }
 
 #[cfg(test)]
@@ -1820,16 +1883,19 @@ mod tests {
     #[case::earlier_today("2026-09-26T00:00:00Z", true)]
     #[case::later_today("2026-09-26T23:00:00Z", true)]
     #[case::tomorrow("2026-09-27T00:00:00Z", true)]
-    fn is_upcoming_includes_today(#[case] date: &str, #[case] expected: bool) {
+    #[case::last_day("2026-10-06T23:00:00Z", true)]
+    #[case::after_last_day("2026-10-07T00:00:00Z", false)]
+    fn calendar_period_contains_whole_days(#[case] date: &str, #[case] expected: bool) {
         // Arrange
-        let cutoff: DateTime<Utc> = "2026-09-26T12:00:00Z".parse().unwrap();
+        let from: DateTime<Utc> = "2026-09-26T12:00:00Z".parse().unwrap();
+        let period = CalendarPeriod::days_ahead(from, 10);
         let date: DateTime<Utc> = date.parse().unwrap();
 
         // Act
-        let upcoming = is_upcoming(date, cutoff);
+        let contains = period.contains(date);
 
         // Assert
-        assert_eq!(upcoming, expected);
+        assert_eq!(contains, expected);
     }
 
     fn trade(
@@ -1951,6 +2017,61 @@ mod tests {
             rates.get(&NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()),
             Some(&dec!(0.18))
         );
+    }
+
+    fn api_event(event_type: EventType, pay_date: Option<i64>, event_date: i64) -> ApiBondEvent {
+        let ts = |seconds| prost_types::Timestamp { seconds, nanos: 0 };
+        ApiBondEvent {
+            event_type: event_type as i32,
+            pay_date: pay_date.map(ts),
+            event_date: Some(ts(event_date)),
+            pay_one_bond: Some(rub(30)),
+            ..Default::default()
+        }
+    }
+
+    #[rstest]
+    #[case::coupon(EventType::Cpn, Some(BondEventKind::Coupon))]
+    #[case::offer(EventType::Call, Some(BondEventKind::Offer))]
+    #[case::maturity(EventType::Mty, Some(BondEventKind::Maturity))]
+    #[case::conversion(EventType::Conv, None)]
+    fn to_bond_event_maps_kind(
+        #[case] event_type: EventType,
+        #[case] expected: Option<BondEventKind>,
+    ) {
+        // Arrange
+        let event = api_event(event_type, Some(1_800_000_000), 1_799_900_000);
+
+        // Act
+        let converted = to_bond_event(&event);
+
+        // Assert
+        assert_eq!(converted.map(|e| e.kind), expected);
+    }
+
+    #[test]
+    fn to_bond_event_prefers_pay_date() {
+        // Arrange
+        let event = api_event(EventType::Cpn, Some(1_800_000_000), 1_799_900_000);
+
+        // Act
+        let converted = to_bond_event(&event).unwrap();
+
+        // Assert
+        assert_eq!(converted.date.timestamp(), 1_800_000_000);
+        assert_eq!(converted.per_bond.value, dec!(30));
+    }
+
+    #[test]
+    fn to_bond_event_falls_back_to_event_date() {
+        // Arrange
+        let event = api_event(EventType::Mty, None, 1_799_900_000);
+
+        // Act
+        let converted = to_bond_event(&event).unwrap();
+
+        // Assert
+        assert_eq!(converted.date.timestamp(), 1_799_900_000);
     }
 
     fn rub(units: i64) -> MoneyValue {

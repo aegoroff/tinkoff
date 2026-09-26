@@ -1,18 +1,37 @@
 use std::fmt::Display;
 
-use comfy_table::{Attribute, Cell};
+use chrono::{DateTime, Utc};
+use comfy_table::{Attribute, Cell, Table};
+use rust_decimal::Decimal;
 
 use crate::ux;
 
 use super::super::paper::Paper;
 use super::super::paper::Profit;
 use super::super::portfolio::{Asset, Portfolio};
+use super::super::xirr::AnnualRate;
 
 const TOTAL_INCOME: &str = "Total income";
 const INCOME: &str = "Income";
 const CURRENT_VALUE: &str = "Current value";
 const BALANCE_VALUE: &str = "Balance value";
 const BALANCE_INCOME: &str = "Balance income";
+const XIRR: &str = "Annual return (XIRR)";
+const YTM: &str = "Yield to maturity";
+
+/// Adds XIRR row when the return can be calculated.
+fn add_xirr_row(table: &mut Table, rate: Option<Decimal>) {
+    if let Some(rate) = rate {
+        ux::add_row_colorized(table, XIRR, AnnualRate(rate));
+    }
+}
+
+/// Adds a date row when the date is known.
+fn add_date_row(table: &mut Table, title: &str, date: Option<DateTime<Utc>>) {
+    if let Some(date) = date {
+        ux::add_row(table, title, date.format("%Y-%m-%d"));
+    }
+}
 
 impl<P: Profit> Display for Asset<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,6 +63,7 @@ impl<P: Profit> Display for Asset<P> {
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
             ux::add_row_colorized(&mut table, P::name(), self.dividends());
         }
+        add_xirr_row(&mut table, self.xirr(Utc::now()));
 
         ux::add_row(&mut table, "Instruments count", self.papers().len());
         asset_table.add_row([Cell::new(table)]);
@@ -97,6 +117,20 @@ impl<P: Profit> Display for Paper<P> {
         }
 
         ux::add_row_colorized(&mut table, "Taxes and fees", self.fees());
+        add_xirr_row(&mut table, self.xirr(Utc::now()));
+
+        if let Some(bond) = &self.bond {
+            table.add_row(["", ""]);
+            add_date_row(&mut table, "Maturity date", bond.maturity_date);
+            add_date_row(&mut table, "Next offer date", bond.next_offer_date);
+            match bond.ytm {
+                Some(ytm) => ux::add_row_colorized(&mut table, YTM, AnnualRate(ytm)),
+                None => ux::add_row(&mut table, YTM, "n/a"),
+            }
+            if let Some(rate) = bond.yield_to_offer {
+                ux::add_row_colorized(&mut table, "Yield to offer", AnnualRate(rate));
+            }
+        }
 
         write!(f, "{table}")
     }
@@ -121,6 +155,7 @@ impl Display for Portfolio {
             ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
             ux::add_row_colorized(&mut table, "Dividends and coupons", self.dividends());
+            add_xirr_row(&mut table, self.xirr(Utc::now()));
 
             ux::add_row(&mut table, BALANCE_VALUE, self.balance());
             ux::add_row(&mut table, CURRENT_VALUE, self.current());
