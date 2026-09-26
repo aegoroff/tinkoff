@@ -77,6 +77,9 @@ impl<P: Profit> Display for Paper<P> {
             "Last instrument price",
             self.current_instrument_price(),
         );
+        if !self.accrued_interest().value.is_zero() {
+            ux::add_row(&mut table, "Accrued interest", self.accrued_interest());
+        }
         ux::add_row(
             &mut table,
             "Current items count",

@@ -269,7 +269,7 @@ async fn risk(config: &AppConfig) -> Result<()> {
 
     // Build portfolio and collect all papers for risk analysis
     let progress = Arc::new(tinkoff::progress::Progresser::new(positions.len() as u64));
-    let container = client
+    let (container, failures) = client
         .build_portfolio(
             instruments.clone(),
             positions,
@@ -327,6 +327,7 @@ async fn risk(config: &AppConfig) -> Result<()> {
     let target = TargetAllocation::balanced();
     let rebalancing = RebalancingAnalysis::analyze(&risk_analysis.asset_allocation, &target);
     println!("{rebalancing}");
+    report_failures(&failures);
 
     Ok(())
 }
@@ -339,7 +340,7 @@ async fn print_positions(
     output_papers: bool,
 ) {
     let progress = Arc::new(Progresser::new(positions.len() as u64));
-    let container = client
+    let (container, failures) = client
         .build_portfolio(
             instruments,
             positions,
@@ -349,6 +350,21 @@ async fn print_positions(
         )
         .await;
     print!("{container}");
+    report_failures(&failures);
+}
+
+/// Warns that portfolio totals are incomplete because some positions failed to load.
+fn report_failures(failures: &[eyre::Report]) {
+    if failures.is_empty() {
+        return;
+    }
+    eprintln!(
+        "Warning: {} position(s) failed to load, totals above are incomplete:",
+        failures.len()
+    );
+    for e in failures {
+        eprintln!("  - {e:#}");
+    }
 }
 
 fn build_cli() -> Command {

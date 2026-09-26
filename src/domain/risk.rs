@@ -641,6 +641,7 @@ mod tests {
                 currency,
                 average_buy_price: Money::from_value(dec!(5), currency),
                 current_instrument_price: Money::from_value(dec!(5), currency),
+                accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
             },
             totals: Totals {
@@ -661,6 +662,7 @@ mod tests {
                 currency,
                 average_buy_price: Money::from_value(dec!(5), currency),
                 current_instrument_price: Money::from_value(dec!(5), currency),
+                accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
             },
             totals: Totals {
@@ -690,6 +692,7 @@ mod tests {
                 currency: Currency::RUB,
                 average_buy_price: Money::from_value(dec!(100), Currency::RUB),
                 current_instrument_price: Money::from_value(dec!(100), Currency::RUB),
+                accrued_interest: Money::zero(Currency::RUB),
                 quantity: dec!(10),
             },
             totals: Totals {
@@ -716,6 +719,7 @@ mod tests {
                     currency: Currency::RUB,
                     average_buy_price: Money::from_value(dec!(50), Currency::RUB),
                     current_instrument_price: Money::from_value(dec!(50), Currency::RUB),
+                    accrued_interest: Money::zero(Currency::RUB),
                     quantity: dec!(10),
                 },
                 totals: Totals {
@@ -732,6 +736,7 @@ mod tests {
                     currency: Currency::USD,
                     average_buy_price: Money::from_value(dec!(50), Currency::USD),
                     current_instrument_price: Money::from_value(dec!(50), Currency::USD),
+                    accrued_interest: Money::zero(Currency::USD),
                     quantity: dec!(10),
                 },
                 totals: Totals {
@@ -760,6 +765,7 @@ mod tests {
                     currency: Currency::RUB,
                     average_buy_price: Money::from_value(dec!(100), Currency::RUB),
                     current_instrument_price: Money::from_value(dec!(100), Currency::RUB),
+                    accrued_interest: Money::zero(Currency::RUB),
                     quantity: dec!(10),
                 },
                 totals: Totals {
@@ -776,6 +782,7 @@ mod tests {
                     currency: Currency::RUB,
                     average_buy_price: Money::from_value(dec!(10), Currency::RUB),
                     current_instrument_price: Money::from_value(dec!(10), Currency::RUB),
+                    accrued_interest: Money::zero(Currency::RUB),
                     quantity: dec!(10),
                 },
                 totals: Totals {

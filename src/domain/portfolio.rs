@@ -278,6 +278,7 @@ mod tests {
                 currency,
                 average_buy_price: Money::from_value(dec!(10), currency),
                 current_instrument_price: Money::from_value(dec!(11), currency),
+                accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
             },
             totals: Totals {
@@ -295,6 +296,7 @@ mod tests {
                 currency,
                 average_buy_price: Money::from_value(dec!(5), currency),
                 current_instrument_price: Money::from_value(dec!(6), currency),
+                accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
             },
             totals: Totals {

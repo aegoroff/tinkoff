@@ -97,6 +97,8 @@ pub struct Position {
     pub currency: Currency,
     pub average_buy_price: Money,
     pub current_instrument_price: Money,
+    /// Accrued coupon interest (NKD) per unit; zero for non-bond instruments
+    pub accrued_interest: Money,
     pub quantity: Decimal,
 }
 
@@ -188,10 +190,11 @@ impl<P: Profit> Paper<P> {
         self.position.average_buy_price * self.position.quantity
     }
 
-    /// Current position value, i.e. current position price multiplied to quantity
+    /// Current position value, i.e. current position price plus accrued interest multiplied to quantity
     #[must_use]
     pub fn current(&self) -> Money {
-        self.position.current_instrument_price * self.position.quantity
+        (self.position.current_instrument_price + self.position.accrued_interest)
+            * self.position.quantity
     }
 
     /// Dividends and coupons
@@ -226,7 +229,77 @@ impl<P: Profit> Paper<P> {
     }
 
     #[must_use]
+    pub fn accrued_interest(&self) -> Money {
+        self.position.accrued_interest
+    }
+
+    #[must_use]
     pub fn average_buy_price(&self) -> Money {
         self.position.average_buy_price
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    fn bond(accrued_interest: Decimal) -> Paper<CouponProfit> {
+        let currency = Currency::RUB;
+        Paper {
+            name: "Bond".to_string(),
+            ticker: Ticker::new("BND"),
+            figi: Figi::new("FIGI"),
+            position: Position {
+                currency,
+                average_buy_price: Money::from_value(dec!(1000), currency),
+                current_instrument_price: Money::from_value(dec!(990), currency),
+                accrued_interest: Money::from_value(accrued_interest, currency),
+                quantity: dec!(10),
+            },
+            totals: Totals {
+                additional_profit: Money::zero(currency),
+                fees: Money::zero(currency),
+            },
+            profit: CouponProfit,
+        }
+    }
+
+    #[test]
+    fn current_includes_accrued_interest() {
+        // Arrange
+        let paper = bond(dec!(15.5));
+
+        // Act
+        let current = paper.current();
+
+        // Assert
+        assert_eq!(current.value, dec!(10055));
+    }
+
+    #[test]
+    fn current_without_accrued_interest() {
+        // Arrange
+        let paper = bond(Decimal::ZERO);
+
+        // Act
+        let current = paper.current();
+
+        // Assert
+        assert_eq!(current.value, dec!(9900));
+    }
+
+    #[test]
+    fn income_accounts_accrued_interest() {
+        // Arrange
+        let paper = bond(dec!(15.5));
+
+        // Act
+        let income = paper.income();
+
+        // Assert
+        assert_eq!(income.current, dec!(10055));
+        assert_eq!(income.balance, dec!(10000));
     }
 }

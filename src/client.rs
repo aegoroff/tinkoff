@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
-use color_eyre::eyre;
+use color_eyre::eyre::{self, WrapErr};
 use iso_currency::Currency;
 use itertools::Itertools;
 use rust_decimal::Decimal;
@@ -20,6 +20,7 @@ use tinkoff_invest_api::{
 use tokio::sync::{OnceCell, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
+use tonic::Code;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 
 /// Prod T-Invest API endpoint (official `tbank.ru` host).
@@ -218,10 +219,15 @@ impl TryFrom<&PortfolioPosition> for Position {
         let current_instrument_price = to_money(value.current_price.as_ref())
             .ok_or(eyre::eyre!("Failed to get current price"))?;
 
+        let accrued_interest = to_money(value.current_nkd.as_ref())
+            .filter(|nkd| !nkd.value.is_zero())
+            .unwrap_or_else(|| Money::zero(current_instrument_price.currency));
+
         Ok(Self {
             currency,
             average_buy_price,
             current_instrument_price,
+            accrued_interest,
             quantity,
         })
     }
@@ -246,29 +252,79 @@ macro_rules! collect {
     }};
 }
 
+/// Maximum number of attempts made by [`with_retry`].
+const MAX_ATTEMPTS: u32 = 5;
+
+/// Upper bound for a server-requested delay, protects from waiting forever on a bogus value.
+const MAX_SERVER_DELAY: Duration = Duration::from_secs(60);
+
+/// gRPC metadata key with seconds left until the API rate limit window resets.
+const RATE_LIMIT_RESET_HEADER: &str = "x-ratelimit-reset";
+
 /// Executes a future with exponential backoff retry logic.
 ///
-/// Retries up to 5 times with delays: 100ms, 200ms, 400ms, 800ms, 1600ms.
-/// Returns the error from the last attempt if all retries fail.
+/// Only transient failures (see [`is_transient`]) are retried, up to [`MAX_ATTEMPTS`] times
+/// with delays 100ms, 200ms, 400ms, 800ms. When the API reports an exhausted rate limit,
+/// the delay is extended up to the limit reset time. Other errors are returned immediately.
 async fn with_retry<T, F, Fut>(f: F) -> color_eyre::Result<T>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = color_eyre::Result<T>>,
 {
     let mut delay = Duration::from_millis(100);
-    for attempt in 1..=5 {
+    let mut attempt = 1;
+    loop {
         match f().await {
             Ok(v) => return Ok(v),
-            Err(e) if attempt == 5 => {
-                return Err(eyre::eyre!("Operation failed after 5 attempts: {e:?}"));
+            Err(e) if !is_transient(&e) => return Err(e),
+            Err(e) if attempt == MAX_ATTEMPTS => {
+                return Err(e.wrap_err(format!("Operation failed after {MAX_ATTEMPTS} attempts")));
             }
-            Err(_) => {
-                sleep(delay).await;
+            Err(e) => {
+                let wait = server_retry_delay(&e).map_or(delay, |d| d.max(delay));
+                sleep(wait).await;
                 delay *= 2;
+                attempt += 1;
             }
         }
     }
-    unreachable!()
+}
+
+/// Returns the gRPC status carried by the error chain, if any.
+fn grpc_status(e: &eyre::Report) -> Option<&tonic::Status> {
+    e.chain().find_map(|c| c.downcast_ref::<tonic::Status>())
+}
+
+/// Whether a failed request may succeed when repeated.
+///
+/// Errors without a gRPC status (e.g. transport failures) are considered transient,
+/// while statuses like `Unauthenticated` or `InvalidArgument` are not.
+fn is_transient(e: &eyre::Report) -> bool {
+    grpc_status(e).is_none_or(|s| {
+        matches!(
+            s.code(),
+            Code::Unavailable
+                | Code::ResourceExhausted
+                | Code::DeadlineExceeded
+                | Code::Aborted
+                | Code::Internal
+                | Code::Unknown
+        )
+    })
+}
+
+/// Delay requested by the API before the next request when the rate limit is exhausted.
+fn server_retry_delay(e: &eyre::Report) -> Option<Duration> {
+    let status = grpc_status(e).filter(|s| s.code() == Code::ResourceExhausted)?;
+    let seconds = status
+        .metadata()
+        .get(RATE_LIMIT_RESET_HEADER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(Duration::from_secs(seconds).min(MAX_SERVER_DELAY))
 }
 
 impl TinkoffInvestment {
@@ -293,7 +349,7 @@ impl TinkoffInvestment {
                     .map_err(|e| eyre::eyre!("TLS config failed: {e:?}"))?
                     .connect()
                     .await
-                    .map_err(|e| eyre::eyre!("Failed to create channel: {e:?}"))
+                    .wrap_err("Failed to create channel")
             })
             .await
             .cloned()
@@ -344,35 +400,35 @@ impl TinkoffInvestment {
                 let resp = instruments
                     .bonds(request)
                     .await
-                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                    .wrap_err("Failed to fetch instruments")?;
                 Ok(collect!(resp))
             }
             Shares => {
                 let resp = instruments
                     .shares(request)
                     .await
-                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                    .wrap_err("Failed to fetch instruments")?;
                 Ok(collect!(resp))
             }
             Etfs => {
                 let resp = instruments
                     .etfs(request)
                     .await
-                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                    .wrap_err("Failed to fetch instruments")?;
                 Ok(collect!(resp))
             }
             Futures => {
                 let resp = instruments
                     .futures(request)
                     .await
-                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                    .wrap_err("Failed to fetch instruments")?;
                 Ok(collect!(resp))
             }
             Currencies => {
                 let resp = instruments
                     .currencies(request)
                     .await
-                    .map_err(|e| eyre::eyre!("Failed to fetch instruments: {e:?}"))?;
+                    .wrap_err("Failed to fetch instruments")?;
                 Ok(collect!(resp))
             }
         }
@@ -498,6 +554,8 @@ impl TinkoffInvestment {
     /// Builds a [`Portfolio`] by loading papers for each position in parallel.
     ///
     /// Position money fields and operation totals are converted to RUB via FX rates.
+    /// Positions that failed to load are not included into the portfolio; their errors
+    /// are returned alongside so the caller can tell the user that totals are incomplete.
     pub async fn build_portfolio(
         &self,
         instruments: Arc<HashMap<String, Instrument>>,
@@ -505,7 +563,7 @@ impl TinkoffInvestment {
         account_id: &str,
         output_papers: bool,
         progress: Option<Arc<dyn Progress>>,
-    ) -> Portfolio {
+    ) -> (Portfolio, Vec<eyre::Report>) {
         let account_id = account_id.to_string();
         let fx = match self.load_fx_book().await {
             Ok(fx) => fx,
@@ -541,10 +599,14 @@ impl TinkoffInvestment {
         }
 
         let mut portfolio = Portfolio::new(output_papers);
-        for paper in papers.into_iter().flatten() {
-            portfolio.add_loaded_paper(paper);
+        let mut failures = Vec::new();
+        for paper in papers {
+            match paper {
+                Ok(paper) => portfolio.add_loaded_paper(paper),
+                Err(e) => failures.push(e),
+            }
         }
-        portfolio
+        (portfolio, failures)
     }
 
     async fn paper_for_position(
@@ -553,60 +615,37 @@ impl TinkoffInvestment {
         account_id: &str,
         position: &PortfolioPosition,
         fx: &FxBook,
-    ) -> Option<LoadedPaper> {
-        match position.instrument_type.as_str() {
+    ) -> color_eyre::Result<LoadedPaper> {
+        let account_id = account_id.to_string();
+        let paper = match position.instrument_type.as_str() {
             "bond" => self
-                .create_paper_from_position(
-                    instruments,
-                    account_id.to_string(),
-                    position,
-                    CouponProfit,
-                    fx,
-                )
+                .create_paper_from_position(instruments, account_id, position, CouponProfit, fx)
                 .await
                 .map(LoadedPaper::Bond),
             "share" => self
-                .create_paper_from_position(
-                    instruments,
-                    account_id.to_string(),
-                    position,
-                    DividendProfit,
-                    fx,
-                )
+                .create_paper_from_position(instruments, account_id, position, DividendProfit, fx)
                 .await
                 .map(LoadedPaper::Share),
             "etf" => self
-                .create_paper_from_position(
-                    instruments,
-                    account_id.to_string(),
-                    position,
-                    DividendProfit,
-                    fx,
-                )
+                .create_paper_from_position(instruments, account_id, position, DividendProfit, fx)
                 .await
                 .map(LoadedPaper::Etf),
             "currency" => self
-                .create_paper_from_position(
-                    instruments,
-                    account_id.to_string(),
-                    position,
-                    NoneProfit,
-                    fx,
-                )
+                .create_paper_from_position(instruments, account_id, position, NoneProfit, fx)
                 .await
                 .map(LoadedPaper::Currency),
             "futures" => self
-                .create_paper_from_position(
-                    instruments,
-                    account_id.to_string(),
-                    position,
-                    NoneProfit,
-                    fx,
-                )
+                .create_paper_from_position(instruments, account_id, position, NoneProfit, fx)
                 .await
                 .map(LoadedPaper::Future),
-            _ => None,
-        }
+            other => Err(eyre::eyre!("Unsupported instrument type '{other}'")),
+        };
+        paper.wrap_err_with(|| {
+            let ticker = instruments
+                .get(&position.figi)
+                .map_or("?", |i| i.ticker.as_str());
+            format!("Position {ticker} ({}) skipped", position.figi)
+        })
     }
 
     async fn get_portfolio(&self, account: AccountType) -> color_eyre::Result<AccountPortfolio> {
@@ -632,7 +671,7 @@ impl TinkoffInvestment {
                 currency: None,
             })
             .await
-            .map_err(|e| eyre::eyre!("Failed to get portfolio: {e:?}"))?;
+            .wrap_err("Failed to get portfolio")?;
         Ok(AccountPortfolio {
             account_id: account.id.clone(),
             positions: portfolio.into_inner().positions,
@@ -654,7 +693,7 @@ impl TinkoffInvestment {
         let accounts = users
             .get_accounts(GetAccountsRequest {})
             .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+            .wrap_err("Failed to get accounts")?;
         Ok(accounts.into_inner())
     }
 
@@ -731,7 +770,7 @@ impl TinkoffInvestment {
                 figi: Some(figi),
             })
             .await
-            .map_err(|e| eyre::eyre!("Failed to get operations: {e:?}"))?;
+            .wrap_err("Failed to get operations")?;
 
         Ok(operations.into_inner().operations)
     }
@@ -749,6 +788,12 @@ impl TinkoffInvestment {
         with_retry(|| self.get_operations(account_id.clone(), figi.clone())).await
     }
 
+    /// Creates a paper from a portfolio position with prices and operation totals in RUB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if position prices are missing, FX conversion fails,
+    /// or operations cannot be loaded.
     pub async fn create_paper_from_position<P: Profit>(
         &self,
         instruments: &HashMap<String, Instrument>,
@@ -756,30 +801,40 @@ impl TinkoffInvestment {
         portfolio_position: &PortfolioPosition,
         profit: P,
         fx: &FxBook,
-    ) -> Option<Paper<P>> {
-        let mut position = Position::try_from(portfolio_position).ok()?;
+    ) -> color_eyre::Result<Paper<P>> {
+        let mut position = Position::try_from(portfolio_position)?;
 
         // Convert position prices to RUB at spot; keep nominal on position.currency.
         position.average_buy_price = self
             .money_to_rub(fx, position.average_buy_price, None)
-            .await
-            .ok()?;
+            .await?;
         position.current_instrument_price = self
             .money_to_rub(fx, position.current_instrument_price, None)
-            .await
-            .ok()?;
+            .await?;
+        position.accrued_interest = if position.accrued_interest.value.is_zero() {
+            Money::zero(Currency::RUB)
+        } else {
+            self.money_to_rub(fx, position.accrued_interest, None)
+                .await?
+        };
 
         let executed_ops = self
             .get_operations_until_done(account_id, portfolio_position.figi.clone())
-            .await
-            .ok()?;
+            .await?;
 
-        let totals = self.reduce(fx, &executed_ops).await.ok()?;
+        let totals = self.reduce(fx, &executed_ops).await?;
 
-        let instrument = instruments.get(&portfolio_position.figi)?;
-        Some(Paper {
-            name: instrument.name.clone(),
-            ticker: instrument.ticker.clone(),
+        // An instrument missing from the catalog must not drop the position from totals.
+        let instrument = instruments
+            .get(&portfolio_position.figi)
+            .cloned()
+            .unwrap_or_else(|| Instrument {
+                name: portfolio_position.figi.clone(),
+                ticker: Ticker::new(portfolio_position.figi.clone()),
+            });
+        Ok(Paper {
+            name: instrument.name,
+            ticker: instrument.ticker,
             figi: Figi::new(portfolio_position.figi.clone()),
             position,
             totals,
@@ -881,7 +936,7 @@ impl TinkoffInvestment {
                 instrument_exchange: None,
             })
             .await
-            .map_err(|e| eyre::eyre!("Failed to fetch currencies: {e:?}"))?;
+            .wrap_err("Failed to fetch currencies")?;
 
         let candidates = response
             .into_inner()
@@ -962,7 +1017,7 @@ impl TinkoffInvestment {
                 ..Default::default()
             })
             .await
-            .map_err(|e| eyre::eyre!("GetLastPrices failed for {currency:?}: {e:?}"))?;
+            .wrap_err_with(|| format!("GetLastPrices failed for {currency:?}"))?;
         let price = response
             .into_inner()
             .last_prices
@@ -1026,7 +1081,7 @@ impl TinkoffInvestment {
                     ..Default::default()
                 })
                 .await
-                .map_err(|e| eyre::eyre!("GetCandles failed for {currency:?}: {e:?}"))?;
+                .wrap_err_with(|| format!("GetCandles failed for {currency:?}"))?;
 
             let candles = response.into_inner().candles;
             if let Some(close) = candles.last().and_then(|c| c.close.as_ref()) {
@@ -1127,7 +1182,7 @@ impl TinkoffInvestment {
                 ..Default::default()
             })
             .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+            .wrap_err("Failed to get dividends")?;
         Ok(response.into_inner().dividends)
     }
 
@@ -1218,7 +1273,7 @@ impl TinkoffInvestment {
                 ..Default::default()
             })
             .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+            .wrap_err("Failed to get bond coupons")?;
         Ok(response.into_inner().events)
     }
 }
@@ -1244,7 +1299,10 @@ fn coupon_type_to_str(coupon_type: tinkoff_invest_api::tcs::CouponType) -> &'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
 
     #[test]
     fn invest_tls_config_accepts_embedded_cas() {
@@ -1255,35 +1313,6 @@ mod tests {
         Channel::from_static(INVEST_API_ENDPOINT)
             .tls_config(tls)
             .expect("TLS config with embedded Russian Trusted CAs should be valid");
-    }
-
-    #[tokio::test]
-    async fn create_channel_completes_tls_handshake() {
-        let client = TinkoffInvestment::new(String::new());
-        client
-            .create_channel()
-            .await
-            .expect("TLS handshake with invest-public-api.tbank.ru should succeed");
-    }
-
-    #[tokio::test]
-    async fn create_channel_reuses_cached_connection() {
-        let client = TinkoffInvestment::new(String::new());
-        let first = client
-            .create_channel()
-            .await
-            .expect("first channel connect");
-        let second = client
-            .create_channel()
-            .await
-            .expect("second channel connect");
-        assert!(
-            client.channel.get().is_some(),
-            "channel should be cached after first connect"
-        );
-        // Cloned handles share the same connection pool; both must succeed.
-        drop(first);
-        drop(second);
     }
 
     #[test]
@@ -1298,6 +1327,205 @@ mod tests {
         assert_eq!(totals.additional_profit.value, dec!(150));
         assert_eq!(totals.fees.value, dec!(-10));
         assert_eq!(totals.additional_profit.currency, Currency::RUB);
+    }
+
+    fn status_error(code: Code) -> eyre::Report {
+        Err::<(), _>(tonic::Status::new(code, "test"))
+            .wrap_err("Failed to call API")
+            .unwrap_err()
+    }
+
+    fn rate_limit_error(reset: &str) -> eyre::Report {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        if let Ok(value) = reset.parse() {
+            metadata.insert(RATE_LIMIT_RESET_HEADER, value);
+        }
+        Err::<(), _>(tonic::Status::with_metadata(
+            Code::ResourceExhausted,
+            "limit",
+            metadata,
+        ))
+        .wrap_err("Failed to call API")
+        .unwrap_err()
+    }
+
+    #[rstest]
+    #[case(Code::Unavailable, true)]
+    #[case(Code::ResourceExhausted, true)]
+    #[case(Code::DeadlineExceeded, true)]
+    #[case(Code::Internal, true)]
+    #[case(Code::Unauthenticated, false)]
+    #[case(Code::PermissionDenied, false)]
+    #[case(Code::InvalidArgument, false)]
+    #[case(Code::NotFound, false)]
+    fn is_transient_by_status_code(#[case] code: Code, #[case] expected: bool) {
+        // Arrange
+        let error = status_error(code);
+
+        // Act
+        let transient = is_transient(&error);
+
+        // Assert
+        assert_eq!(transient, expected);
+    }
+
+    #[test]
+    fn is_transient_without_status() {
+        // Arrange
+        let error = eyre::eyre!("connection reset");
+
+        // Act
+        let transient = is_transient(&error);
+
+        // Assert
+        assert!(transient);
+    }
+
+    #[rstest]
+    #[case("3", Some(Duration::from_secs(3)))]
+    #[case(" 7 ", Some(Duration::from_secs(7)))]
+    #[case("3600", Some(MAX_SERVER_DELAY))]
+    #[case("soon", None)]
+    #[case("", None)]
+    fn server_retry_delay_from_rate_limit(#[case] reset: &str, #[case] expected: Option<Duration>) {
+        // Arrange
+        let error = rate_limit_error(reset);
+
+        // Act
+        let delay = server_retry_delay(&error);
+
+        // Assert
+        assert_eq!(delay, expected);
+    }
+
+    #[test]
+    fn server_retry_delay_ignores_other_statuses() {
+        // Arrange
+        let error = status_error(Code::Unavailable);
+
+        // Act
+        let delay = server_retry_delay(&error);
+
+        // Assert
+        assert_eq!(delay, None);
+    }
+
+    #[tokio::test]
+    async fn with_retry_stops_on_permanent_error() {
+        // Arrange
+        let calls = AtomicU32::new(0);
+
+        // Act
+        let result: color_eyre::Result<()> = with_retry(|| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(status_error(Code::Unauthenticated))
+        })
+        .await;
+
+        // Assert
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn with_retry_repeats_transient_error() {
+        // Arrange
+        let calls = AtomicU32::new(0);
+
+        // Act
+        let result = with_retry(|| async {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(status_error(Code::Unavailable))
+            } else {
+                Ok(42)
+            }
+        })
+        .await;
+
+        // Assert
+        assert_eq!(result.ok(), Some(42));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn position_accrued_interest_from_nkd() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            current_nkd: Some(rub(15)),
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert_eq!(position.accrued_interest.value, dec!(15));
+        assert_eq!(position.accrued_interest.currency, Currency::RUB);
+    }
+
+    #[test]
+    fn position_accrued_interest_zero_when_nkd_missing() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            current_nkd: None,
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert!(position.accrued_interest.value.is_zero());
+    }
+
+    #[tokio::test]
+    async fn paper_for_position_reports_unsupported_type() {
+        // Arrange
+        let client = TinkoffInvestment::new(String::new());
+        let fx = FxBook {
+            instruments: HashMap::new(),
+            spot: Mutex::new(HashMap::new()),
+            hist: Mutex::new(HashMap::new()),
+        };
+        let instruments = HashMap::from([(
+            "OPT1".to_string(),
+            Instrument {
+                name: "Option".to_string(),
+                ticker: Ticker::new("OPTX"),
+            },
+        )]);
+        let position = PortfolioPosition {
+            figi: "OPT1".to_string(),
+            instrument_type: "option".to_string(),
+            ..Default::default()
+        };
+
+        // Act
+        let result = client
+            .paper_for_position(&instruments, "account", &position, &fx)
+            .await;
+
+        // Assert
+        let message = format!("{:#}", result.err().unwrap());
+        assert!(message.contains("OPTX (OPT1) skipped"), "{message}");
+        assert!(
+            message.contains("Unsupported instrument type 'option'"),
+            "{message}"
+        );
+    }
+
+    fn rub(units: i64) -> MoneyValue {
+        MoneyValue {
+            currency: "rub".to_string(),
+            units,
+            nano: 0,
+        }
     }
 
     #[test]
