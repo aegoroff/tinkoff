@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 
 use super::money::{Income, Money};
 use super::paper::{CouponProfit, DividendProfit, NoneProfit, Paper, Profit};
@@ -297,6 +298,41 @@ impl<P: Profit> Asset<P> {
         &self.papers
     }
 
+    /// Macaulay duration in years of papers with known duration, weighted by their value.
+    #[must_use]
+    pub fn duration(&self) -> Option<Decimal> {
+        let (weighted, total) = self
+            .papers
+            .iter()
+            .filter_map(|p| Some((p.bond.as_ref()?.duration?, p.current().value)))
+            .fold(
+                (Decimal::ZERO, Decimal::ZERO),
+                |(weighted, total), (d, v)| (weighted + d * v, total + v),
+            );
+        weighted.checked_div(total)
+    }
+
+    /// Value change of papers with known duration when yields rise by one percentage point.
+    #[must_use]
+    pub fn rate_sensitivity(&self) -> Option<Money> {
+        self.papers
+            .iter()
+            .filter_map(|p| {
+                let modified = p.bond.as_ref()?.modified_duration?;
+                Some(p.current() * (-modified / dec!(100)))
+            })
+            .reduce(|acc, change| acc + change)
+    }
+
+    /// Number of papers with known duration.
+    #[must_use]
+    pub fn duration_count(&self) -> usize {
+        self.papers
+            .iter()
+            .filter(|p| p.bond.as_ref().is_some_and(|b| b.duration.is_some()))
+            .count()
+    }
+
     fn fold<B, IF, F>(&self, mut init: IF, f: F) -> B
     where
         IF: FnMut(Currency) -> B,
@@ -320,7 +356,7 @@ mod tests {
 
     use super::*;
     use crate::domain::paper::{
-        CouponProfit, DividendProfit, Figi, NoneProfit, Position, Ticker, Totals,
+        BondInfo, CouponProfit, DividendProfit, Figi, NoneProfit, Position, Ticker, Totals,
     };
 
     #[rstest]
@@ -397,6 +433,71 @@ mod tests {
 
         // Assert
         assert_eq!(count, 0);
+    }
+
+    fn with_duration(
+        paper: &Paper<CouponProfit>,
+        price: Decimal,
+        duration: Decimal,
+    ) -> Paper<CouponProfit> {
+        let mut paper = paper.clone();
+        paper.position.current_instrument_price = Money::from_value(price, Currency::RUB);
+        paper.bond = Some(BondInfo {
+            duration: Some(duration),
+            modified_duration: Some(duration / dec!(1.1)),
+            ..BondInfo::default()
+        });
+        paper
+    }
+
+    #[rstest]
+    fn asset_duration_is_weighted_by_value(mut test_portfolio: Portfolio) {
+        // Arrange: 1000 at 2 years, 3000 at 4 years and 1100 of unknown duration
+        let bond = test_portfolio.bonds.papers[0].clone();
+        test_portfolio
+            .bonds
+            .add_paper(with_duration(&bond, dec!(10), dec!(2)));
+        test_portfolio
+            .bonds
+            .add_paper(with_duration(&bond, dec!(30), dec!(4)));
+
+        // Act
+        let duration = test_portfolio.bonds.duration();
+        let count = test_portfolio.bonds.duration_count();
+
+        // Assert
+        assert_eq!(duration, Some(dec!(3.5)));
+        assert_eq!(count, 2);
+    }
+
+    #[rstest]
+    fn asset_rate_sensitivity_sums_value_changes(mut test_portfolio: Portfolio) {
+        // Arrange: modified durations 1.1 / 1.1 = 1 and 2.2 / 1.1 = 2
+        let bond = test_portfolio.bonds.papers[0].clone();
+        test_portfolio
+            .bonds
+            .add_paper(with_duration(&bond, dec!(10), dec!(1.1)));
+        test_portfolio
+            .bonds
+            .add_paper(with_duration(&bond, dec!(30), dec!(2.2)));
+
+        // Act
+        let change = test_portfolio.bonds.rate_sensitivity();
+
+        // Assert: -(1000 * 1% + 3000 * 2%)
+        assert_eq!(change, Some(Money::from_value(dec!(-70), Currency::RUB)));
+    }
+
+    #[rstest]
+    fn asset_without_durations(test_portfolio: Portfolio) {
+        // Act
+        let duration = test_portfolio.bonds.duration();
+        let change = test_portfolio.bonds.rate_sensitivity();
+
+        // Assert
+        assert_eq!(duration, None);
+        assert_eq!(change, None);
+        assert_eq!(test_portfolio.bonds.duration_count(), 0);
     }
 
     #[rstest]

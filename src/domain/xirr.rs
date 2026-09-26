@@ -77,10 +77,7 @@ pub fn xirr(flows: &[CashFlow]) -> Option<Decimal> {
 
     let timed: Vec<(Decimal, Decimal)> = flows
         .iter()
-        .map(|f| {
-            let years = Decimal::from((f.date - start).num_seconds()) / SECONDS_IN_YEAR;
-            (years, f.amount)
-        })
+        .map(|f| (years_between(start, f.date), f.amount))
         .collect();
     let npv = |rate: Decimal| net_present_value(&timed, rate);
 
@@ -110,6 +107,11 @@ pub fn xirr(flows: &[CashFlow]) -> Option<Decimal> {
         }
     }
     Some((low + high) / dec!(2))
+}
+
+/// Years from `start` to `date`, Actual/365.
+pub(crate) fn years_between(start: DateTime<Utc>, date: DateTime<Utc>) -> Decimal {
+    Decimal::from((date - start).num_seconds()) / SECONDS_IN_YEAR
 }
 
 /// Closest to `bound` rate, halving it towards zero, at which `npv` does not overflow.

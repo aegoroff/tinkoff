@@ -19,11 +19,19 @@ const BALANCE_INCOME: &str = "Balance income";
 const DAILY_CHANGE: &str = "Daily change";
 const XIRR: &str = "Annual return (XIRR)";
 const YTM: &str = "Yield to maturity";
+const DURATION: &str = "Duration, years";
 
 /// Adds XIRR row when the return can be calculated.
 fn add_xirr_row(table: &mut Table, rate: Option<Decimal>) {
     if let Some(rate) = rate {
         ux::add_row_colorized(table, XIRR, AnnualRate(rate));
+    }
+}
+
+/// Adds a duration row when the duration is known.
+fn add_duration_row(table: &mut Table, title: &str, duration: Option<Decimal>) {
+    if let Some(duration) = duration {
+        ux::add_row(table, title, duration.round_dp(2));
     }
 }
 
@@ -66,6 +74,20 @@ impl<P: Profit> Display for Asset<P> {
             ux::add_row_colorized(&mut table, P::name(), self.dividends());
         }
         add_xirr_row(&mut table, self.xirr(Utc::now()));
+
+        if let Some(duration) = self.duration() {
+            let count = self.duration_count();
+            let total = self.papers().len();
+            let title = if count == total {
+                DURATION.to_string()
+            } else {
+                format!("{DURATION} ({count} of {total})")
+            };
+            add_duration_row(&mut table, &title, Some(duration));
+        }
+        if let Some(change) = self.rate_sensitivity() {
+            ux::add_row_colorized(&mut table, "Value change at +1% yield", change);
+        }
 
         ux::add_row(&mut table, "Instruments count", self.papers().len());
         asset_table.add_row([Cell::new(table)]);
@@ -143,6 +165,8 @@ impl<P: Profit> Display for Paper<P> {
             if let Some(rate) = bond.yield_to_offer {
                 ux::add_row_colorized(&mut table, "Yield to offer", AnnualRate(rate));
             }
+            add_duration_row(&mut table, DURATION, bond.duration);
+            add_duration_row(&mut table, "Modified duration", bond.modified_duration);
         }
 
         write!(f, "{table}")

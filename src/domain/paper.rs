@@ -137,6 +137,11 @@ pub struct BondInfo {
     pub ytm: Option<Decimal>,
     /// Annual yield to the next offer if the bond is redeemed there
     pub yield_to_offer: Option<Decimal>,
+    /// Macaulay duration in years: to the next offer when its yield is known,
+    /// to maturity otherwise
+    pub duration: Option<Decimal>,
+    /// Modified duration: relative price change for a unit change of the yield
+    pub modified_duration: Option<Decimal>,
 }
 
 /// Represents additional asset profit
