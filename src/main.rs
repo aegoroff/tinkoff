@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, future::Future, pin::Pin};
+use std::{collections::HashMap, env, future::Future, pin::Pin, str::FromStr};
 
 use clap::{ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
@@ -8,7 +8,10 @@ use tokio::task::JoinSet;
 use itertools::Itertools;
 use tinkoff::{
     client::{AccountPortfolio, TinkoffInvestment},
-    domain::{Instrument, LoadedPaper},
+    domain::{
+        Instrument, LoadedPaper,
+        risk::{TARGET_ASSET_TYPES, TargetAllocation},
+    },
     parse_account_type,
     progress::Progresser,
     ux,
@@ -90,7 +93,7 @@ fn run_subcommand<'a>(
         DIVIDENDS_CMD => Box::pin(dividends(config)),
         COUPONS_CMD => Box::pin(coupons(config)),
         COMBINED_CMD => Box::pin(combined(config)),
-        RISK_CMD => Box::pin(risk(config)),
+        RISK_CMD => Box::pin(risk(config, matches)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -259,8 +262,8 @@ async fn combined(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-async fn risk(config: &AppConfig) -> Result<()> {
-    use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis, TargetAllocation};
+async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
+    use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis};
 
     let client = TinkoffInvestment::new(config.token.clone());
     let (portfolio_data, instruments) =
@@ -326,10 +329,10 @@ async fn risk(config: &AppConfig) -> Result<()> {
     let risk_analysis = RiskAnalysis::analyze(&container, &all_papers);
     println!("{risk_analysis}");
 
-    // Generate rebalancing recommendations using balanced allocation as target
-    let target = TargetAllocation::balanced();
-    let rebalancing = RebalancingAnalysis::analyze(&risk_analysis.asset_allocation, &target);
-    println!("{rebalancing}");
+    if let Some(target) = cmd.get_one::<TargetAllocation>("target") {
+        let rebalancing = RebalancingAnalysis::analyze(&risk_analysis.asset_allocation, target);
+        println!("{rebalancing}");
+    }
     report_failures(&failures);
 
     Ok(())
@@ -471,6 +474,17 @@ fn risk_cmd() -> Command {
     Command::new(RISK_CMD)
         .aliases(["risk", "risk-analysis"])
         .about("Analyze portfolio risk metrics")
+        .arg(
+            arg!(--target <ALLOCATION>)
+                .required(false)
+                .value_parser(TargetAllocation::from_str)
+                .help(format!(
+                    "Target allocation to get rebalancing recommendations: a preset or \
+                     percents, e.g. bonds=60,shares=30,etfs=10. Presets: {}. \
+                     Asset types: {TARGET_ASSET_TYPES}; omitted ones are 0, the sum must be 100",
+                    TargetAllocation::presets_help()
+                )),
+        )
 }
 
 async fn portfolio_with_instruments(

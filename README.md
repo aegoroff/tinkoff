@@ -82,6 +82,12 @@ tinkoff j
 
 # Analyze portfolio risk metrics
 tinkoff r
+
+# Risk metrics plus rebalancing recommendations to your target allocation
+tinkoff r --target bonds=60,shares=30,etfs=10
+
+# ... or to a preset: conservative (60/30/5/5/0) or balanced (40/40/10/5/5)
+tinkoff r --target balanced
 ```
 
 ### Command Line Options
@@ -148,7 +154,7 @@ The application provides rich, formatted output including:
 - **Trading History**: Detailed operation history with dates, prices, and quantities
 - **Dividend Calendar**: Upcoming dividend payments for portfolio instruments
 - **Coupon Calendar**: Bond coupon payment schedule
-- **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations
+- **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations to the target set with `--target`: a preset (`conservative`, `balanced`) or percents (asset types: bonds, shares, etfs, currencies, futures; omitted ones are 0%, the sum must be 100%)
 
 ## Project Structure
 

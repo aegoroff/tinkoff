@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use iso_currency::Currency;
 use rust_decimal::Decimal;
@@ -109,8 +110,11 @@ pub enum RiskLevel {
     VeryHigh,
 }
 
+/// Asset type names accepted in a target allocation string.
+pub const TARGET_ASSET_TYPES: &str = "bonds, shares, etfs, currencies, futures";
+
 /// Target allocation for portfolio rebalancing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetAllocation {
     /// Target percentage for bonds (0-100)
     pub bonds: Decimal,
@@ -124,37 +128,108 @@ pub struct TargetAllocation {
     pub futures: Decimal,
 }
 
-impl Default for TargetAllocation {
-    fn default() -> Self {
-        // Conservative allocation: 60% bonds, 30% shares, 10% other
-        Self {
+/// Named target allocations accepted by `--target` instead of explicit percents.
+pub const TARGET_PRESETS: [(&str, TargetAllocation); 2] = [
+    (
+        "conservative",
+        TargetAllocation {
             bonds: dec!(60),
             shares: dec!(30),
             etfs: dec!(5),
             currencies: dec!(5),
             futures: dec!(0),
-        }
-    }
-}
-
-impl TargetAllocation {
-    /// Create a balanced allocation (40% bonds, 40% shares, 20% other)
-    #[must_use]
-    pub fn balanced() -> Self {
-        Self {
+        },
+    ),
+    (
+        "balanced",
+        TargetAllocation {
             bonds: dec!(40),
             shares: dec!(40),
             etfs: dec!(10),
             currencies: dec!(5),
             futures: dec!(5),
-        }
-    }
+        },
+    ),
+];
 
-    /// Validate that percentages sum to 100
+impl TargetAllocation {
+    /// Describes [`TARGET_PRESETS`] for CLI help, e.g. `balanced (bonds 40, shares 40, ...)`.
     #[must_use]
-    pub fn is_valid(&self) -> bool {
-        let sum = self.bonds + self.shares + self.etfs + self.currencies + self.futures;
-        sum >= dec!(99) && sum <= dec!(101)
+    pub fn presets_help() -> String {
+        TARGET_PRESETS
+            .iter()
+            .map(|(name, t)| {
+                format!(
+                    "{name} (bonds {}, shares {}, etfs {}, currencies {}, futures {})",
+                    t.bonds, t.shares, t.etfs, t.currencies, t.futures
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl FromStr for TargetAllocation {
+    type Err = String;
+
+    /// Parses a preset name from [`TARGET_PRESETS`] or `bonds=60,shares=30,etfs=10` style target.
+    ///
+    /// Names and keys are case-insensitive, keys accept singular forms; omitted asset types
+    /// get 0%. Percentages must be within 0..=100 and sum up to exactly 100.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((_, preset)) = TARGET_PRESETS
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(s.trim()))
+        {
+            return Ok(preset.clone());
+        }
+
+        let mut target = Self {
+            bonds: Decimal::ZERO,
+            shares: Decimal::ZERO,
+            etfs: Decimal::ZERO,
+            currencies: Decimal::ZERO,
+            futures: Decimal::ZERO,
+        };
+        let mut seen: Vec<&'static str> = Vec::new();
+
+        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, value) = part.split_once('=').ok_or_else(|| {
+                let presets = TARGET_PRESETS.map(|(name, _)| name).join(", ");
+                format!("'{part}' is neither a preset ({presets}) nor asset=percent, e.g. bonds=60")
+            })?;
+            let (name, slot) = match key.trim().to_ascii_lowercase().as_str() {
+                "bonds" | "bond" => ("bonds", &mut target.bonds),
+                "shares" | "share" => ("shares", &mut target.shares),
+                "etfs" | "etf" => ("etfs", &mut target.etfs),
+                "currencies" | "currency" => ("currencies", &mut target.currencies),
+                "futures" | "future" => ("futures", &mut target.futures),
+                other => {
+                    return Err(format!(
+                        "unknown asset type '{other}'; expected one of: {TARGET_ASSET_TYPES}"
+                    ));
+                }
+            };
+            if seen.contains(&name) {
+                return Err(format!("{name} is set more than once"));
+            }
+            seen.push(name);
+
+            let percent = Decimal::from_str(value.trim())
+                .map_err(|_| format!("'{}' is not a number in '{part}'", value.trim()))?;
+            if percent < Decimal::ZERO || percent > dec!(100) {
+                return Err(format!("{name}={percent}% must be within 0..100"));
+            }
+            *slot = percent;
+        }
+
+        let sum = target.bonds + target.shares + target.etfs + target.currencies + target.futures;
+        if sum != dec!(100) {
+            return Err(format!(
+                "target percentages sum up to {sum}%, expected 100%"
+            ));
+        }
+        Ok(target)
     }
 }
 
@@ -619,6 +694,7 @@ impl RiskMetrics {
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -933,26 +1009,118 @@ mod tests {
         assert_eq!(metrics.currency_risk, dec!(100)); // hhi=1 → 100 + single-currency penalty, capped at 100
     }
 
-    #[test]
-    fn test_target_allocation_default() {
-        let target = TargetAllocation::default();
-        assert_eq!(target.bonds, dec!(60));
-        assert_eq!(target.shares, dec!(30));
-        assert_eq!(target.etfs, dec!(5));
-        assert_eq!(target.currencies, dec!(5));
-        assert_eq!(target.futures, dec!(0));
-        assert!(target.is_valid());
+    /// 60% bonds, 30% shares, 5% ETFs, 5% currencies.
+    fn conservative_target() -> TargetAllocation {
+        TargetAllocation {
+            bonds: dec!(60),
+            shares: dec!(30),
+            etfs: dec!(5),
+            currencies: dec!(5),
+            futures: dec!(0),
+        }
     }
 
     #[test]
-    fn test_target_allocation_balanced() {
-        let target = TargetAllocation::balanced();
+    fn target_allocation_parses_all_asset_types() {
+        // Arrange
+        let input = "bonds=40,shares=40,etfs=10,currencies=5,futures=5";
+
+        // Act
+        let target = TargetAllocation::from_str(input).unwrap();
+
+        // Assert
         assert_eq!(target.bonds, dec!(40));
         assert_eq!(target.shares, dec!(40));
         assert_eq!(target.etfs, dec!(10));
         assert_eq!(target.currencies, dec!(5));
         assert_eq!(target.futures, dec!(5));
-        assert!(target.is_valid());
+    }
+
+    #[test]
+    fn target_allocation_omitted_types_are_zero() {
+        // Arrange
+        let input = " Bond = 62.5 , SHARE=37.5 ";
+
+        // Act
+        let target = TargetAllocation::from_str(input).unwrap();
+
+        // Assert
+        assert_eq!(target.bonds, dec!(62.5));
+        assert_eq!(target.shares, dec!(37.5));
+        assert!(target.etfs.is_zero());
+        assert!(target.currencies.is_zero());
+        assert!(target.futures.is_zero());
+    }
+
+    #[rstest]
+    #[case::conservative("conservative", conservative_target())]
+    #[case::balanced(" Balanced ", TargetAllocation {
+        bonds: dec!(40),
+        shares: dec!(40),
+        etfs: dec!(10),
+        currencies: dec!(5),
+        futures: dec!(5),
+    })]
+    fn target_allocation_parses_preset(#[case] input: &str, #[case] expected: TargetAllocation) {
+        // Arrange
+
+        // Act
+        let target = TargetAllocation::from_str(input).unwrap();
+
+        // Assert
+        assert_eq!(target, expected);
+    }
+
+    #[test]
+    fn target_presets_sum_up_to_100() {
+        // Arrange
+
+        // Act
+        let sums = TARGET_PRESETS
+            .map(|(name, t)| (name, t.bonds + t.shares + t.etfs + t.currencies + t.futures));
+
+        // Assert
+        for (name, sum) in sums {
+            assert_eq!(sum, dec!(100), "{name}");
+        }
+    }
+
+    #[test]
+    fn presets_help_lists_presets_with_percents() {
+        // Arrange
+
+        // Act
+        let help = TargetAllocation::presets_help();
+
+        // Assert
+        assert_eq!(
+            help,
+            "conservative (bonds 60, shares 30, etfs 5, currencies 5, futures 0), \
+             balanced (bonds 40, shares 40, etfs 10, currencies 5, futures 5)"
+        );
+    }
+
+    #[rstest]
+    #[case::sum_below_100("bonds=60", "sum up to 60%")]
+    #[case::sum_above_100("bonds=60,shares=50", "sum up to 110%")]
+    #[case::empty("", "sum up to 0%")]
+    #[case::unknown_type("bonds=60,gold=40", "unknown asset type 'gold'")]
+    #[case::not_a_number("bonds=sixty", "'sixty' is not a number")]
+    #[case::no_equals_sign(
+        "bonds60",
+        "neither a preset (conservative, balanced) nor asset=percent"
+    )]
+    #[case::unknown_preset("aggressive", "neither a preset")]
+    #[case::negative("bonds=120,shares=-20", "bonds=120% must be within 0..100")]
+    #[case::duplicate("bonds=50,bond=50", "bonds is set more than once")]
+    fn target_allocation_rejects_invalid_input(#[case] input: &str, #[case] expected: &str) {
+        // Arrange
+
+        // Act
+        let error = TargetAllocation::from_str(input).unwrap_err();
+
+        // Assert
+        assert!(error.contains(expected), "{error}");
     }
 
     #[test]
@@ -987,7 +1155,7 @@ mod tests {
             total_value: Money::from_value(dec!(1000), Currency::RUB),
         };
 
-        let target = TargetAllocation::default();
+        let target = conservative_target();
         let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
 
         // All actions should be Hold since portfolio matches target
@@ -1029,7 +1197,7 @@ mod tests {
             total_value: Money::from_value(dec!(1000), Currency::RUB),
         };
 
-        let target = TargetAllocation::default(); // 60% bonds, 30% shares
+        let target = conservative_target(); // 60% bonds, 30% shares
         let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
 
         // Bonds should be BUY (currently 40%, target 60%)
@@ -1083,7 +1251,7 @@ mod tests {
             total_value: Money::from_value(dec!(1000), Currency::RUB),
         };
 
-        let target = TargetAllocation::default(); // 60% bonds, 30% shares
+        let target = conservative_target(); // 60% bonds, 30% shares
         let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
 
         // Deviations are within 5% threshold, so all should be Hold
@@ -1124,7 +1292,7 @@ mod tests {
             total_value: Money::from_value(dec!(1000), Currency::RUB),
         };
 
-        let target = TargetAllocation::default(); // 60% bonds, 30% shares
+        let target = conservative_target(); // 60% bonds, 30% shares
         let analysis = RebalancingAnalysis::analyze(&asset_alloc, &target);
 
         // Max deviation is 40% (bonds: 20% vs 60% target)
