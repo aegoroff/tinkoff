@@ -92,7 +92,8 @@ impl AsRef<str> for Ticker {
 pub struct Instrument {
     pub name: String,
     pub ticker: Ticker,
-    /// Trading currency; `None` when the API returned an unknown code
+    /// Currency the instrument is exposed to: the nominal one of bonds and currencies,
+    /// the trading one otherwise; `None` when the API returned an unknown code
     pub currency: Option<Currency>,
     /// Asset the instrument belongs to; `None` when unknown
     pub asset_uid: Option<String>,

@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex};
 use t_invest_sdk::{
     TInvestInterceptor,
     api::{
-        Account, AccountStatus, AccountType, CandleInterval, Dividend, FindInstrumentRequest,
-        GetAccountsRequest, GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest,
-        GetCandlesRequest, GetDividendsRequest, GetForecastRequest, GetForecastResponse,
-        GetOperationsByCursorRequest, GetOperationsByCursorResponse, HistoricCandle,
+        Account, AccountStatus, AccountType, Bond as ApiBond, CandleInterval,
+        Currency as ApiCurrency, Dividend, FindInstrumentRequest, GetAccountsRequest,
+        GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest, GetCandlesRequest,
+        GetDividendsRequest, GetForecastRequest, GetForecastResponse, GetOperationsByCursorRequest,
+        GetOperationsByCursorResponse, HistoricCandle, Instrument as ApiInstrument,
         InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType,
         InstrumentsRequest, OperationItem, OperationState, OperationType, PortfolioPosition,
         PortfolioRequest, Quotation, Recommendation as ApiRecommendation,
@@ -394,8 +395,10 @@ impl TinkoffInvestment {
         positions: &[PortfolioPosition],
     ) -> HashMap<String, Instrument> {
         self.parallel_for_positions(positions, None, |client, position| async move {
-            let instrument =
-                with_retry(|| client.get_instrument_by_figi(position.figi.clone())).await;
+            let instrument = with_retry(|| {
+                client.get_instrument(position.figi.clone(), &position.instrument_type)
+            })
+            .await;
             (position.figi, instrument)
         })
         .await
@@ -404,28 +407,46 @@ impl TinkoffInvestment {
         .collect()
     }
 
-    async fn get_instrument_by_figi(&self, figi: String) -> color_eyre::Result<Instrument> {
+    /// Looks up an instrument by FIGI; bonds and currencies are requested by their own
+    /// methods, as only these return the nominal currency the position is exposed to.
+    async fn get_instrument(
+        &self,
+        figi: String,
+        instrument_type: &str,
+    ) -> color_eyre::Result<Instrument> {
         let mut instruments = self
             .client(InstrumentsServiceClient::with_interceptor)
             .await?;
-        let response = instruments
-            .get_instrument_by(InstrumentRequest {
-                id_type: InstrumentIdType::Figi as i32,
-                class_code: None,
-                id: figi.clone(),
-            })
-            .await
-            .wrap_err_with(|| format!("Failed to get instrument {figi}"))?;
-        let instrument = response
-            .into_inner()
-            .instrument
-            .ok_or_else(|| eyre::eyre!("Instrument {figi} not found"))?;
-        Ok(Instrument {
-            currency: Currency::from_code(&instrument.currency.to_ascii_uppercase()),
-            name: instrument.name,
-            ticker: Ticker::new(instrument.ticker),
-            asset_uid: Some(instrument.asset_uid).filter(|uid| !uid.is_empty()),
-        })
+        let request = InstrumentRequest {
+            id_type: InstrumentIdType::Figi as i32,
+            class_code: None,
+            id: figi.clone(),
+        };
+        let failed = || format!("Failed to get instrument {figi}");
+        let instrument = match instrument_type {
+            "bond" => instruments
+                .bond_by(request)
+                .await
+                .wrap_err_with(failed)?
+                .into_inner()
+                .instrument
+                .map(from_api_bond),
+            "currency" => instruments
+                .currency_by(request)
+                .await
+                .wrap_err_with(failed)?
+                .into_inner()
+                .instrument
+                .map(from_api_currency),
+            _ => instruments
+                .get_instrument_by(request)
+                .await
+                .wrap_err_with(failed)?
+                .into_inner()
+                .instrument
+                .map(from_api_instrument),
+        };
+        instrument.ok_or_else(|| eyre::eyre!("Instrument {figi} not found"))
     }
 
     /// Loads analyst forecasts and fundamentals of the given share positions.
@@ -891,7 +912,7 @@ impl TinkoffInvestment {
         portfolio_position: &PortfolioPosition,
         fx: &FxBook,
     ) -> color_eyre::Result<Paper<NoneProfit>> {
-        // Portfolio is requested in RUB; the instrument keeps its trading currency.
+        // Portfolio is requested in RUB; the position keeps the currency it is exposed to.
         let mut position = Position::try_from(portfolio_position)?;
         ensure_rub(&position)?;
 
@@ -1541,6 +1562,44 @@ fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> 
         })
 }
 
+/// Instrument exposed to the `exposure` currency, or to the `trading` one when it is unknown.
+fn instrument(
+    name: String,
+    ticker: String,
+    asset_uid: String,
+    exposure: &str,
+    trading: &str,
+) -> Instrument {
+    let parse = |code: &str| Currency::from_code(&code.to_ascii_uppercase());
+    Instrument {
+        currency: parse(exposure).or_else(|| parse(trading)),
+        name,
+        ticker: Ticker::new(ticker),
+        asset_uid: Some(asset_uid).filter(|uid| !uid.is_empty()),
+    }
+}
+
+fn from_api_instrument(i: ApiInstrument) -> Instrument {
+    instrument(i.name, i.ticker, i.asset_uid, &i.currency, &i.currency)
+}
+
+/// Bond exposed to its nominal currency, e.g. USD for a replacement bond traded in RUB.
+fn from_api_bond(b: ApiBond) -> Instrument {
+    let nominal = b.nominal.map(|n| n.currency).unwrap_or_default();
+    instrument(b.name, b.ticker, b.asset_uid, &nominal, &b.currency)
+}
+
+/// Currency exposed to itself, not to RUB it is traded in.
+fn from_api_currency(c: ApiCurrency) -> Instrument {
+    instrument(
+        c.name,
+        c.ticker,
+        c.asset_uid,
+        &c.iso_currency_name,
+        &c.currency,
+    )
+}
+
 fn money_value_amount(mv: &t_invest_sdk::api::MoneyValue) -> Decimal {
     Decimal::from(mv.units) + Decimal::from(mv.nano) / dec!(1_000_000_000)
 }
@@ -2149,6 +2208,73 @@ mod tests {
 
         // Assert
         assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case::replacement_bond("usd", Currency::USD)]
+    #[case::rub_bond("rub", Currency::RUB)]
+    #[case::unknown_nominal("", Currency::RUB)]
+    fn bond_instrument_is_exposed_to_nominal_currency(
+        #[case] nominal: &str,
+        #[case] expected: Currency,
+    ) {
+        // Arrange
+        let bond = ApiBond {
+            name: "Bond".to_string(),
+            ticker: "BND".to_string(),
+            currency: "rub".to_string(),
+            nominal: Some(t_invest_sdk::api::MoneyValue {
+                units: 1000,
+                nano: 0,
+                currency: nominal.to_string(),
+            }),
+            ..Default::default()
+        };
+
+        // Act
+        let instrument = from_api_bond(bond);
+
+        // Assert
+        assert_eq!(instrument.currency, Some(expected));
+    }
+
+    #[test]
+    fn currency_instrument_is_exposed_to_its_currency() {
+        // Arrange
+        let currency = ApiCurrency {
+            name: "Доллар США".to_string(),
+            ticker: "USD000UTSTOM".to_string(),
+            currency: "rub".to_string(),
+            iso_currency_name: "usd".to_string(),
+            asset_uid: "uid".to_string(),
+            ..Default::default()
+        };
+
+        // Act
+        let instrument = from_api_currency(currency);
+
+        // Assert
+        assert_eq!(instrument.currency, Some(Currency::USD));
+        assert_eq!(instrument.ticker, Ticker::new("USD000UTSTOM"));
+        assert_eq!(instrument.asset_uid.as_deref(), Some("uid"));
+    }
+
+    #[test]
+    fn share_instrument_is_exposed_to_trading_currency() {
+        // Arrange
+        let share = ApiInstrument {
+            name: "Share".to_string(),
+            ticker: "SHR".to_string(),
+            currency: "usd".to_string(),
+            ..Default::default()
+        };
+
+        // Act
+        let instrument = from_api_instrument(share);
+
+        // Assert
+        assert_eq!(instrument.currency, Some(Currency::USD));
+        assert_eq!(instrument.asset_uid, None);
     }
 
     #[test]

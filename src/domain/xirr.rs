@@ -42,12 +42,15 @@ const UPPER_RATE: Decimal = dec!(10);
 /// Rate precision the search stops at.
 const TOLERANCE: Decimal = dec!(0.0000001);
 const MAX_ITERATIONS: usize = 200;
+/// How many times a search bound is halved towards zero when the NPV overflows at it.
+const MAX_BOUND_HALVINGS: usize = 16;
 const SECONDS_IN_YEAR: Decimal = dec!(31_536_000);
 
 /// Annual rate at which the net present value of `flows` is zero (XIRR, Actual/365).
 ///
 /// Returns `None` when flows do not have both investments and returns, span less than
-/// a day, or the rate is outside -95%..1000% a year.
+/// a day, or the rate is outside -95%..1000% a year. For long spans the search range
+/// narrows towards zero until the net present value fits into `Decimal`.
 ///
 /// # Examples
 ///
@@ -81,9 +84,8 @@ pub fn xirr(flows: &[CashFlow]) -> Option<Decimal> {
         .collect();
     let npv = |rate: Decimal| net_present_value(&timed, rate);
 
-    let (mut low, mut high) = (LOWER_RATE, UPPER_RATE);
-    let mut npv_low = npv(low)?;
-    let npv_high = npv(high)?;
+    let (mut low, mut npv_low) = computable_bound(LOWER_RATE, npv)?;
+    let (mut high, npv_high) = computable_bound(UPPER_RATE, npv)?;
     if npv_low.is_zero() {
         return Some(low);
     }
@@ -108,6 +110,18 @@ pub fn xirr(flows: &[CashFlow]) -> Option<Decimal> {
         }
     }
     Some((low + high) / dec!(2))
+}
+
+/// Closest to `bound` rate, halving it towards zero, at which `npv` does not overflow.
+///
+/// Over decades `(1 + rate)^years` exceeds the `Decimal` range at the extreme rates.
+fn computable_bound(
+    bound: Decimal,
+    npv: impl Fn(Decimal) -> Option<Decimal>,
+) -> Option<(Decimal, Decimal)> {
+    std::iter::successors(Some(bound), |rate| Some(rate / dec!(2)))
+        .take(MAX_BOUND_HALVINGS)
+        .find_map(|rate| Some((rate, npv(rate)?)))
 }
 
 /// Sum of `amount / (1 + rate)^years`; `None` on arithmetic overflow.
@@ -156,6 +170,25 @@ mod tests {
 
         // Assert
         assert_eq!(rate.map(|r| r.round_dp(4)), Some(expected));
+    }
+
+    #[rstest]
+    #[case::twenty_years(20)]
+    #[case::thirty_years(30)]
+    #[case::fifty_years(50)]
+    fn xirr_finds_rate_over_decades(#[case] years: i64) {
+        // Arrange
+        let coupons = (1..=years).map(|y| flow(365 * y, dec!(100)));
+        let flows: Vec<CashFlow> = std::iter::once(flow(0, dec!(-1000)))
+            .chain(coupons)
+            .chain(std::iter::once(flow(365 * years, dec!(1000))))
+            .collect();
+
+        // Act
+        let rate = xirr(&flows);
+
+        // Assert
+        assert_eq!(rate.map(|r| r.round_dp(4)), Some(dec!(0.1)));
     }
 
     #[rstest]

@@ -57,6 +57,7 @@ pub struct CurrencyAllocation {
 #[derive(Debug, Clone)]
 pub struct CurrencyItem {
     pub currency: Currency,
+    /// Value of papers exposed to `currency`, in RUB
     pub value: Money,
     pub percentage: Decimal,
 }
@@ -82,6 +83,7 @@ pub struct PositionItem {
     pub name: String,
     pub ticker: Ticker,
     pub instrument_type: &'static str,
+    /// Current value in RUB
     pub value: Money,
     pub percentage: Decimal,
 }
@@ -445,7 +447,8 @@ impl CurrencyAllocation {
                 };
                 CurrencyItem {
                     currency,
-                    value: Money::from_value(value, currency),
+                    // Paper values are converted to RUB, the currency is only their exposure.
+                    value: Money::from_value(value, Currency::RUB),
                     percentage,
                 }
             })
@@ -476,49 +479,20 @@ impl CurrencyAllocation {
 impl PositionConcentration {
     #[must_use]
     fn from_papers(papers: &[LoadedPaper]) -> Self {
-        let mut position_values: Vec<(String, &Ticker, &'static str, Decimal, Currency)> =
-            Vec::new();
+        let mut position_values: Vec<(String, &Ticker, &'static str, Decimal)> = papers
+            .iter()
+            .map(|paper| match paper {
+                LoadedPaper::Bond(p) => (p.name.clone(), &p.ticker, "Bond", p.current().value),
+                LoadedPaper::Share(p) => (p.name.clone(), &p.ticker, "Share", p.current().value),
+                LoadedPaper::Etf(p) => (p.name.clone(), &p.ticker, "ETF", p.current().value),
+                LoadedPaper::Currency(p) => {
+                    (p.name.clone(), &p.ticker, "Currency", p.current().value)
+                }
+                LoadedPaper::Future(p) => (p.name.clone(), &p.ticker, "Future", p.current().value),
+            })
+            .collect();
 
-        for paper in papers {
-            let (name, ticker, instrument_type, value, currency) = match paper {
-                LoadedPaper::Bond(p) => (
-                    p.name.clone(),
-                    &p.ticker,
-                    "Bond",
-                    p.current().value,
-                    p.currency(),
-                ),
-                LoadedPaper::Share(p) => (
-                    p.name.clone(),
-                    &p.ticker,
-                    "Share",
-                    p.current().value,
-                    p.currency(),
-                ),
-                LoadedPaper::Etf(p) => (
-                    p.name.clone(),
-                    &p.ticker,
-                    "ETF",
-                    p.current().value,
-                    p.currency(),
-                ),
-                LoadedPaper::Currency(p) | LoadedPaper::Future(p) => (
-                    p.name.clone(),
-                    &p.ticker,
-                    match paper {
-                        LoadedPaper::Etf(_) => "ETF",
-                        LoadedPaper::Currency(_) => "Currency",
-                        LoadedPaper::Future(_) => "Future",
-                        _ => unreachable!(),
-                    },
-                    p.current().value,
-                    p.currency(),
-                ),
-            };
-            position_values.push((name, ticker, instrument_type, value, currency));
-        }
-
-        let total_value: Decimal = position_values.iter().map(|(_, _, _, v, _)| v).sum();
+        let total_value: Decimal = position_values.iter().map(|(_, _, _, v)| v).sum();
         let total_positions = position_values.len();
 
         // Sort by value descending
@@ -527,7 +501,7 @@ impl PositionConcentration {
         // Calculate percentages and create PositionItem list
         let mut items: Vec<PositionItem> = position_values
             .iter()
-            .map(|(name, ticker, instrument_type, value, currency)| {
+            .map(|(name, ticker, instrument_type, value)| {
                 let percentage = if total_value.is_zero() {
                     dec!(0)
                 } else {
@@ -537,7 +511,7 @@ impl PositionConcentration {
                     name: name.clone(),
                     ticker: (*ticker).clone(),
                     instrument_type,
-                    value: Money::from_value(*value, *currency),
+                    value: Money::from_value(*value, Currency::RUB),
                     percentage,
                 }
             })
@@ -859,6 +833,66 @@ mod tests {
         assert_eq!(allocation.currency_count, 2);
         // HHI = 0.5^2 + 0.5^2 = 0.5
         assert_eq!(allocation.hhi, dec!(0.5));
+    }
+
+    /// Share exposed to `currency` with prices converted to RUB, as loaded from the API.
+    fn share_priced_in_rub(ticker: &str, currency: Currency, value: Decimal) -> LoadedPaper {
+        let rub = Currency::RUB;
+        LoadedPaper::Share(Paper {
+            name: ticker.to_string(),
+            ticker: Ticker::new(ticker),
+            figi: Figi::new(ticker),
+            position: Position {
+                currency,
+                average_buy_price: Money::from_value(value, rub),
+                current_instrument_price: Money::from_value(value, rub),
+                accrued_interest: Money::zero(rub),
+                quantity: dec!(1),
+                daily_yield: Money::zero(rub),
+                blocked: false,
+                blocked_lots: dec!(0),
+            },
+            totals: Totals {
+                additional_profit: Money::zero(rub),
+                fees: Money::zero(rub),
+                cash_flows: vec![],
+            },
+            profit: DividendProfit,
+            bond: None,
+        })
+    }
+
+    #[test]
+    fn currency_allocation_values_are_in_rub() {
+        // Arrange
+        let papers = vec![
+            share_priced_in_rub("USDSHARE", Currency::USD, dec!(9000)),
+            share_priced_in_rub("RUBSHARE", Currency::RUB, dec!(1000)),
+        ];
+
+        // Act
+        let allocation = CurrencyAllocation::from_papers(&papers);
+
+        // Assert
+        let usd = &allocation.allocations[0];
+        assert_eq!(usd.currency, Currency::USD);
+        assert_eq!(usd.value, Money::from_value(dec!(9000), Currency::RUB));
+        assert_eq!(usd.percentage, dec!(90));
+    }
+
+    #[test]
+    fn position_concentration_values_are_in_rub() {
+        // Arrange
+        let papers = vec![share_priced_in_rub("USDSHARE", Currency::USD, dec!(9000))];
+
+        // Act
+        let concentration = PositionConcentration::from_papers(&papers);
+
+        // Assert
+        assert_eq!(
+            concentration.top_positions[0].value,
+            Money::from_value(dec!(9000), Currency::RUB)
+        );
     }
 
     #[test]
