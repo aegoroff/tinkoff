@@ -7,16 +7,20 @@ use rust_decimal_macros::dec;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use tinkoff_invest_api::{
-    TinkoffInvestService,
-    tcs::{
+use t_invest_sdk::{
+    TInvestInterceptor,
+    api::{
         Account, AccountStatus, AccountType, CandleInterval, Dividend, FindInstrumentRequest,
         GetAccountsRequest, GetAccountsResponse, GetBondEventsRequest, GetCandlesRequest,
         GetDividendsRequest, GetOperationsByCursorRequest, GetOperationsByCursorResponse,
         HistoricCandle, InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus,
         InstrumentType, InstrumentsRequest, OperationItem, OperationState, OperationType,
         PortfolioPosition, PortfolioRequest, get_bond_events_request::EventType,
-        get_bond_events_response::BondEvent as ApiBondEvent, portfolio_request::CurrencyRequest,
+        get_bond_events_response::BondEvent as ApiBondEvent,
+        instruments_service_client::InstrumentsServiceClient,
+        market_data_service_client::MarketDataServiceClient,
+        operations_service_client::OperationsServiceClient, portfolio_request::CurrencyRequest,
+        users_service_client::UsersServiceClient,
     },
 };
 use tokio::sync::{OnceCell, Semaphore};
@@ -135,7 +139,7 @@ pub struct AccountPortfolio {
 
 #[derive(Clone)]
 pub struct TinkoffInvestment {
-    service: Arc<TinkoffInvestService>,
+    interceptor: TInvestInterceptor,
     /// Shared TLS channel; connected once, then cloned (cheap handle).
     channel: Arc<OnceCell<Channel>>,
 }
@@ -153,27 +157,27 @@ enum OperationInfluence {
 #[must_use]
 fn to_influence(op: OperationType) -> OperationInfluence {
     match op {
-        tinkoff_invest_api::tcs::OperationType::DividendTax
-        | tinkoff_invest_api::tcs::OperationType::DividendTaxProgressive
-        | tinkoff_invest_api::tcs::OperationType::BondTax
-        | tinkoff_invest_api::tcs::OperationType::BondTaxProgressive
-        | tinkoff_invest_api::tcs::OperationType::Coupon
-        | tinkoff_invest_api::tcs::OperationType::BenefitTax
-        | tinkoff_invest_api::tcs::OperationType::BenefitTaxProgressive
-        | tinkoff_invest_api::tcs::OperationType::Overnight
-        | tinkoff_invest_api::tcs::OperationType::Tax
-        | tinkoff_invest_api::tcs::OperationType::Dividend => OperationInfluence::PureIncome,
-        tinkoff_invest_api::tcs::OperationType::ServiceFee
-        | tinkoff_invest_api::tcs::OperationType::MarginFee
-        | tinkoff_invest_api::tcs::OperationType::BrokerFee
-        | tinkoff_invest_api::tcs::OperationType::SuccessFee
-        | tinkoff_invest_api::tcs::OperationType::TrackMfee
-        | tinkoff_invest_api::tcs::OperationType::TrackPfee
-        | tinkoff_invest_api::tcs::OperationType::CashFee
-        | tinkoff_invest_api::tcs::OperationType::OutFee
-        | tinkoff_invest_api::tcs::OperationType::OutStampDuty
-        | tinkoff_invest_api::tcs::OperationType::AdviceFee
-        | tinkoff_invest_api::tcs::OperationType::OutputPenalty => OperationInfluence::Fees,
+        t_invest_sdk::api::OperationType::DividendTax
+        | t_invest_sdk::api::OperationType::DividendTaxProgressive
+        | t_invest_sdk::api::OperationType::BondTax
+        | t_invest_sdk::api::OperationType::BondTaxProgressive
+        | t_invest_sdk::api::OperationType::Coupon
+        | t_invest_sdk::api::OperationType::BenefitTax
+        | t_invest_sdk::api::OperationType::BenefitTaxProgressive
+        | t_invest_sdk::api::OperationType::Overnight
+        | t_invest_sdk::api::OperationType::Tax
+        | t_invest_sdk::api::OperationType::Dividend => OperationInfluence::PureIncome,
+        t_invest_sdk::api::OperationType::ServiceFee
+        | t_invest_sdk::api::OperationType::MarginFee
+        | t_invest_sdk::api::OperationType::BrokerFee
+        | t_invest_sdk::api::OperationType::SuccessFee
+        | t_invest_sdk::api::OperationType::TrackMfee
+        | t_invest_sdk::api::OperationType::TrackPfee
+        | t_invest_sdk::api::OperationType::CashFee
+        | t_invest_sdk::api::OperationType::OutFee
+        | t_invest_sdk::api::OperationType::OutStampDuty
+        | t_invest_sdk::api::OperationType::AdviceFee
+        | t_invest_sdk::api::OperationType::OutputPenalty => OperationInfluence::Fees,
         _ => OperationInfluence::Unspecified,
     }
 }
@@ -320,9 +324,18 @@ impl TinkoffInvestment {
     #[must_use]
     pub fn new(token: String) -> Self {
         Self {
-            service: Arc::new(TinkoffInvestService::new(token)),
+            interceptor: TInvestInterceptor { token },
             channel: Arc::new(OnceCell::new()),
         }
+    }
+
+    /// Returns a gRPC service client on the shared TLS channel.
+    async fn client<C, F>(&self, make: F) -> color_eyre::Result<C>
+    where
+        F: FnOnce(Channel, TInvestInterceptor) -> C,
+    {
+        let channel = self.create_channel().await?;
+        Ok(make(channel, self.interceptor.clone()))
     }
 
     /// Returns a shared TLS gRPC channel (connects on first use).
@@ -380,12 +393,9 @@ impl TinkoffInvestment {
     }
 
     async fn get_instrument_by_figi(&self, figi: String) -> color_eyre::Result<Instrument> {
-        let channel = self.create_channel().await?;
         let mut instruments = self
-            .service
-            .instruments(channel)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
         let response = instruments
             .get_instrument_by(InstrumentRequest {
                 id_type: InstrumentIdType::Figi as i32,
@@ -591,12 +601,9 @@ impl TinkoffInvestment {
     }
 
     async fn get_portfolio(&self, account_id: &str) -> color_eyre::Result<AccountPortfolio> {
-        let channel = self.create_channel().await?;
         let mut operations = self
-            .service
-            .operations(channel)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
+            .client(OperationsServiceClient::with_interceptor)
+            .await?;
 
         // Money values in RUB, converted by the broker at the current rate.
         let portfolio = operations
@@ -618,14 +625,11 @@ impl TinkoffInvestment {
     ///
     /// This function will return an error if accounts cannot be retrieved.
     async fn get_accounts_response(&self) -> color_eyre::Result<GetAccountsResponse> {
-        let channel = self.create_channel().await?;
-        let mut users = self
-            .service
-            .users(channel)
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+        let mut users = self.client(UsersServiceClient::with_interceptor).await?;
         let accounts = users
-            .get_accounts(GetAccountsRequest {})
+            .get_accounts(GetAccountsRequest {
+                status: Some(AccountStatus::All as i32),
+            })
             .await
             .wrap_err("Failed to get accounts")?;
         Ok(accounts.into_inner())
@@ -661,12 +665,9 @@ impl TinkoffInvestment {
         &self,
         ticker: String,
     ) -> color_eyre::Result<Vec<InstrumentShort>> {
-        let channel = self.create_channel().await?;
         let mut instruments = self
-            .service
-            .instruments(channel)
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
         let instrument = instruments
             .find_instrument(FindInstrumentRequest {
                 instrument_kind: Some(InstrumentType::Unspecified.into()),
@@ -696,12 +697,9 @@ impl TinkoffInvestment {
         figi: &str,
         cursor: Option<String>,
     ) -> color_eyre::Result<GetOperationsByCursorResponse> {
-        let channel = self.create_channel().await?;
         let mut operations = self
-            .service
-            .operations(channel)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get operations service: {e:?}"))?;
+            .client(OperationsServiceClient::with_interceptor)
+            .await?;
         let response = operations
             .get_operations_by_cursor(GetOperationsByCursorRequest {
                 account_id: account_id.to_string(),
@@ -921,12 +919,9 @@ impl TinkoffInvestment {
     ///
     /// Returns an error if the Currencies catalog cannot be fetched.
     pub async fn load_fx_book(&self) -> color_eyre::Result<Arc<FxBook>> {
-        let channel = self.create_channel().await?;
         let mut instruments = self
-            .service
-            .instruments(channel)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
         let response = instruments
             .currencies(InstrumentsRequest {
                 instrument_status: Some(InstrumentStatus::All as i32),
@@ -1036,12 +1031,9 @@ impl TinkoffInvestment {
         year: i32,
     ) -> color_eyre::Result<DailyRates> {
         let (from, to) = year_bounds(year).ok_or_else(|| eyre::eyre!("Invalid year {year}"))?;
-        let channel = self.create_channel().await?;
         let mut market = self
-            .service
-            .marketdata(channel)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get marketdata service: {e:?}"))?;
+            .client(MarketDataServiceClient::with_interceptor)
+            .await?;
         let response = market
             .get_candles(GetCandlesRequest {
                 from: Some(prost_types::Timestamp {
@@ -1138,12 +1130,9 @@ impl TinkoffInvestment {
     }
 
     async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
-        let channel = self.create_channel().await?;
         let mut instruments = self
-            .service
-            .instruments(channel)
-            .await
-            .map_err(|e| eyre::eyre!("{e:?}"))?;
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
         let response = instruments
             .get_dividends(GetDividendsRequest {
                 instrument_id: figi,
@@ -1219,12 +1208,9 @@ impl TinkoffInvestment {
 
     /// Bond events from today on; redemptions but the last one are marked as amortization.
     async fn get_bond_events(&self, figi: String) -> color_eyre::Result<Vec<BondEvent>> {
-        let channel = self.create_channel().await?;
         let mut instruments = self
-            .service
-            .instruments(channel)
-            .await
-            .map_err(|e| eyre::eyre!("Failed to get instruments service: {e:?}"))?;
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
         let today = Utc::now()
             .date_naive()
             .and_hms_opt(0, 0, 0)
@@ -1372,7 +1358,7 @@ fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> 
         })
 }
 
-fn money_value_amount(mv: &tinkoff_invest_api::tcs::MoneyValue) -> Decimal {
+fn money_value_amount(mv: &t_invest_sdk::api::MoneyValue) -> Decimal {
     Decimal::from(mv.units) + Decimal::from(mv.nano) / dec!(1_000_000_000)
 }
 
@@ -1401,7 +1387,7 @@ mod tests {
     use rstest::rstest;
     use rust_decimal_macros::dec;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tinkoff_invest_api::tcs::{MoneyValue, Quotation};
+    use t_invest_sdk::api::{MoneyValue, Quotation};
 
     #[test]
     fn invest_tls_config_accepts_embedded_cas() {

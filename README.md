@@ -219,7 +219,7 @@ cargo test
 
 ### Dependencies
 
-- **tinkoff-invest-api**: Official Tinkoff Investment API client
+- **t-invest-sdk**: T-Invest API client
 - **tokio**: Async runtime
 - **clap**: Command line argument parsing
 - **comfy-table**: Beautiful table formatting

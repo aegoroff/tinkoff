@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use itertools::Itertools;
+use t_invest_sdk::api::{AccountType, InstrumentShort, PortfolioPosition};
 use tinkoff::{
     account_status_name, account_type_name,
     client::{AccountSelector, TinkoffInvestment},
@@ -18,7 +19,6 @@ use tinkoff::{
     progress::Progresser,
     ux,
 };
-use tinkoff_invest_api::tcs::{AccountType, InstrumentShort, PortfolioPosition};
 
 struct AppConfig {
     token: String,
@@ -338,8 +338,8 @@ fn build_cli() -> Command {
                 .default_value("tinkoff")
                 .value_parser(parse_account_type)
                 .help(
-                    "Account type: tinkoff (broker, default), iis, invest-box, invest-fund. \
-                     Selects the only open account of this type",
+                    "Account type: tinkoff (broker, default), iis, invest-box, invest-fund, \
+                     debit, saving, dfa. Selects the only open account of this type",
                 ),
         )
         .arg(

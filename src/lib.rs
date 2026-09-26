@@ -4,7 +4,7 @@ use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use tinkoff_invest_api::tcs::{AccountStatus, AccountType, MoneyValue, Quotation};
+use t_invest_sdk::api::{AccountStatus, AccountType, MoneyValue, Quotation};
 
 pub mod client;
 pub mod domain;
@@ -13,7 +13,8 @@ pub mod ux;
 
 pub use domain::risk;
 
-const ACCOUNT_TYPE_HELP: &str = "tinkoff (broker, default), iis, invest-box, invest-fund";
+const ACCOUNT_TYPE_HELP: &str =
+    "tinkoff (broker, default), iis, invest-box, invest-fund, debit, saving, dfa";
 
 /// Parses a CLI account type name into [`AccountType`].
 ///
@@ -33,6 +34,15 @@ pub fn parse_account_type(value: &str) -> Result<AccountType, String> {
     if value.eq_ignore_ascii_case("invest-fund") || value.eq_ignore_ascii_case("investfund") {
         return Ok(AccountType::InvestFund);
     }
+    if value.eq_ignore_ascii_case("debit") {
+        return Ok(AccountType::Debit);
+    }
+    if value.eq_ignore_ascii_case("saving") {
+        return Ok(AccountType::Saving);
+    }
+    if value.eq_ignore_ascii_case("dfa") {
+        return Ok(AccountType::Dfa);
+    }
 
     Err(format!(
         "unknown account type '{value}'; expected one of: {ACCOUNT_TYPE_HELP}"
@@ -47,6 +57,9 @@ pub fn account_type_name(account_type: AccountType) -> &'static str {
         AccountType::TinkoffIis => "iis",
         AccountType::InvestBox => "invest-box",
         AccountType::InvestFund => "invest-fund",
+        AccountType::Debit => "debit",
+        AccountType::Saving => "saving",
+        AccountType::Dfa => "dfa",
         AccountType::Unspecified => "unspecified",
     }
 }
@@ -58,6 +71,7 @@ pub fn account_status_name(status: AccountStatus) -> &'static str {
         AccountStatus::New => "new",
         AccountStatus::Open => "open",
         AccountStatus::Closed => "closed",
+        AccountStatus::All => "all",
         AccountStatus::Unspecified => "unspecified",
     }
 }
@@ -77,7 +91,7 @@ pub fn account_status_name(status: AccountStatus) -> &'static str {
 /// ```
 /// use tinkoff::to_decimal;
 /// use rust_decimal::Decimal;
-/// use tinkoff_invest_api::tcs::Quotation;
+/// use t_invest_sdk::api::Quotation;
 ///
 /// let q = Quotation { units: 1, nano: 100_000_000 };
 /// let decimal = to_decimal(Some(&q));
@@ -132,7 +146,7 @@ pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
-    use tinkoff_invest_api::tcs::AccountType;
+    use t_invest_sdk::api::AccountType;
 
     use super::*;
 
@@ -151,6 +165,9 @@ mod tests {
     #[case(AccountType::TinkoffIis)]
     #[case(AccountType::InvestBox)]
     #[case(AccountType::InvestFund)]
+    #[case(AccountType::Debit)]
+    #[case(AccountType::Saving)]
+    #[case(AccountType::Dfa)]
     fn account_type_name_round_trips(#[case] account_type: AccountType) {
         // Arrange
         let name = account_type_name(account_type);

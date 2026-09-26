@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use iso_currency::Currency;
-use tinkoff_invest_api::tcs::{OperationItem, OperationState};
+use t_invest_sdk::api::{OperationItem, OperationState};
 
 use crate::{to_datetime_utc, to_money};
 
