@@ -156,7 +156,7 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("No ticker passed"))?;
     let (account, instruments) = tokio::join!(
         client.get_account(&config.account),
-        client.find_instruments_by_ticker(ticker.clone()),
+        client.find_instruments_by_ticker_until_done(ticker),
     );
     let account = account?;
     let instruments = instruments?;

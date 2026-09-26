@@ -303,11 +303,12 @@ fn grpc_status(e: &eyre::Report) -> Option<&tonic::Status> {
 
 /// Whether a failed request may succeed when repeated.
 ///
-/// Errors without a gRPC status (e.g. transport failures) are considered transient,
-/// while statuses like `Unauthenticated` or `InvalidArgument` are not.
+/// Transport failures and statuses like `Unavailable` are transient, while statuses like
+/// `Unauthenticated` or `InvalidArgument` and errors of our own (e.g. a missing
+/// instrument in a response) are not.
 fn is_transient(e: &eyre::Report) -> bool {
-    grpc_status(e).is_none_or(|s| {
-        matches!(
+    match grpc_status(e) {
+        Some(s) => matches!(
             s.code(),
             Code::Unavailable
                 | Code::ResourceExhausted
@@ -315,8 +316,11 @@ fn is_transient(e: &eyre::Report) -> bool {
                 | Code::Aborted
                 | Code::Internal
                 | Code::Unknown
-        )
-    })
+        ),
+        None => e
+            .chain()
+            .any(|c| c.downcast_ref::<tonic::transport::Error>().is_some()),
+    }
 }
 
 /// Delay requested by the API before the next request when the rate limit is exhausted.
@@ -827,14 +831,27 @@ impl TinkoffInvestment {
         let mut instruments = self
             .client(InstrumentsServiceClient::with_interceptor)
             .await?;
-        let instrument = instruments
+        let response = instruments
             .find_instrument(FindInstrumentRequest {
                 instrument_kind: Some(InstrumentType::Unspecified.into()),
-                query: ticker,
+                query: ticker.clone(),
                 api_trade_available_flag: Some(false),
             })
-            .await?;
-        Ok(instrument.get_ref().instruments.clone())
+            .await
+            .wrap_err_with(|| format!("Failed to find instruments by ticker {ticker}"))?;
+        Ok(response.into_inner().instruments)
+    }
+
+    /// Search instruments by ticker with retry logic.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if instruments cannot be found after multiple retries.
+    pub async fn find_instruments_by_ticker_until_done(
+        &self,
+        ticker: &str,
+    ) -> color_eyre::Result<Vec<InstrumentShort>> {
+        with_retry(|| self.find_instruments_by_ticker(ticker.to_string())).await
     }
 
     /// Get portfolio until done with retry logic.
@@ -1505,8 +1522,6 @@ fn skipped(e: eyre::Report, instrument: &Instrument, figi: &str) -> eyre::Report
     e.wrap_err(format!("Position {} ({figi}) skipped", instrument.ticker))
 }
 
-/// Returns the instrument for `figi` or, when it failed to load, one named after the FIGI,
-/// so a position is never dropped only because its name is unknown.
 fn to_recommendation(recommendation: ApiRecommendation) -> Option<Recommendation> {
     match recommendation {
         ApiRecommendation::Buy => Some(Recommendation::Buy),
@@ -1550,6 +1565,8 @@ fn to_fundamentals(statistic: &StatisticResponse) -> Fundamentals {
     }
 }
 
+/// Returns the instrument for `figi` or, when it failed to load, one named after the FIGI,
+/// so a position is never dropped only because its name is unknown.
 fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> Instrument {
     instruments
         .get(figi)
@@ -1700,15 +1717,47 @@ mod tests {
     }
 
     #[test]
-    fn is_transient_without_status() {
+    fn is_transient_on_transport_error() {
         // Arrange
-        let error = eyre::eyre!("connection reset");
+        let error = match tonic::transport::Endpoint::from_shared("not a uri") {
+            Ok(_) => eyre::eyre!("an invalid URI is accepted"),
+            Err(e) => eyre::Report::new(e).wrap_err("Failed to create channel"),
+        };
 
         // Act
         let transient = is_transient(&error);
 
         // Assert
         assert!(transient);
+    }
+
+    #[test]
+    fn is_transient_not_on_own_error() {
+        // Arrange
+        let error = eyre::eyre!("Instrument FIGI not found");
+
+        // Act
+        let transient = is_transient(&error);
+
+        // Assert
+        assert!(!transient);
+    }
+
+    #[tokio::test]
+    async fn with_retry_stops_on_own_error() {
+        // Arrange
+        let calls = AtomicU32::new(0);
+
+        // Act
+        let result: color_eyre::Result<()> = with_retry(|| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(eyre::eyre!("Instrument FIGI not found"))
+        })
+        .await;
+
+        // Assert
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[rstest]
