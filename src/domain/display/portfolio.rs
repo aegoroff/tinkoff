@@ -16,6 +16,7 @@ const INCOME: &str = "Income";
 const CURRENT_VALUE: &str = "Current value";
 const BALANCE_VALUE: &str = "Balance value";
 const BALANCE_INCOME: &str = "Balance income";
+const DAILY_CHANGE: &str = "Daily change";
 const XIRR: &str = "Annual return (XIRR)";
 const YTM: &str = "Yield to maturity";
 
@@ -58,6 +59,7 @@ impl<P: Profit> Display for Asset<P> {
         ux::add_row(&mut table, BALANCE_VALUE, self.balance());
         ux::add_row(&mut table, CURRENT_VALUE, self.current());
         ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
+        ux::add_row_colorized(&mut table, DAILY_CHANGE, self.daily_income());
 
         if P::applicable() {
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
@@ -107,9 +109,20 @@ impl<P: Profit> Display for Paper<P> {
         );
         ux::add_row(&mut table, BALANCE_VALUE, self.balance());
         ux::add_row(&mut table, CURRENT_VALUE, self.current());
+        if !self.position.blocked_lots.is_zero() {
+            ux::add_row(
+                &mut table,
+                "Blocked by orders",
+                self.position.blocked_lots.round_dp(2),
+            );
+        }
+        if self.position.blocked {
+            ux::add_row(&mut table, "Blocked by exchange", "yes");
+        }
         table.add_row(["", ""]);
 
         ux::add_row_colorized(&mut table, INCOME, self.income());
+        ux::add_row_colorized(&mut table, DAILY_CHANGE, self.daily_income());
 
         if P::applicable() {
             ux::add_row_colorized(&mut table, P::name(), self.dividends());
@@ -153,6 +166,7 @@ impl Display for Portfolio {
             table.set_header([title, Cell::new("")]);
 
             ux::add_row_colorized(&mut table, BALANCE_INCOME, self.income());
+            ux::add_row_colorized(&mut table, DAILY_CHANGE, self.daily_income());
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
             ux::add_row_colorized(&mut table, "Dividends and coupons", self.dividends());
             add_xirr_row(&mut table, self.xirr(Utc::now()));

@@ -201,12 +201,18 @@ impl TryFrom<&PortfolioPosition> for Position {
             .filter(|nkd| !nkd.value.is_zero())
             .unwrap_or_else(|| Money::zero(current_instrument_price.currency));
 
+        let daily_yield = to_money(value.daily_yield.as_ref())
+            .unwrap_or_else(|| Money::zero(current_instrument_price.currency));
+
         Ok(Self {
             currency,
             average_buy_price,
             current_instrument_price,
             accrued_interest,
             quantity,
+            daily_yield,
+            blocked: value.blocked,
+            blocked_lots: to_decimal(value.blocked_lots.as_ref()),
         })
     }
 }
@@ -1266,6 +1272,7 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
         position.average_buy_price,
         position.current_instrument_price,
         position.accrued_interest,
+        position.daily_yield,
     ] {
         if money.currency != Currency::RUB {
             return Err(eyre::eyre!(
@@ -1552,6 +1559,47 @@ mod tests {
     }
 
     #[test]
+    fn position_keeps_daily_yield_and_blocked_lots() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            daily_yield: Some(rub(-20)),
+            blocked: true,
+            blocked_lots: Some(Quotation { units: 1, nano: 0 }),
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert_eq!(position.daily_yield.value, dec!(-20));
+        assert!(position.blocked);
+        assert_eq!(position.blocked_lots, dec!(1));
+    }
+
+    #[test]
+    fn position_daily_yield_zero_when_missing() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert!(position.daily_yield.value.is_zero());
+        assert!(!position.blocked);
+        assert!(position.blocked_lots.is_zero());
+    }
+
+    #[test]
     fn position_accrued_interest_zero_when_nkd_missing() {
         // Arrange
         let position = PortfolioPosition {
@@ -1751,6 +1799,9 @@ mod tests {
             current_instrument_price: Money::from_value(dec!(110), currency),
             accrued_interest: Money::zero(currency),
             quantity: dec!(1),
+            daily_yield: Money::zero(currency),
+            blocked: false,
+            blocked_lots: dec!(0),
         }
     }
 

@@ -725,6 +725,9 @@ mod tests {
                 current_instrument_price: Money::from_value(dec!(5), currency),
                 accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
+                daily_yield: Money::zero(currency),
+                blocked: false,
+                blocked_lots: dec!(0),
             },
             totals: Totals {
                 additional_profit: Money::zero(currency),
@@ -748,6 +751,9 @@ mod tests {
                 current_instrument_price: Money::from_value(dec!(5), currency),
                 accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
+                daily_yield: Money::zero(currency),
+                blocked: false,
+                blocked_lots: dec!(0),
             },
             totals: Totals {
                 additional_profit: Money::zero(currency),
@@ -780,6 +786,9 @@ mod tests {
                 current_instrument_price: Money::from_value(dec!(100), Currency::RUB),
                 accrued_interest: Money::zero(Currency::RUB),
                 quantity: dec!(10),
+                daily_yield: Money::zero(Currency::RUB),
+                blocked: false,
+                blocked_lots: dec!(0),
             },
             totals: Totals {
                 additional_profit: Money::zero(Currency::RUB),
@@ -809,6 +818,9 @@ mod tests {
                     current_instrument_price: Money::from_value(dec!(50), Currency::RUB),
                     accrued_interest: Money::zero(Currency::RUB),
                     quantity: dec!(10),
+                    daily_yield: Money::zero(Currency::RUB),
+                    blocked: false,
+                    blocked_lots: dec!(0),
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
@@ -828,6 +840,9 @@ mod tests {
                     current_instrument_price: Money::from_value(dec!(50), Currency::USD),
                     accrued_interest: Money::zero(Currency::USD),
                     quantity: dec!(10),
+                    daily_yield: Money::zero(Currency::USD),
+                    blocked: false,
+                    blocked_lots: dec!(0),
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::USD),
@@ -859,6 +874,9 @@ mod tests {
                     current_instrument_price: Money::from_value(dec!(100), Currency::RUB),
                     accrued_interest: Money::zero(Currency::RUB),
                     quantity: dec!(10),
+                    daily_yield: Money::zero(Currency::RUB),
+                    blocked: false,
+                    blocked_lots: dec!(0),
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
@@ -878,6 +896,9 @@ mod tests {
                     current_instrument_price: Money::from_value(dec!(10), Currency::RUB),
                     accrued_interest: Money::zero(Currency::RUB),
                     quantity: dec!(10),
+                    daily_yield: Money::zero(Currency::RUB),
+                    blocked: false,
+                    blocked_lots: dec!(0),
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),

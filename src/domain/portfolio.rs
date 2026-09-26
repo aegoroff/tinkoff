@@ -102,6 +102,12 @@ impl Portfolio {
         Income,
         Income::zero(Currency::RUB)
     );
+    impl_portfolio_aggregator!(
+        daily_income,
+        daily_income,
+        Income,
+        Income::zero(Currency::RUB)
+    );
     impl_portfolio_aggregator!(balance, balance, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(dividends, dividends, Money, Money::zero(Currency::RUB));
@@ -154,6 +160,7 @@ impl Portfolio {
 trait PortfolioAsset {
     fn income(&self) -> Income;
     fn total_income(&self) -> Income;
+    fn daily_income(&self) -> Income;
     fn balance(&self) -> Money;
     fn current(&self) -> Money;
     fn dividends(&self) -> Money;
@@ -167,6 +174,10 @@ impl<P: Profit> PortfolioAsset for Asset<P> {
 
     fn total_income(&self) -> Income {
         Asset::total_income(self)
+    }
+
+    fn daily_income(&self) -> Income {
+        Asset::daily_income(self)
     }
 
     fn balance(&self) -> Money {
@@ -217,6 +228,13 @@ impl<P: Profit> Asset<P> {
     pub fn total_income(&self) -> Income {
         self.fold(Income::zero, |mut acc, p| {
             acc += p.total_income();
+            acc
+        })
+    }
+
+    pub fn daily_income(&self) -> Income {
+        self.fold(Income::zero, |mut acc, p| {
+            acc += p.daily_income();
             acc
         })
     }
@@ -323,6 +341,30 @@ mod tests {
     }
 
     #[rstest]
+    fn portfolio_daily_income_sums_positions(test_portfolio: Portfolio) {
+        // Arrange
+
+        // Act
+        let daily = test_portfolio.daily_income();
+
+        // Assert
+        assert_eq!(daily.current, dec!(1700));
+        assert_eq!(daily.balance, dec!(1650));
+    }
+
+    #[rstest]
+    fn asset_daily_income_relative_to_previous_close(test_portfolio: Portfolio) {
+        // Arrange
+
+        // Act
+        let daily = test_portfolio.bonds.daily_income();
+
+        // Assert
+        assert_eq!(daily.balance, dec!(1000));
+        assert_eq!(daily.percent(), dec!(10));
+    }
+
+    #[rstest]
     fn portfolio_papers_includes_all_assets(test_portfolio: Portfolio) {
         // Arrange
 
@@ -383,6 +425,9 @@ mod tests {
                 current_instrument_price: Money::from_value(dec!(11), currency),
                 accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
+                daily_yield: Money::from_value(dec!(100), currency),
+                blocked: false,
+                blocked_lots: dec!(0),
             },
             totals: Totals {
                 additional_profit: Money::from_value(dec!(100), currency),
@@ -403,6 +448,9 @@ mod tests {
                 current_instrument_price: Money::from_value(dec!(6), currency),
                 accrued_interest: Money::zero(currency),
                 quantity: dec!(100),
+                daily_yield: Money::from_value(dec!(-50), currency),
+                blocked: false,
+                blocked_lots: dec!(0),
             },
             totals: Totals {
                 additional_profit: Money::from_value(dec!(50), currency),

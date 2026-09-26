@@ -166,6 +166,8 @@ The application provides rich, formatted output including:
 - **Asset Breakdown**: Detailed view by asset type (shares, bonds, ETFs, etc.)
 - **Profit/Loss**: Current profit/loss with percentage calculations
 - **Annual Return (XIRR)**: Return of all payments of a position (buys, sells, dividends, coupons, taxes, fees) plus its current value, per year; also for asset types and the whole portfolio
+- **Daily Change**: Change of position, asset type and portfolio value since the previous trading day, as calculated by the broker
+- **Blocked Positions**: Amount reserved by active orders and exchange blocks are shown in paper cards
 - **Bond Details**: Maturity date, next offer date, yield to maturity and yield to offer (not shown when future coupons are not known yet, e.g. floating ones)
 - **Income Sources**: Dividends, coupons, and other income
 - **Trading History**: Detailed operation history with dates, prices, and quantities

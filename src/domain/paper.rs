@@ -104,6 +104,12 @@ pub struct Position {
     /// Accrued coupon interest (NKD) per unit; zero for non-bond instruments
     pub accrued_interest: Money,
     pub quantity: Decimal,
+    /// Change of the whole position value since the previous trading day
+    pub daily_yield: Money,
+    /// Trading of the instrument is blocked by the exchange
+    pub blocked: bool,
+    /// Amount reserved by active orders
+    pub blocked_lots: Decimal,
 }
 
 #[derive(Clone)]
@@ -216,6 +222,13 @@ impl<P: Profit> Paper<P> {
             * self.position.quantity
     }
 
+    /// Change since the previous trading day relative to the value at its close
+    #[must_use]
+    pub fn daily_income(&self) -> Income {
+        let current = self.current();
+        Income::new(current, current - self.position.daily_yield)
+    }
+
     /// Dividends and coupons
     #[must_use]
     pub fn dividends(&self) -> Income {
@@ -291,6 +304,7 @@ impl<P: Profit> Paper<P> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -307,6 +321,9 @@ mod tests {
                 current_instrument_price: Money::from_value(dec!(990), currency),
                 accrued_interest: Money::from_value(accrued_interest, currency),
                 quantity: dec!(10),
+                daily_yield: Money::zero(currency),
+                blocked: false,
+                blocked_lots: dec!(0),
             },
             totals: Totals {
                 additional_profit: Money::zero(currency),
@@ -360,6 +377,26 @@ mod tests {
         assert_eq!(paper.name, "Bond");
         assert_eq!(paper.figi.as_str(), "FIGI");
         assert_eq!(paper.current().value, dec!(10055));
+    }
+
+    #[rstest]
+    #[case::growth(dec!(55), dec!(10000))]
+    #[case::fall(dec!(-45), dec!(10100))]
+    #[case::unchanged(dec!(0), dec!(10055))]
+    fn daily_income_starts_from_previous_close(
+        #[case] daily_yield: Decimal,
+        #[case] previous: Decimal,
+    ) {
+        // Arrange
+        let mut paper = bond(dec!(15.5));
+        paper.position.daily_yield = Money::from_value(daily_yield, Currency::RUB);
+
+        // Act
+        let daily = paper.daily_income();
+
+        // Assert
+        assert_eq!(daily.current, dec!(10055));
+        assert_eq!(daily.balance, previous);
     }
 
     #[test]
