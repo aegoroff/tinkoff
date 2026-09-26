@@ -19,7 +19,6 @@ This is a Rust console client for Tinkoff Investment API that provides portfolio
 ### Error Handling
 
 - Use `color_eyre::eyre::Result<T>` for application-level errors
-- Use `TIResult<T>` for Tinkoff API specific operations
 - Always provide context with `.wrap_err_with()` or `.map_err()`
 - Avoid `unwrap()` in production code; use `?` operator or proper error handling
 - Use `eyre::eyre!()` for creating custom errors
