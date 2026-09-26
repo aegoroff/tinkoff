@@ -90,6 +90,8 @@ impl AsRef<str> for Ticker {
 pub struct Instrument {
     pub name: String,
     pub ticker: Ticker,
+    /// Trading currency; `None` when the API returned an unknown code
+    pub currency: Option<Currency>,
 }
 
 #[derive(Clone, Copy)]
