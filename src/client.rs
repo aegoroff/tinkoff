@@ -19,7 +19,7 @@ use tinkoff_invest_api::{
 };
 use tokio::sync::{OnceCell, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 use tonic::Code;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 
@@ -223,6 +223,13 @@ const MAX_SERVER_DELAY: Duration = Duration::from_secs(60);
 /// gRPC metadata key with seconds left until the API rate limit window resets.
 const RATE_LIMIT_RESET_HEADER: &str = "x-ratelimit-reset";
 
+/// Shortest rate limit wait worth telling the user about.
+const NOTICEABLE_DELAY: Duration = Duration::from_secs(1);
+
+/// End of the last announced rate limit wait, shared by all concurrent requests
+/// so that hitting the limit is announced once rather than by every waiting task.
+static RATE_LIMIT_WAIT_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// Executes a future with exponential backoff retry logic.
 ///
 /// Only transient failures (see [`is_transient`]) are retried, up to [`MAX_ATTEMPTS`] times
@@ -243,13 +250,40 @@ where
                 return Err(e.wrap_err(format!("Operation failed after {MAX_ATTEMPTS} attempts")));
             }
             Err(e) => {
-                let wait = server_retry_delay(&e).map_or(delay, |d| d.max(delay));
+                let wait = match server_retry_delay(&e) {
+                    Some(server_delay) => {
+                        announce_rate_limit_wait(server_delay);
+                        server_delay.max(delay)
+                    }
+                    None => delay,
+                };
                 sleep(wait).await;
                 delay *= 2;
                 attempt += 1;
             }
         }
     }
+}
+
+/// Prints a notice that requests are paused until the API rate limit resets.
+fn announce_rate_limit_wait(wait: Duration) {
+    let until = Instant::now() + wait;
+    let Ok(mut last) = RATE_LIMIT_WAIT_UNTIL.lock() else {
+        return;
+    };
+    if should_announce_wait(*last, until, wait) {
+        *last = Some(until);
+        eprintln!(
+            "API rate limit reached, waiting {}s for it to reset...",
+            wait.as_secs()
+        );
+    }
+}
+
+/// Whether a wait ending at `until` is long enough and not already covered by
+/// the previously announced one ending at `last`.
+fn should_announce_wait(last: Option<Instant>, until: Instant, wait: Duration) -> bool {
+    wait >= NOTICEABLE_DELAY && last.is_none_or(|last| until > last + NOTICEABLE_DELAY)
 }
 
 /// Returns the gRPC status carried by the error chain, if any.
@@ -1563,6 +1597,30 @@ mod tests {
 
         // Assert
         assert_eq!(format!("{error:#}"), "Position SBER (FIGI1) skipped: boom");
+    }
+
+    #[rstest]
+    #[case::first_long_wait(None, 42, 42, true)]
+    #[case::short_wait(None, 0, 0, false)]
+    #[case::same_window(Some(42), 42, 42, false)]
+    #[case::within_a_second(Some(42), 43, 43, false)]
+    #[case::next_window(Some(42), 100, 58, true)]
+    fn should_announce_wait_once_per_window(
+        #[case] last_after: Option<u64>,
+        #[case] until_after: u64,
+        #[case] wait: u64,
+        #[case] expected: bool,
+    ) {
+        // Arrange
+        let now = Instant::now();
+        let last = last_after.map(|secs| now + Duration::from_secs(secs));
+        let until = now + Duration::from_secs(until_after);
+
+        // Act
+        let announce = should_announce_wait(last, until, Duration::from_secs(wait));
+
+        // Assert
+        assert_eq!(announce, expected);
     }
 
     fn rub(units: i64) -> MoneyValue {
