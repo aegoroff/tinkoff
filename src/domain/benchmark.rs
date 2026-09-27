@@ -105,27 +105,17 @@ pub struct BenchmarkComparison {
 }
 
 impl BenchmarkComparison {
-    /// Compares returns of the portfolio papers as if sold at `at` with `indices`.
-    ///
-    /// Currencies are left out of securities: they are cash, their payments are conversions
-    /// that may come from papers sold long ago and distort the return.
+    /// Compares returns of the portfolio papers as if sold at `at` with `indices`;
+    /// securities are all papers but currencies, see [`Portfolio::payments`].
     #[must_use]
     pub fn new(portfolio: &Portfolio, indices: Vec<IndexHistory>, at: DateTime<Utc>) -> Self {
-        let payments = [
-            portfolio.shares.payments(),
-            portfolio.bonds.payments(),
-            portfolio.etfs.payments(),
-            portfolio.futures.payments(),
-        ]
-        .concat();
-        let flows = [
-            portfolio.shares.cash_flows_until(at),
-            portfolio.bonds.cash_flows_until(at),
-            portfolio.etfs.cash_flows_until(at),
-            portfolio.futures.cash_flows_until(at),
-        ]
-        .concat();
-        let securities = benchmark_row("Securities", &payments, xirr(&flows), &indices, at);
+        let securities = benchmark_row(
+            "Securities",
+            &portfolio.payments(),
+            portfolio.xirr(at),
+            &indices,
+            at,
+        );
         let rows = std::iter::once(securities)
             .chain(asset_row("Shares", &portfolio.shares, &indices, at))
             .chain(asset_row("Bonds", &portfolio.bonds, &indices, at))

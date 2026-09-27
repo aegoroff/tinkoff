@@ -123,27 +123,29 @@ impl Portfolio {
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(dividends, dividends, Money, Money::zero(Currency::RUB));
 
-    /// Operation payments of all papers.
+    /// Operation payments of all securities, i.e. papers but currencies.
+    ///
+    /// Currencies are cash: their payments are conversions, e.g. of papers sold long ago,
+    /// not investments, and would distort the return.
     #[must_use]
     pub fn payments(&self) -> Vec<CashFlow> {
         [
             self.bonds.payments(),
             self.shares.payments(),
             self.etfs.payments(),
-            self.currencies.payments(),
             self.futures.payments(),
         ]
         .concat()
     }
 
-    /// Annual return (XIRR) of all papers as if the portfolio were sold at `at`.
+    /// Annual return (XIRR) of all securities as if they were sold at `at`;
+    /// currencies are left out as in [`Portfolio::payments`].
     #[must_use]
     pub fn xirr(&self, at: DateTime<Utc>) -> Option<Decimal> {
         let flows: Vec<CashFlow> = [
             self.bonds.cash_flows_until(at),
             self.shares.cash_flows_until(at),
             self.etfs.cash_flows_until(at),
-            self.currencies.cash_flows_until(at),
             self.futures.cash_flows_until(at),
         ]
         .concat();
@@ -542,6 +544,34 @@ mod tests {
 
         // Assert
         assert_eq!(rate.map(|r| r.round_dp(4)), Some(dec!(0.1333)));
+    }
+
+    #[rstest]
+    fn portfolio_xirr_leaves_currencies_out(mut test_portfolio: Portfolio) {
+        // Arrange: dollars of papers sold long ago are converted to rubles
+        test_portfolio.shares.papers.clear();
+        let bought = chrono::TimeZone::with_ymd_and_hms(&Utc, 2025, 1, 1, 0, 0, 0).unwrap();
+        let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 1, 1, 0, 0, 0).unwrap();
+        test_portfolio.bonds.papers[0].totals.cash_flows = vec![CashFlow {
+            date: bought,
+            amount: dec!(-1000),
+        }];
+        let mut dollars = test_portfolio.bonds.papers[0]
+            .clone()
+            .with_profit(NoneProfit);
+        dollars.totals.cash_flows = vec![CashFlow {
+            date: bought,
+            amount: dec!(40000),
+        }];
+        test_portfolio.currencies.add_paper(dollars);
+
+        // Act
+        let rate = test_portfolio.xirr(now);
+        let payments = test_portfolio.payments();
+
+        // Assert: bond of 1100 bought for 1000 a year before
+        assert_eq!(rate.map(|r| r.round_dp(4)), Some(dec!(0.1)));
+        assert_eq!(payments.len(), 1);
     }
 
     #[fixture]
