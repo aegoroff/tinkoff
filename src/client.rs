@@ -45,7 +45,9 @@ use crate::{
         BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
         Position, Ticker, Totals,
-        analytics::{Analytics, Forecast, Fundamentals, Recommendation, ShareAnalytics},
+        analytics::{
+            Analytics, Forecast, Fundamentals, HouseForecast, Recommendation, ShareAnalytics,
+        },
         benchmark::{BENCHMARKS, IndexHistory, IndexPrices},
         bond::{BondEvent, BondEventKind, bond_info, mark_amortizations},
         calendar::{Calendar, CalendarKind, CombinedCalendar},
@@ -1816,18 +1818,32 @@ fn to_forecast(response: &GetForecastResponse, fallback: Option<Currency>) -> Op
         .find_map(|code| Currency::from_code(&code.to_ascii_uppercase()))
         .or(fallback)?;
     let money = |q: Option<&Quotation>| Money::from_value(to_decimal(q), currency);
+    let mut targets: Vec<HouseForecast> = response
+        .targets
+        .iter()
+        .map(|t| HouseForecast {
+            company: t.company.clone(),
+            recommendation: to_recommendation(t.recommendation()),
+            date: to_optional_datetime_utc(t.recommendation_date.as_ref()),
+            target_price: money(t.target_price.as_ref()),
+        })
+        .collect();
+    targets.sort_by_key(|t| std::cmp::Reverse(t.date));
     let forecast = Forecast {
         recommendation: to_recommendation(consensus.recommendation()),
         current_price: money(consensus.current_price.as_ref()),
         target_price: money(consensus.consensus.as_ref()),
         min_target: money(consensus.min_target.as_ref()),
         max_target: money(consensus.max_target.as_ref()),
-        analysts: response.targets.len(),
+        targets,
     };
     Some(forecast).filter(|f| !f.target_price.value.is_zero())
 }
 
 fn to_fundamentals(statistic: &StatisticResponse) -> Fundamentals {
+    let currency = Currency::from_code(&statistic.currency.to_ascii_uppercase());
+    // Amounts of an unknown currency are dropped rather than shown in a wrong one.
+    let money = |value: f64| Some(Money::from_value(to_metric(value)?, currency?));
     Fundamentals {
         pe: to_metric(statistic.pe_ratio_ttm),
         pb: to_metric(statistic.price_to_book_ttm),
@@ -1836,6 +1852,28 @@ fn to_fundamentals(statistic: &StatisticResponse) -> Fundamentals {
         roe: to_metric(statistic.roe),
         dividend_yield: to_metric(statistic.dividend_yield_daily_ttm),
         beta: to_metric(statistic.beta),
+        market_cap: money(statistic.market_capitalization),
+        enterprise_value: money(statistic.total_enterprise_value_mrq),
+        ps: to_metric(statistic.price_to_sales_ttm),
+        price_to_fcf: to_metric(statistic.price_to_free_cash_flow_ttm),
+        revenue: money(statistic.revenue_ttm),
+        ebitda: money(statistic.ebitda_ttm),
+        net_income: money(statistic.net_income_ttm),
+        free_cash_flow: money(statistic.free_cash_flow_ttm),
+        eps: money(statistic.eps_ttm),
+        revenue_growth: to_metric(statistic.one_year_annual_revenue_growth_rate),
+        net_margin: to_metric(statistic.net_margin_mrq),
+        roa: to_metric(statistic.roa),
+        total_debt: money(statistic.total_debt_mrq),
+        debt_to_equity: to_metric(statistic.total_debt_to_equity_mrq),
+        dividends_per_share: money(statistic.dividends_per_share),
+        five_year_dividend_yield: to_metric(statistic.five_years_average_dividend_yield),
+        payout_ratio: to_metric(statistic.dividend_payout_ratio_fy),
+        ex_dividend_date: to_optional_datetime_utc(statistic.ex_dividend_date.as_ref()),
+        // The API gives a fraction, other shares are in percent.
+        free_float: to_metric(statistic.free_float * 100.0),
+        low_52_weeks: money(statistic.low_price_last_52_weeks),
+        high_52_weeks: money(statistic.high_price_last_52_weeks),
     }
 }
 
@@ -2470,7 +2508,42 @@ mod tests {
         assert_eq!(forecast.target_price.value, dec!(120));
         assert_eq!(forecast.min_target.value, dec!(90));
         assert_eq!(forecast.max_target.value, dec!(150));
-        assert_eq!(forecast.analysts, 0);
+        assert_eq!(forecast.analysts(), 0);
+    }
+
+    #[test]
+    fn to_forecast_keeps_house_forecasts_latest_first() {
+        // Arrange
+        let target = |company: &str, seconds: i64, price: i64| TargetItem {
+            company: company.to_string(),
+            recommendation: ApiRecommendation::Hold as i32,
+            recommendation_date: Some(prost_types::Timestamp { seconds, nanos: 0 }),
+            target_price: Some(Quotation {
+                units: price,
+                nano: 0,
+            }),
+            ..Default::default()
+        };
+        let mut response = consensus("rub", 120);
+        response.targets = vec![target("Old", 1_000, 110), target("New", 2_000, 130)];
+
+        // Act
+        let forecast = to_forecast(&response, None).unwrap();
+
+        // Assert
+        let companies: Vec<&str> = forecast
+            .targets
+            .iter()
+            .map(|t| t.company.as_str())
+            .collect();
+        assert_eq!(companies, ["New", "Old"]);
+        let latest = &forecast.targets[0];
+        assert_eq!(latest.recommendation, Some(Recommendation::Hold));
+        assert_eq!(
+            latest.target_price,
+            Money::from_value(dec!(130), Currency::RUB)
+        );
+        assert_eq!(forecast.upside_to(latest.target_price), Some(dec!(30)));
     }
 
     #[test]
@@ -2487,7 +2560,7 @@ mod tests {
 
         // Assert
         assert_eq!(forecast.target_price.currency, Currency::EUR);
-        assert_eq!(forecast.analysts, 1);
+        assert_eq!(forecast.analysts(), 1);
     }
 
     #[rstest]
@@ -2546,8 +2619,49 @@ mod tests {
                 roe: Some(dec!(23.44)),
                 dividend_yield: Some(dec!(13.61)),
                 beta: Some(dec!(0.55)),
+                ..Fundamentals::default()
             }
         );
+    }
+
+    #[test]
+    fn to_fundamentals_maps_amounts_in_reporting_currency() {
+        // Arrange
+        let statistic = StatisticResponse {
+            currency: "RUB".to_string(),
+            market_capitalization: 3_722_074_873_464.0,
+            net_income_ttm: -908_369_000_000.0,
+            free_float: 0.59,
+            ..Default::default()
+        };
+
+        // Act
+        let fundamentals = to_fundamentals(&statistic);
+
+        // Assert
+        let rub = |value| Some(Money::from_value(value, Currency::RUB));
+        assert_eq!(fundamentals.market_cap, rub(dec!(3722074873464)));
+        assert_eq!(fundamentals.net_income, rub(dec!(-908369000000)));
+        assert_eq!(fundamentals.free_float, Some(dec!(59)));
+        assert_eq!(fundamentals.revenue, None);
+    }
+
+    #[test]
+    fn to_fundamentals_drops_amounts_of_unknown_currency() {
+        // Arrange
+        let statistic = StatisticResponse {
+            currency: String::new(),
+            market_capitalization: 1_000_000.0,
+            pe_ratio_ttm: 5.0,
+            ..Default::default()
+        };
+
+        // Act
+        let fundamentals = to_fundamentals(&statistic);
+
+        // Assert
+        assert_eq!(fundamentals.market_cap, None);
+        assert_eq!(fundamentals.pe, Some(dec!(5)));
     }
 
     #[rstest]

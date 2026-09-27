@@ -1,5 +1,6 @@
 //! Analyst forecasts and fundamental metrics of shares.
 
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
@@ -23,8 +24,18 @@ pub struct Forecast {
     pub target_price: Money,
     pub min_target: Money,
     pub max_target: Money,
-    /// Number of investment houses that gave a forecast
-    pub analysts: usize,
+    /// Forecasts of investment houses the consensus is made of, the latest first
+    pub targets: Vec<HouseForecast>,
+}
+
+/// Forecast of one investment house.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HouseForecast {
+    pub company: String,
+    /// `None` when the API does not specify it
+    pub recommendation: Option<Recommendation>,
+    pub date: Option<DateTime<Utc>>,
+    pub target_price: Money,
 }
 
 impl Forecast {
@@ -32,15 +43,29 @@ impl Forecast {
     /// `None` when the current price is unknown.
     #[must_use]
     pub fn upside(&self) -> Option<Decimal> {
+        self.upside_to(self.target_price)
+    }
+
+    /// Expected price change to `target` in percent; `None` when the current price is unknown.
+    #[must_use]
+    pub fn upside_to(&self, target: Money) -> Option<Decimal> {
         let current = self.current_price.value;
         if current.is_zero() {
             return None;
         }
-        Some((self.target_price.value - current) / current * dec!(100))
+        Some((target.value - current) / current * dec!(100))
+    }
+
+    /// Number of investment houses that gave a forecast
+    #[must_use]
+    pub fn analysts(&self) -> usize {
+        self.targets.len()
     }
 }
 
 /// Fundamental metrics of an asset; `None` for metrics the API does not provide.
+///
+/// Money amounts are in the reporting currency, flows are for the last 12 months.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fundamentals {
     pub pe: Option<Decimal>,
@@ -52,6 +77,34 @@ pub struct Fundamentals {
     /// Dividend yield for the last 12 months in percent
     pub dividend_yield: Option<Decimal>,
     pub beta: Option<Decimal>,
+    pub market_cap: Option<Money>,
+    pub enterprise_value: Option<Money>,
+    pub ps: Option<Decimal>,
+    pub price_to_fcf: Option<Decimal>,
+    pub revenue: Option<Money>,
+    pub ebitda: Option<Money>,
+    pub net_income: Option<Money>,
+    pub free_cash_flow: Option<Money>,
+    pub eps: Option<Money>,
+    /// Revenue change for a year in percent
+    pub revenue_growth: Option<Decimal>,
+    /// Net margin in percent
+    pub net_margin: Option<Decimal>,
+    /// Return on assets in percent
+    pub roa: Option<Decimal>,
+    pub total_debt: Option<Money>,
+    /// Total debt to equity in percent
+    pub debt_to_equity: Option<Decimal>,
+    pub dividends_per_share: Option<Money>,
+    /// Average dividend yield for five years in percent
+    pub five_year_dividend_yield: Option<Decimal>,
+    /// Share of net income paid as dividends in percent
+    pub payout_ratio: Option<Decimal>,
+    pub ex_dividend_date: Option<DateTime<Utc>>,
+    /// Shares in free circulation in percent
+    pub free_float: Option<Decimal>,
+    pub low_52_weeks: Option<Money>,
+    pub high_52_weeks: Option<Money>,
 }
 
 /// Forecast and fundamentals of a portfolio share.
@@ -100,7 +153,7 @@ mod tests {
             target_price: rub(target),
             min_target: rub(target),
             max_target: rub(target),
-            analysts: 1,
+            targets: vec![],
         }
     }
 

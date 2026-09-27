@@ -103,6 +103,9 @@ tinkoff r
 # Analyst forecasts and fundamentals of portfolio shares
 tinkoff an
 
+# ... or detailed ones of a single share: forecasts of every investment house and all fundamentals
+tinkoff an LKOH
+
 # Risk metrics plus rebalancing recommendations to your target allocation
 tinkoff r --target bonds=60,shares=30,etfs=10
 

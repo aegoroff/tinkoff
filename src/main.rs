@@ -107,7 +107,7 @@ fn run_subcommand<'a>(
         COMBINED_CMD => Box::pin(calendar(config, matches, CalendarKind::Combined)),
         RISK_CMD => Box::pin(risk(config, matches)),
         ACCOUNTS_CMD => Box::pin(accounts(config)),
-        ANALYTICS_CMD => Box::pin(analytics(config)),
+        ANALYTICS_CMD => Box::pin(analytics(config, matches)),
         INCOME_CMD => Box::pin(income(config)),
         TAXES_CMD => Box::pin(taxes(config)),
         BENCHMARK_CMD => Box::pin(benchmark(config)),
@@ -288,8 +288,9 @@ async fn taxes(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-/// Prints analyst forecasts and fundamentals of the portfolio shares.
-async fn analytics(config: &AppConfig) -> Result<()> {
+/// Prints analyst forecasts and fundamentals of the portfolio shares,
+/// or detailed ones of the share with the given ticker only.
+async fn analytics(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     let client = TinkoffInvestment::new(config.token.clone());
     let portfolio = client.get_portfolio_until_done(&config.account).await?;
     let shares = portfolio
@@ -298,8 +299,29 @@ async fn analytics(config: &AppConfig) -> Result<()> {
         .filter(|p| p.instrument_type == "share")
         .collect_vec();
     let instruments = client.get_instruments_for_positions(&shares).await;
+
+    let Some(ticker) = cmd.get_one::<String>("TICKER") else {
+        let (analytics, failures) = client.get_share_analytics(&shares, &instruments).await;
+        print!("{analytics}");
+        report_failures(&failures);
+        return Ok(());
+    };
+
+    let shares = shares
+        .into_iter()
+        .filter(|p| {
+            instruments
+                .get(&p.figi)
+                .is_some_and(|i| i.ticker.as_str().eq_ignore_ascii_case(ticker))
+        })
+        .collect_vec();
+    if shares.is_empty() {
+        return Err(eyre::eyre!("No share {ticker} in the portfolio"));
+    }
     let (analytics, failures) = client.get_share_analytics(&shares, &instruments).await;
-    print!("{analytics}");
+    for share in analytics.shares() {
+        println!("{share}");
+    }
     report_failures(&failures);
     Ok(())
 }
@@ -533,6 +555,11 @@ fn analytics_cmd() -> Command {
     Command::new(ANALYTICS_CMD)
         .aliases(["analytics", "forecasts", "fundamentals"])
         .about("Get analyst forecasts and fundamentals of portfolio shares")
+        .arg(
+            arg!([TICKER])
+                .help("Ticker of a portfolio share to get detailed analytics of it only")
+                .required(false),
+        )
 }
 
 fn income_cmd() -> Command {
