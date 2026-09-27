@@ -74,6 +74,7 @@ const ACCOUNTS_CMD: &str = "ac";
 const ANALYTICS_CMD: &str = "an";
 const INCOME_CMD: &str = "in";
 const TAXES_CMD: &str = "tx";
+const BENCHMARK_CMD: &str = "bm";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -109,6 +110,7 @@ fn run_subcommand<'a>(
         ANALYTICS_CMD => Box::pin(analytics(config)),
         INCOME_CMD => Box::pin(income(config)),
         TAXES_CMD => Box::pin(taxes(config)),
+        BENCHMARK_CMD => Box::pin(benchmark(config)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -239,6 +241,41 @@ async fn income(config: &AppConfig) -> Result<()> {
         .await?;
     let (forecast, failures) = client.get_income_forecast(&portfolio, &instruments).await?;
     println!("{forecast}");
+    report_failures(&failures);
+    Ok(())
+}
+
+/// Prints returns of the portfolio and its asset types compared with market indices.
+async fn benchmark(config: &AppConfig) -> Result<()> {
+    use chrono::{Datelike, Utc};
+    use tinkoff::domain::benchmark::BenchmarkComparison;
+
+    let client = TinkoffInvestment::new(config.token.clone());
+    let (portfolio, instruments) = client
+        .get_portfolio_and_instruments(&config.account)
+        .await?;
+    let progress = Arc::new(Progresser::new(portfolio.positions.len() as u64));
+    let (container, mut failures) = client
+        .build_portfolio(
+            Arc::new(instruments),
+            &portfolio.positions,
+            &portfolio.account_id,
+            false,
+            Some(progress),
+        )
+        .await;
+
+    let now = Utc::now();
+    let since_year = container
+        .payments()
+        .iter()
+        .map(|f| f.date.year())
+        .min()
+        .unwrap_or_else(|| now.year());
+    let (indices, index_failures) = client.get_index_histories(since_year).await?;
+    failures.extend(index_failures);
+
+    println!("{}", BenchmarkComparison::new(&container, indices, now));
     report_failures(&failures);
     Ok(())
 }
@@ -404,6 +441,7 @@ fn build_cli() -> Command {
         .subcommand(analytics_cmd())
         .subcommand(income_cmd())
         .subcommand(taxes_cmd())
+        .subcommand(benchmark_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -507,6 +545,12 @@ fn taxes_cmd() -> Command {
     Command::new(TAXES_CMD)
         .aliases(["taxes", "tax"])
         .about("Get income and taxes withheld by year")
+}
+
+fn benchmark_cmd() -> Command {
+    Command::new(BENCHMARK_CMD)
+        .aliases(["benchmark", "compare"])
+        .about("Compare returns of the portfolio with IMOEX, MCFTR, RGBI and RGBITR indices")
 }
 
 fn risk_cmd() -> Command {

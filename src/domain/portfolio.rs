@@ -123,6 +123,19 @@ impl Portfolio {
     impl_portfolio_aggregator!(current, current, Money, Money::zero(Currency::RUB));
     impl_portfolio_aggregator!(dividends, dividends, Money, Money::zero(Currency::RUB));
 
+    /// Operation payments of all papers.
+    #[must_use]
+    pub fn payments(&self) -> Vec<CashFlow> {
+        [
+            self.bonds.payments(),
+            self.shares.payments(),
+            self.etfs.payments(),
+            self.currencies.payments(),
+            self.futures.payments(),
+        ]
+        .concat()
+    }
+
     /// Annual return (XIRR) of all papers as if the portfolio were sold at `at`.
     #[must_use]
     pub fn xirr(&self, at: DateTime<Utc>) -> Option<Decimal> {
@@ -276,6 +289,15 @@ impl<P: Profit> Asset<P> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.papers.is_empty()
+    }
+
+    /// Operation payments of all papers.
+    #[must_use]
+    pub fn payments(&self) -> Vec<CashFlow> {
+        self.papers
+            .iter()
+            .flat_map(|p| p.totals.cash_flows.iter().copied())
+            .collect()
     }
 
     /// Payments of all papers followed by their current values received at `at`.

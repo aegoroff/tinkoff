@@ -15,10 +15,10 @@ use t_invest_sdk::{
         Future as ApiFuture, GetAccountsRequest, GetAccountsResponse, GetAssetFundamentalsRequest,
         GetBondEventsRequest, GetCandlesRequest, GetDividendsRequest, GetForecastRequest,
         GetForecastResponse, GetOperationsByCursorRequest, GetOperationsByCursorResponse,
-        HistoricCandle, Instrument as ApiInstrument, InstrumentIdType, InstrumentRequest,
-        InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest, OperationItem,
-        OperationState, OperationType, PortfolioPosition, PortfolioRequest, Quotation,
-        Recommendation as ApiRecommendation, Share as ApiShare,
+        HistoricCandle, IndicativeResponse, IndicativesRequest, Instrument as ApiInstrument,
+        InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType,
+        InstrumentsRequest, OperationItem, OperationState, OperationType, PortfolioPosition,
+        PortfolioRequest, Quotation, Recommendation as ApiRecommendation, Share as ApiShare,
         get_asset_fundamentals_response::StatisticResponse, get_bond_events_request::EventType,
         get_bond_events_response::BondEvent as ApiBondEvent,
         instruments_service_client::InstrumentsServiceClient,
@@ -46,6 +46,7 @@ use crate::{
         DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
         Position, Ticker, Totals,
         analytics::{Analytics, Forecast, Fundamentals, Recommendation, ShareAnalytics},
+        benchmark::{BENCHMARKS, IndexHistory, IndexPrices},
         bond::{BondEvent, BondEventKind, bond_info, mark_amortizations},
         calendar::{Calendar, CalendarKind, CombinedCalendar},
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
@@ -1316,6 +1317,19 @@ impl TinkoffInvestment {
         instr: &FxInstrument,
         year: i32,
     ) -> color_eyre::Result<DailyRates> {
+        let candles = self
+            .get_year_candles(&instr.instrument_id, year)
+            .await
+            .wrap_err_with(|| format!("GetCandles failed for {currency:?} in {year}"))?;
+        Ok(daily_rates(&candles, instr))
+    }
+
+    /// Daily candles of an instrument within a calendar year.
+    async fn get_year_candles(
+        &self,
+        instrument_id: &str,
+        year: i32,
+    ) -> color_eyre::Result<Vec<HistoricCandle>> {
         let (from, to) = year_bounds(year).ok_or_else(|| eyre::eyre!("Invalid year {year}"))?;
         let mut market = self
             .client(MarketDataServiceClient::with_interceptor)
@@ -1331,12 +1345,70 @@ impl TinkoffInvestment {
                     nanos: 0,
                 }),
                 interval: CandleInterval::Day as i32,
-                instrument_id: Some(instr.instrument_id.clone()),
+                instrument_id: Some(instrument_id.to_string()),
                 ..Default::default()
             })
             .await
-            .wrap_err_with(|| format!("GetCandles failed for {currency:?} in {year}"))?;
-        Ok(daily_rates(&response.into_inner().candles, instr))
+            .wrap_err("Failed to get candles")?;
+        Ok(response.into_inner().candles)
+    }
+
+    /// Daily closes of [`BENCHMARKS`] from the start of `since_year` until today.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the list of indices cannot be loaded. An index that is not found
+    /// or whose candles fail to load gets an empty history and is reported alongside.
+    pub async fn get_index_histories(
+        &self,
+        since_year: i32,
+    ) -> color_eyre::Result<(Vec<IndexHistory>, Vec<eyre::Report>)> {
+        let indicatives = with_retry(|| self.get_indicatives()).await?;
+        let mut histories = Vec::new();
+        let mut failures = Vec::new();
+        for benchmark in BENCHMARKS {
+            let uid = indicatives
+                .iter()
+                .find(|i| i.ticker == benchmark.ticker)
+                .map(|i| i.uid.clone());
+            let prices = match uid {
+                Some(uid) => self.get_index_prices(&uid, since_year).await,
+                None => Err(eyre::eyre!("Index not found")),
+            };
+            let prices = prices.unwrap_or_else(|e| {
+                failures.push(e.wrap_err(format!("Index {} skipped", benchmark.ticker)));
+                IndexPrices::new()
+            });
+            histories.push(IndexHistory { benchmark, prices });
+        }
+        Ok((histories, failures))
+    }
+
+    async fn get_indicatives(&self) -> color_eyre::Result<Vec<IndicativeResponse>> {
+        let mut instruments = self
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
+        let response = instruments
+            .indicatives(IndicativesRequest {})
+            .await
+            .wrap_err("Failed to get indices")?;
+        Ok(response.into_inner().instruments)
+    }
+
+    async fn get_index_prices(
+        &self,
+        uid: &str,
+        since_year: i32,
+    ) -> color_eyre::Result<IndexPrices> {
+        let mut prices = IndexPrices::new();
+        for year in since_year..=Utc::now().year() {
+            let candles = with_retry(|| self.get_year_candles(uid, year)).await?;
+            prices.extend(candles.iter().filter_map(|c| {
+                let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
+                Some((date, to_decimal(c.close.as_ref())))
+            }));
+        }
+        Ok(prices)
     }
 
     /// Internal method for fetching dividend calendar with optional date filtering.
