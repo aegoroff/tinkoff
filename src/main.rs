@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use itertools::Itertools;
-use t_invest_sdk::api::{AccountType, InstrumentShort, PortfolioPosition};
+use t_invest_sdk::api::{AccountType, InstrumentShort, OperationItem, PortfolioPosition};
 use tinkoff::{
     account_status_name, account_type_name,
     client::{AccountSelector, TinkoffInvestment},
@@ -182,13 +182,12 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         });
     }
 
-    let mut instruments_with_ops: HashMap<String, InstrumentShort> = HashMap::new();
-    let mut operations = vec![];
+    let mut instruments_with_ops: HashMap<String, (InstrumentShort, Vec<OperationItem>)> =
+        HashMap::new();
     while let Some(res) = set.join_next().await {
         match res {
             Ok((instr, Ok(ops))) if !ops.is_empty() => {
-                operations.extend(ops);
-                instruments_with_ops.insert(instr.figi.clone(), instr);
+                instruments_with_ops.insert(instr.figi.clone(), (instr, ops));
             }
             Ok((_, Err(e))) => eprintln!("Failed to load operations: {e:?}"),
             Err(e) => eprintln!("Task panicked: {e}"),
@@ -196,24 +195,22 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         }
     }
 
-    let Some((_, instrument)) = instruments_with_ops
-        .iter()
-        .sorted_by(|(a, _), (b, _)| {
-            if a.starts_with("TCS") {
-                std::cmp::Ordering::Greater
-            } else {
-                Ord::cmp(a, b)
-            }
-        })
-        .next()
+    let Some((instrument, operations)) =
+        preferred_figi(instruments_with_ops.keys()).and_then(|f| instruments_with_ops.get(f))
     else {
         return Ok(());
     };
 
-    if let Some(history) = client.history_in_rub(&operations, instrument).await? {
+    if let Some(history) = client.history_in_rub(operations, instrument).await? {
         println!("{history}");
     }
     Ok(())
+}
+
+/// FIGI whose history is shown when a ticker matches several instruments:
+/// the first one in order, exchange FIGIs before broker's own `TCS` ones.
+fn preferred_figi<'a>(figis: impl IntoIterator<Item = &'a String>) -> Option<&'a String> {
+    figis.into_iter().min_by_key(|f| (f.starts_with("TCS"), *f))
 }
 
 async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> Result<()> {
@@ -595,4 +592,28 @@ fn risk_cmd() -> Command {
                     TargetAllocation::presets_help()
                 )),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case::exchange_before_broker(&["TCS00A107T19", "BBG004730N88"], Some("BBG004730N88"))]
+    #[case::broker_first_in_input(&["BBG004730N88", "TCS00A107T19"], Some("BBG004730N88"))]
+    #[case::exchange_ones_ordered(&["BBG2", "BBG1", "TCS1"], Some("BBG1"))]
+    #[case::only_broker_ones(&["TCS2", "TCS1"], Some("TCS1"))]
+    #[case::none(&[], None)]
+    fn preferred_figi_cases(#[case] figis: &[&str], #[case] expected: Option<&str>) {
+        // Arrange
+        let figis: Vec<String> = figis.iter().map(ToString::to_string).collect();
+
+        // Act
+        let figi = preferred_figi(&figis);
+
+        // Assert
+        assert_eq!(figi.map(String::as_str), expected);
+    }
 }
