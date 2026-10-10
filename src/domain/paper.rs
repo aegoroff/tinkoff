@@ -241,6 +241,13 @@ impl<P: Profit> Paper<P> {
         self.position.current()
     }
 
+    /// Gross exposure: absolute current value, so a short position or a futures contract
+    /// counts as much risk as a long one of the same size
+    #[must_use]
+    pub fn exposure(&self) -> Decimal {
+        self.current().value.abs()
+    }
+
     /// Change since the previous trading day relative to the value at its close
     #[must_use]
     pub fn daily_income(&self) -> Income {

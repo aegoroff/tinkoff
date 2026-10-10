@@ -10,7 +10,10 @@ use super::paper::Ticker;
 use super::portfolio::Portfolio;
 use crate::domain::LoadedPaper;
 
-/// Risk analysis results for a portfolio
+/// Risk analysis results for a portfolio.
+///
+/// Values are gross exposures: a short position or a futures contract counts
+/// by its absolute value, as much risk as a long position of the same size.
 #[derive(Debug, Clone)]
 pub struct RiskAnalysis {
     /// Asset allocation by type (bonds, shares, etfs, etc.)
@@ -105,7 +108,7 @@ pub struct PositionItem {
     pub name: String,
     pub ticker: Ticker,
     pub instrument_type: &'static str,
-    /// Current value in RUB
+    /// Gross exposure, i.e. absolute current value, in RUB
     pub value: Money,
     pub percentage: Decimal,
 }
@@ -302,7 +305,8 @@ pub struct RebalancingAnalysis {
     pub recommendations: Vec<RebalanceRecommendation>,
     /// Maximum deviation from target (absolute value)
     pub max_deviation: Decimal,
-    /// Total value to rebalance
+    /// Value to move between asset types: the larger of total sells and total buys,
+    /// as money from sells pays for buys
     pub total_rebalance_value: Money,
     /// Rebalancing priority score (0-100, higher = more urgent)
     pub priority_score: Decimal,
@@ -318,7 +322,8 @@ impl RebalancingAnalysis {
         // Calculate recommendations for each asset type
         let mut recommendations = Vec::with_capacity(5);
         let mut max_deviation = dec!(0);
-        let mut total_rebalance_value = dec!(0);
+        let mut total_sell = dec!(0);
+        let mut total_buy = dec!(0);
 
         let assets = [
             ("Bonds", asset_allocation.bonds.percentage, target.bonds),
@@ -364,7 +369,11 @@ impl RebalancingAnalysis {
                 )
             };
 
-            total_rebalance_value += rebalance_value.value;
+            match action {
+                RebalanceAction::Sell => total_sell += rebalance_value.value,
+                RebalanceAction::Buy => total_buy += rebalance_value.value,
+                RebalanceAction::Hold => {}
+            }
 
             recommendations.push(RebalanceRecommendation {
                 asset_type,
@@ -384,7 +393,7 @@ impl RebalancingAnalysis {
             total_value,
             recommendations,
             max_deviation,
-            total_rebalance_value: Money::from_value(total_rebalance_value, currency),
+            total_rebalance_value: Money::from_value(total_sell.max(total_buy), currency),
             priority_score,
         }
     }
@@ -419,11 +428,11 @@ impl RiskAnalysis {
 impl AssetAllocation {
     #[must_use]
     fn from_portfolio(portfolio: &Portfolio) -> Self {
-        let bonds_value = portfolio.bonds.current();
-        let shares_value = portfolio.shares.current();
-        let etfs_value = portfolio.etfs.current();
-        let currencies_value = portfolio.currencies.current();
-        let futures_value = portfolio.futures.current();
+        let bonds_value = portfolio.bonds.exposure();
+        let shares_value = portfolio.shares.exposure();
+        let etfs_value = portfolio.etfs.exposure();
+        let currencies_value = portfolio.currencies.exposure();
+        let futures_value = portfolio.futures.exposure();
 
         let total_value =
             bonds_value + shares_value + etfs_value + currencies_value + futures_value;
@@ -459,7 +468,7 @@ impl CurrencyAllocation {
         let mut total_value = Decimal::ZERO;
 
         for paper in papers {
-            let (value, currency) = paper.current_value_and_nominal_currency();
+            let (value, currency) = paper.exposure_and_nominal_currency();
             *currency_map.entry(currency).or_default() += value;
             total_value += value;
         }
@@ -514,7 +523,7 @@ impl SectorAllocation {
             .iter()
             .filter(|p| !matches!(p, LoadedPaper::Currency(_)))
         {
-            let (value, _) = paper.current_value_and_nominal_currency();
+            let (value, _) = paper.exposure_and_nominal_currency();
             *sector_map.entry(paper.sector()).or_default() += value;
             total_value += value;
         }
@@ -562,13 +571,11 @@ impl PositionConcentration {
         let mut position_values: Vec<(String, &Ticker, &'static str, Decimal)> = papers
             .iter()
             .map(|paper| match paper {
-                LoadedPaper::Bond(p) => (p.name.clone(), &p.ticker, "Bond", p.current().value),
-                LoadedPaper::Share(p) => (p.name.clone(), &p.ticker, "Share", p.current().value),
-                LoadedPaper::Etf(p) => (p.name.clone(), &p.ticker, "ETF", p.current().value),
-                LoadedPaper::Currency(p) => {
-                    (p.name.clone(), &p.ticker, "Currency", p.current().value)
-                }
-                LoadedPaper::Future(p) => (p.name.clone(), &p.ticker, "Future", p.current().value),
+                LoadedPaper::Bond(p) => (p.name.clone(), &p.ticker, "Bond", p.exposure()),
+                LoadedPaper::Share(p) => (p.name.clone(), &p.ticker, "Share", p.exposure()),
+                LoadedPaper::Etf(p) => (p.name.clone(), &p.ticker, "ETF", p.exposure()),
+                LoadedPaper::Currency(p) => (p.name.clone(), &p.ticker, "Currency", p.exposure()),
+                LoadedPaper::Future(p) => (p.name.clone(), &p.ticker, "Future", p.exposure()),
             })
             .collect();
 
@@ -1132,6 +1139,69 @@ mod tests {
         );
     }
 
+    /// Paper worth `value` RUB held short.
+    fn short_paper<P: Profit>(ticker: &str, value: Decimal, profit: P) -> Paper<P> {
+        let mut paper = rub_paper(ticker, Currency::RUB, value, profit);
+        paper.position.quantity = dec!(-1);
+        paper
+    }
+
+    #[test]
+    fn position_concentration_counts_short_positions_by_exposure() {
+        // Arrange
+        let papers = vec![
+            share_priced_in_rub("LONG", Currency::RUB, dec!(3000)),
+            LoadedPaper::Share(short_paper("SHORT", dec!(1000), DividendProfit)),
+        ];
+
+        // Act
+        let concentration = PositionConcentration::from_papers(&papers);
+
+        // Assert
+        let values: Vec<_> = concentration
+            .top_positions
+            .iter()
+            .map(|p| (p.ticker.as_str(), p.value.value, p.percentage))
+            .collect();
+        assert_eq!(
+            values,
+            [
+                ("LONG", dec!(3000), dec!(75)),
+                ("SHORT", dec!(1000), dec!(25))
+            ]
+        );
+        assert_eq!(
+            concentration.total_value,
+            Money::from_value(dec!(4000), Currency::RUB)
+        );
+    }
+
+    #[test]
+    fn asset_allocation_counts_short_futures_by_exposure() {
+        // Arrange
+        let mut portfolio = Portfolio::new(false);
+        portfolio.shares.add_paper(rub_paper(
+            "SHARE",
+            Currency::RUB,
+            dec!(3000),
+            DividendProfit,
+        ));
+        portfolio
+            .futures
+            .add_paper(short_paper("FUTURE", dec!(1000), NoneProfit));
+
+        // Act
+        let allocation = AssetAllocation::from_portfolio(&portfolio);
+
+        // Assert
+        assert_eq!(
+            allocation.total_value,
+            Money::from_value(dec!(4000), Currency::RUB)
+        );
+        assert_eq!(allocation.shares.percentage, dec!(75));
+        assert_eq!(allocation.futures.percentage, dec!(25));
+    }
+
     #[test]
     fn test_position_concentration() {
         let papers = vec![
@@ -1541,6 +1611,12 @@ mod tests {
             .unwrap();
         assert_eq!(shares_rec.action, RebalanceAction::Sell);
         assert!(shares_rec.deviation > dec!(0)); // Overweight
+
+        // Selling 200 of shares pays for buying 200 of bonds
+        assert_eq!(
+            analysis.total_rebalance_value,
+            Money::from_value(dec!(200), Currency::RUB)
+        );
     }
 
     /// Allocation with the given currencies share, the rest in bonds.

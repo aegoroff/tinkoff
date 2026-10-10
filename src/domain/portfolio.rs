@@ -17,13 +17,13 @@ pub enum LoadedPaper {
 }
 
 impl LoadedPaper {
-    /// Current market value and nominal (instrument) currency.
+    /// Gross exposure, i.e. absolute current value, and nominal (instrument) currency.
     #[must_use]
-    pub fn current_value_and_nominal_currency(&self) -> (rust_decimal::Decimal, Currency) {
+    pub fn exposure_and_nominal_currency(&self) -> (rust_decimal::Decimal, Currency) {
         match self {
-            Self::Bond(p) => (p.current().value, p.currency()),
-            Self::Share(p) | Self::Etf(p) => (p.current().value, p.currency()),
-            Self::Currency(p) | Self::Future(p) => (p.current().value, p.currency()),
+            Self::Bond(p) => (p.exposure(), p.currency()),
+            Self::Share(p) | Self::Etf(p) => (p.exposure(), p.currency()),
+            Self::Currency(p) | Self::Future(p) => (p.exposure(), p.currency()),
         }
     }
 
@@ -275,6 +275,14 @@ impl<P: Profit> Asset<P> {
     pub fn balance(&self) -> Money {
         self.fold(Money::zero, |mut acc, p| {
             acc += p.balance();
+            acc
+        })
+    }
+
+    /// Gross exposure of all papers, see [`Paper::exposure`].
+    pub fn exposure(&self) -> Money {
+        self.fold(Money::zero, |mut acc, p| {
+            acc += p.exposure();
             acc
         })
     }
