@@ -5,7 +5,7 @@ use rust_decimal::{Decimal, MathematicalOps};
 
 use super::money::Money;
 use super::paper::BondInfo;
-use super::xirr::{CashFlow, xirr, years_between};
+use super::xirr::{CashFlow, pow_years, xirr, years_between};
 
 /// Kind of a bond event
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,12 +135,16 @@ fn macaulay_duration(
     now: DateTime<Utc>,
 ) -> Option<Decimal> {
     let base = Decimal::ONE + rate;
+    let ln_base = base.checked_ln()?;
     let (weighted, total) =
         payments
             .iter()
             .try_fold((Decimal::ZERO, Decimal::ZERO), |(weighted, total), e| {
                 let years = years_between(now, e.date);
-                let present = e.per_bond.value.checked_div(base.checked_powd(years)?)?;
+                let present = e
+                    .per_bond
+                    .value
+                    .checked_div(pow_years(base, ln_base, years)?)?;
                 Some((weighted + years * present, total + present))
             })?;
     weighted.checked_div(total)

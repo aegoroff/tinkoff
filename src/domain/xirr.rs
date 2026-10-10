@@ -3,7 +3,7 @@
 use std::fmt;
 
 use chrono::{DateTime, Utc};
-use rust_decimal::{Decimal, MathematicalOps};
+use rust_decimal::{Decimal, MathematicalOps, prelude::ToPrimitive};
 use rust_decimal_macros::dec;
 
 use super::NumberRange;
@@ -114,6 +114,18 @@ pub(crate) fn years_between(start: DateTime<Utc>, date: DateTime<Utc>) -> Decima
     Decimal::from((date - start).num_seconds()) / SECONDS_IN_YEAR
 }
 
+/// `base^years` for a positive `base` whose natural logarithm is `ln_base`.
+///
+/// Whole years are raised by multiplication and only the fraction goes through `exp`, which
+/// is much faster than [`MathematicalOps::checked_powd`]: that one calculates `ln(base)` on
+/// every call and `exp` of the whole `years * ln(base)`, whose series converges slowly.
+pub(crate) fn pow_years(base: Decimal, ln_base: Decimal, years: Decimal) -> Option<Decimal> {
+    let whole = years.trunc();
+    let whole_power = base.checked_powi(whole.to_i64()?)?;
+    let fraction_power = (years - whole).checked_mul(ln_base)?.checked_exp()?;
+    whole_power.checked_mul(fraction_power)
+}
+
 /// Closest to `bound` rate, halving it towards zero, at which `npv` does not overflow.
 ///
 /// Over decades `(1 + rate)^years` exceeds the `Decimal` range at the extreme rates.
@@ -129,10 +141,11 @@ fn computable_bound(
 /// Sum of `amount / (1 + rate)^years`; `None` on arithmetic overflow.
 fn net_present_value(timed: &[(Decimal, Decimal)], rate: Decimal) -> Option<Decimal> {
     let base = Decimal::ONE + rate;
+    let ln_base = base.checked_ln()?;
     timed
         .iter()
         .try_fold(Decimal::ZERO, |acc, (years, amount)| {
-            let factor = base.checked_powd(*years)?;
+            let factor = pow_years(base, ln_base, *years)?;
             if factor.is_zero() {
                 return None;
             }
@@ -172,6 +185,28 @@ mod tests {
 
         // Assert
         assert_eq!(rate.map(|r| r.round_dp(4)), Some(expected));
+    }
+
+    #[rstest]
+    #[case::whole_years(dec!(1.1), dec!(2))]
+    #[case::fraction_of_year(dec!(1.1), dec!(0.5))]
+    #[case::years_with_fraction(dec!(1.1), dec!(7.3))]
+    #[case::falling_base(dec!(0.05), dec!(8.7))]
+    #[case::rising_base(dec!(11), dec!(8.7))]
+    #[case::zero_years(dec!(1.1), dec!(0))]
+    fn pow_years_matches_powd(#[case] base: Decimal, #[case] years: Decimal) {
+        // Arrange
+        let expected = base.powd(years);
+
+        // Act
+        let power = pow_years(base, base.ln(), years);
+
+        // Assert
+        let error = power.map(|p| ((p - expected) / expected).abs());
+        assert!(
+            error.is_some_and(|e| e < dec!(0.000000000001)),
+            "{power:?} != {expected}"
+        );
     }
 
     #[rstest]
