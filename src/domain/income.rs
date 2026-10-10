@@ -273,7 +273,7 @@ mod tests {
         let items = expected_dividends(&records, dec!(1), at(2026, 1, 1), at(2027, 1, 1));
 
         // Assert
-        assert!(items.is_empty());
+        assert_eq!(items, []);
     }
 
     #[test]

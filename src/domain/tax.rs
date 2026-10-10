@@ -278,7 +278,7 @@ mod tests {
         let report = TaxReport::new(&[]);
 
         // Assert
-        assert!(report.years.is_empty());
+        assert_eq!(report.years, []);
         assert_eq!(report.total().total_tax(), rub(dec!(0)));
     }
 }
