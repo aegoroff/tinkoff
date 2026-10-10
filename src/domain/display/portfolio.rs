@@ -151,7 +151,7 @@ impl<P: Profit> Display for Paper<P> {
             ux::add_row_colorized(&mut table, TOTAL_INCOME, self.total_income());
         }
 
-        ux::add_row_colorized(&mut table, "Taxes and fees", self.fees());
+        ux::add_row_colorized(&mut table, "Fees", self.fees());
         add_xirr_row(&mut table, self.xirr(Utc::now()));
 
         if let Some(bond) = &self.bond {

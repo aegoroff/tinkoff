@@ -128,9 +128,9 @@ impl Position {
 #[derive(Clone)]
 pub struct Totals {
     /// Dividends, coupons etc. i.e. some extra value
-    /// an asset may earn
+    /// an asset may earn, net of taxes withheld from it
     pub additional_profit: Money,
-    /// Taxes and fees
+    /// Broker, exchange and other fees; taxes are in `additional_profit`
     pub fees: Money,
     /// All payments of the paper's operations in RUB, for XIRR
     pub cash_flows: Vec<CashFlow>,
@@ -257,7 +257,7 @@ impl<P: Profit> Paper<P> {
         )
     }
 
-    /// Taxes and fees
+    /// Fees; taxes are deducted from dividends and coupons instead
     #[must_use]
     pub fn fees(&self) -> Income {
         // IMPORTANT: we must add self.totals.fees because their value is negative
