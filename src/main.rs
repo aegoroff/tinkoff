@@ -171,7 +171,10 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     let account_id = account.id.clone();
 
     let mut set = JoinSet::new();
-    for instr in instruments.into_iter().filter(|i| i.ticker.eq(ticker)) {
+    for instr in instruments
+        .into_iter()
+        .filter(|i| i.ticker.eq_ignore_ascii_case(ticker))
+    {
         let client = Arc::clone(&client);
         let account_id = account_id.clone();
         set.spawn(async move {
@@ -198,7 +201,7 @@ async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     let Some((instrument, operations)) =
         preferred_figi(instruments_with_ops.keys()).and_then(|f| instruments_with_ops.get(f))
     else {
-        return Ok(());
+        return Err(eyre::eyre!("No operations with {ticker} on the account"));
     };
 
     if let Some(history) = client.history_in_rub(operations, instrument).await? {
