@@ -79,10 +79,10 @@ const BENCHMARK_CMD: &str = "bm";
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
-    ux::clear_screen();
+    // Cleared once arguments are valid, so help and usage errors stay on the screen.
     let cli = build_cli().get_matches();
-
     let config = AppConfig::from_matches(&cli)?;
+    ux::clear_screen();
 
     if let Some(sub) = cli.subcommand() {
         run_subcommand(&config, sub).await?;
