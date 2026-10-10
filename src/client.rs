@@ -1366,24 +1366,49 @@ impl TinkoffInvestment {
         since_year: i32,
     ) -> color_eyre::Result<(Vec<IndexHistory>, Vec<eyre::Report>)> {
         let indicatives = with_retry(|| self.get_indicatives()).await?;
-        let mut histories = Vec::new();
-        let mut failures = Vec::new();
-        for benchmark in BENCHMARKS {
-            let uid = indicatives
+        let uids = BENCHMARKS.map(|benchmark| {
+            indicatives
                 .iter()
                 .find(|i| i.ticker == benchmark.ticker)
-                .map(|i| i.uid.clone());
-            let prices = match uid {
-                Some(uid) => self.get_index_prices(&uid, since_year).await,
-                None => Err(eyre::eyre!("Index not found")),
+                .map(|i| i.uid.clone())
+        });
+        let mut loaded = uids.clone().map(|uid| match uid {
+            Some(_) => Ok(IndexPrices::new()),
+            None => Err(eyre::eyre!("Index not found")),
+        });
+
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
+        let mut set = JoinSet::new();
+        for (index, uid) in uids.into_iter().enumerate() {
+            let Some(uid) = uid else {
+                continue;
             };
-            let prices = prices.unwrap_or_else(|e| {
-                failures.push(e.wrap_err(format!("Index {} skipped", benchmark.ticker)));
-                IndexPrices::new()
-            });
-            histories.push(IndexHistory { benchmark, prices });
+            for year in since_year..=Utc::now().year() {
+                let permit = semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .wrap_err("Failed to acquire semaphore")?;
+                let client = self.clone();
+                let uid = uid.clone();
+                set.spawn(async move {
+                    let _permit = permit;
+                    let candles = with_retry(|| client.get_year_candles(&uid, year)).await;
+                    (index, candles)
+                });
+            }
         }
-        Ok((histories, failures))
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((index, candles)) => {
+                    if let Some(prices) = loaded.get_mut(index) {
+                        add_index_candles(prices, candles);
+                    }
+                }
+                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+            }
+        }
+        Ok(index_histories(loaded))
     }
 
     async fn get_indicatives(&self) -> color_eyre::Result<Vec<IndicativeResponse>> {
@@ -1395,22 +1420,6 @@ impl TinkoffInvestment {
             .await
             .wrap_err("Failed to get indices")?;
         Ok(response.into_inner().instruments)
-    }
-
-    async fn get_index_prices(
-        &self,
-        uid: &str,
-        since_year: i32,
-    ) -> color_eyre::Result<IndexPrices> {
-        let mut prices = IndexPrices::new();
-        for year in since_year..=Utc::now().year() {
-            let candles = with_retry(|| self.get_year_candles(uid, year)).await?;
-            prices.extend(candles.iter().filter_map(|c| {
-                let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
-                Some((date, to_decimal(c.close.as_ref())))
-            }));
-        }
-        Ok(prices)
     }
 
     /// Internal method for fetching dividend calendar with optional date filtering.
@@ -1746,6 +1755,43 @@ fn year_bounds(year: i32) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
             .map(|d| d.and_utc())
     };
     Some((start(year)?, start(year.checked_add(1)?)?))
+}
+
+/// Adds a year of index candles to the prices; any failed year fails the whole index.
+fn add_index_candles(
+    prices: &mut color_eyre::Result<IndexPrices>,
+    candles: color_eyre::Result<Vec<HistoricCandle>>,
+) {
+    let Ok(loaded) = prices else {
+        return;
+    };
+    match candles {
+        Ok(candles) => loaded.extend(candles.iter().filter_map(|c| {
+            let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
+            Some((date, to_decimal(c.close.as_ref())))
+        })),
+        Err(e) => *prices = Err(e),
+    }
+}
+
+/// Pairs [`BENCHMARKS`] with their loaded prices; a failed index gets an empty history
+/// and its error is returned alongside.
+fn index_histories(
+    loaded: [color_eyre::Result<IndexPrices>; BENCHMARKS.len()],
+) -> (Vec<IndexHistory>, Vec<eyre::Report>) {
+    let mut failures = Vec::new();
+    let histories = BENCHMARKS
+        .into_iter()
+        .zip(loaded)
+        .map(|(benchmark, prices)| {
+            let prices = prices.unwrap_or_else(|e| {
+                failures.push(e.wrap_err(format!("Index {} skipped", benchmark.ticker)));
+                IndexPrices::new()
+            });
+            IndexHistory { benchmark, prices }
+        })
+        .collect();
+    (histories, failures)
 }
 
 /// Maps daily candles to RUB rates by candle date; the last candle of a date wins.
@@ -2987,6 +3033,77 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    fn day(year: i32, month: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(year, month, day).unwrap()
+    }
+
+    #[test]
+    fn add_index_candles_merges_years_in_any_order() {
+        // Arrange
+        let mut prices = Ok(IndexPrices::new());
+
+        // Act
+        add_index_candles(&mut prices, Ok(vec![candle("2025-01-03T07:00:00Z", 2900)]));
+        add_index_candles(
+            &mut prices,
+            Ok(vec![
+                candle("2024-01-03T07:00:00Z", 3100),
+                HistoricCandle::default(),
+            ]),
+        );
+
+        // Assert
+        let expected: IndexPrices =
+            [(day(2024, 1, 3), dec!(3100)), (day(2025, 1, 3), dec!(2900))].into();
+        assert_eq!(prices.unwrap(), expected);
+    }
+
+    #[rstest]
+    #[case::failed_year_after_loaded(true)]
+    #[case::loaded_year_after_failed(false)]
+    fn add_index_candles_fails_index_on_any_failed_year(#[case] loaded_first: bool) {
+        // Arrange
+        let mut prices = Ok(IndexPrices::new());
+        let loaded = || Ok(vec![candle("2025-01-03T07:00:00Z", 2900)]);
+        let failed = || Err(eyre::eyre!("year failed"));
+
+        // Act
+        if loaded_first {
+            add_index_candles(&mut prices, loaded());
+            add_index_candles(&mut prices, failed());
+        } else {
+            add_index_candles(&mut prices, failed());
+            add_index_candles(&mut prices, loaded());
+        }
+
+        // Assert
+        assert!(prices.is_err());
+    }
+
+    #[test]
+    fn index_histories_keep_benchmark_order_and_report_failures() {
+        // Arrange
+        let imoex: IndexPrices = [(day(2025, 1, 3), dec!(2900))].into();
+        let loaded = [
+            Ok(imoex.clone()),
+            Err(eyre::eyre!("Index not found")),
+            Ok(IndexPrices::new()),
+            Err(eyre::eyre!("year failed")),
+        ];
+
+        // Act
+        let (histories, failures) = index_histories(loaded);
+
+        // Assert
+        let tickers: Vec<_> = histories.iter().map(|h| h.benchmark.ticker).collect();
+        assert_eq!(tickers, ["IMOEX", "MCFTR", "RGBI", "RGBITR"]);
+        assert_eq!(histories[0].prices, imoex);
+        assert!(histories[1].prices.is_empty());
+        assert!(histories[3].prices.is_empty());
+        let messages: Vec<_> = failures.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, ["Index MCFTR skipped", "Index RGBITR skipped"]);
     }
 
     #[test]
