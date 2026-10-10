@@ -54,6 +54,7 @@ use crate::{
         fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
         history::{History, HistoryItem},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
+        moscow_date,
         tax::{TaxOperation, TaxOperationKind, TaxReport},
         xirr::CashFlow,
     },
@@ -1278,7 +1279,7 @@ impl TinkoffInvestment {
         instr: &FxInstrument,
         at: DateTime<Utc>,
     ) -> color_eyre::Result<Decimal> {
-        let date = at.date_naive();
+        let date = moscow_date(at);
         // Weekends and holidays have no candle: take the closest earlier trading day.
         for offset in 0..=FX_LOOKBACK_DAYS {
             let day = date
@@ -1767,7 +1768,7 @@ fn add_index_candles(
     };
     match candles {
         Ok(candles) => loaded.extend(candles.iter().filter_map(|c| {
-            let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
+            let date = moscow_date(to_optional_datetime_utc(c.time.as_ref())?);
             Some((date, to_decimal(c.close.as_ref())))
         })),
         Err(e) => *prices = Err(e),
@@ -1794,12 +1795,12 @@ fn index_histories(
     (histories, failures)
 }
 
-/// Maps daily candles to RUB rates by candle date; the last candle of a date wins.
+/// Maps daily candles to RUB rates by Moscow date of a candle; the last candle of a date wins.
 fn daily_rates(candles: &[HistoricCandle], instr: &FxInstrument) -> DailyRates {
     candles
         .iter()
         .filter_map(|c| {
-            let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
+            let date = moscow_date(to_optional_datetime_utc(c.time.as_ref())?);
             let close = c.close.as_ref()?;
             let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.nominal);
             Some((date, rate))
@@ -3128,6 +3129,24 @@ mod tests {
             (NaiveDate::from_ymd_opt(2026, 9, 25).unwrap(), dec!(91)),
         ]
         .into();
+        assert_eq!(rates, expected);
+    }
+
+    #[test]
+    fn daily_rates_keyed_by_moscow_date() {
+        // Arrange
+        let instr = FxInstrument {
+            instrument_id: "USD".to_string(),
+            nominal: dec!(1),
+        };
+        let candles = [candle("2026-09-24T21:00:00Z", 90)];
+
+        // Act
+        let rates = daily_rates(&candles, &instr);
+
+        // Assert
+        let expected: DailyRates =
+            [(NaiveDate::from_ymd_opt(2026, 9, 25).unwrap(), dec!(90))].into();
         assert_eq!(rates, expected);
     }
 

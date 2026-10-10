@@ -6,6 +6,7 @@ use chrono::{DateTime, Datelike, Utc};
 use iso_currency::Currency;
 
 use super::money::Money;
+use super::moscow_date;
 
 /// Kind of an operation that affects taxes
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,12 +33,13 @@ pub struct TaxOperation {
 }
 
 impl TaxOperation {
-    /// Year the operation belongs to: other tax withheld on the 1st of January
-    /// is the broker's annual tax calculation of the previous year.
+    /// Year the operation belongs to by its Moscow date: other tax withheld
+    /// on the 1st of January is the broker's annual tax calculation of the previous year.
     #[must_use]
     pub fn tax_year(&self) -> i32 {
-        let year = self.date.year();
-        let new_year = self.date.month() == 1 && self.date.day() == 1;
+        let date = moscow_date(self.date);
+        let year = date.year();
+        let new_year = date.month() == 1 && date.day() == 1;
         if self.kind == TaxOperationKind::OtherTax && new_year {
             year - 1
         } else {
@@ -176,6 +178,24 @@ mod tests {
     ) {
         // Arrange
         let operation = operation_at(2026, month, day, kind, dec!(-100));
+
+        // Act
+        let year = operation.tax_year();
+
+        // Assert
+        assert_eq!(year, expected);
+    }
+
+    #[rstest]
+    #[case::dividend_after_moscow_midnight(TaxOperationKind::Dividend, 2026)]
+    #[case::annual_tax_after_moscow_midnight(TaxOperationKind::OtherTax, 2025)]
+    fn tax_year_follows_moscow_date(#[case] kind: TaxOperationKind, #[case] expected: i32) {
+        // Arrange
+        let operation = TaxOperation {
+            date: Utc.with_ymd_and_hms(2025, 12, 31, 21, 30, 0).unwrap(),
+            kind,
+            amount: rub(dec!(-100)),
+        };
 
         // Act
         let year = operation.tax_year();

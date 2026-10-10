@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use rust_decimal::Decimal;
 
+use super::moscow_date;
 use super::paper::Profit;
 use super::portfolio::{Asset, Portfolio};
 use super::xirr::{CashFlow, xirr};
@@ -55,7 +56,7 @@ fn price_on(prices: &IndexPrices, date: NaiveDate) -> Option<Decimal> {
 
 /// Annual return (XIRR) of investing `payments` into the index instead (public market equivalent).
 ///
-/// Every payment buys index units at its date close when negative and sells them when positive;
+/// Every payment buys index units at the close of its Moscow date when negative and sells them when positive;
 /// the units left are valued at `at`. `None` when the index has no price near some payment date
 /// or at `at`, or when the payments sell more units than they bought.
 #[must_use]
@@ -65,10 +66,10 @@ pub fn index_xirr(
     at: DateTime<Utc>,
 ) -> Option<Decimal> {
     let units = payments.iter().try_fold(Decimal::ZERO, |units, flow| {
-        let price = price_on(prices, flow.date.date_naive())?;
+        let price = price_on(prices, moscow_date(flow.date))?;
         units.checked_sub(flow.amount.checked_div(price)?)
     })?;
-    let value = units.checked_mul(price_on(prices, at.date_naive())?)?;
+    let value = units.checked_mul(price_on(prices, moscow_date(at))?)?;
     if value <= Decimal::ZERO {
         return None;
     }
