@@ -1801,7 +1801,7 @@ fn daily_rates(candles: &[HistoricCandle], instr: &FxInstrument) -> DailyRates {
         .filter_map(|c| {
             let date = to_optional_datetime_utc(c.time.as_ref())?.date_naive();
             let close = c.close.as_ref()?;
-            let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.lot, instr.nominal);
+            let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.nominal);
             Some((date, rate))
         })
         .collect()
@@ -3111,7 +3111,6 @@ mod tests {
         // Arrange
         let instr = FxInstrument {
             instrument_id: "USD".to_string(),
-            lot: 1,
             nominal: dec!(1),
         };
         let candles = [
@@ -3133,11 +3132,32 @@ mod tests {
     }
 
     #[test]
-    fn daily_rates_apply_lot_and_nominal() {
+    fn daily_rates_ignore_lot_size() {
+        // Arrange
+        let fx = build_fx_map([FxCandidate {
+            currency: Currency::USD,
+            instrument_id: "USD000UTSTOM".to_string(),
+            lot: 1000,
+            nominal: dec!(1),
+            settlement_is_rub: true,
+        }]);
+        let candles = [candle("2026-09-25T07:00:00Z", 90)];
+
+        // Act
+        let rates = daily_rates(&candles, &fx[&Currency::USD]);
+
+        // Assert
+        assert_eq!(
+            rates.get(&NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()),
+            Some(&dec!(90))
+        );
+    }
+
+    #[test]
+    fn daily_rates_apply_nominal() {
         // Arrange
         let instr = FxInstrument {
             instrument_id: "KZT".to_string(),
-            lot: 1,
             nominal: dec!(100),
         };
         let candles = [candle("2026-09-25T07:00:00Z", 18)];
@@ -3218,7 +3238,7 @@ mod tests {
     #[test]
     fn money_to_rub_via_rate_matches_spot_math() {
         let usd = Money::from_value(dec!(2), Currency::USD);
-        let rub = usd.to_currency(quote_to_rub_rate(dec!(90), 1, dec!(1)), Currency::RUB);
+        let rub = usd.to_currency(quote_to_rub_rate(dec!(90), dec!(1)), Currency::RUB);
         assert_eq!(rub.value, dec!(180));
         assert_eq!(rub.currency, Currency::RUB);
     }
