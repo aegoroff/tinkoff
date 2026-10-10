@@ -27,7 +27,7 @@ fn month_name(month: u32) -> &'static str {
     }
 }
 
-/// Groups payments by year and month, then sorts chronologically
+/// Groups payments by year and month, ordered by payment date within a month
 fn group_and_sort_payments<P: CalendarPayment>(
     upcoming: &[P],
 ) -> BTreeMap<i32, BTreeMap<u32, Vec<&P>>> {
@@ -41,7 +41,8 @@ fn group_and_sort_payments<P: CalendarPayment>(
     }
 
     let mut by_year: BTreeMap<i32, BTreeMap<u32, Vec<&P>>> = BTreeMap::new();
-    for ((year, month), payments) in grouped {
+    for ((year, month), mut payments) in grouped {
+        payments.sort_by_key(|p| p.payment_date());
         by_year.entry(year).or_default().insert(month, payments);
     }
     by_year
@@ -348,6 +349,34 @@ mod tests {
         let pos_2024 = output.find("2024").unwrap();
         let pos_2025 = output.find("2025").unwrap();
         assert!(pos_2024 < pos_2025);
+    }
+
+    fn dividend(name: &str, ex_day: u32, payment_day: u32) -> DividendPayment {
+        DividendPayment {
+            figi: Figi::new(name),
+            ticker: Ticker::new(name),
+            name: name.to_string(),
+            currency: Currency::RUB,
+            dividend_per_share: Money::from_value(dec!(1), Currency::RUB),
+            total_dividend: Money::from_value(dec!(10), Currency::RUB),
+            quantity: dec!(10),
+            ex_dividend_date: Utc.with_ymd_and_hms(2026, 7, ex_day, 0, 0, 0).unwrap(),
+            payment_date: Some(Utc.with_ymd_and_hms(2026, 7, payment_day, 0, 0, 0).unwrap()),
+            dividend_type: "type".to_string(),
+        }
+    }
+
+    #[test]
+    fn month_payments_are_ordered_by_payment_date() {
+        // Arrange
+        let payments = [dividend("EARLY_EX", 1, 25), dividend("LATE_EX", 10, 15)];
+
+        // Act
+        let grouped = super::group_and_sort_payments(&payments);
+
+        // Assert
+        let names: Vec<&str> = grouped[&2026][&7].iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["LATE_EX", "EARLY_EX"]);
     }
 
     #[test]
