@@ -159,6 +159,10 @@ pub struct Position {
     pub quantity: Decimal,
     /// Change of the whole position value since the previous trading day
     pub daily_yield: Money,
+    /// Variation margin of a futures contract.
+    /// `Some` replaces the contract price in the portfolio value, including zero.
+    /// `None` for instruments valued by price times quantity.
+    pub var_margin: Option<Money>,
     /// Trading of the instrument is blocked by the exchange
     pub blocked: bool,
     /// Amount reserved by active orders
@@ -177,9 +181,20 @@ pub struct AccountPosition {
 }
 
 impl Position {
-    /// Current price plus accrued interest multiplied to quantity
+    /// Money this position adds to the portfolio.
+    ///
+    /// A futures contract adds its variation margin. Its price times quantity is the
+    /// contract size, which the broker does not include in the portfolio total.
     #[must_use]
     pub fn current(&self) -> Money {
+        self.var_margin.unwrap_or_else(|| self.notional())
+    }
+
+    /// Current price plus accrued interest multiplied by quantity.
+    ///
+    /// For a futures contract this is its size, not the money it adds to the portfolio.
+    #[must_use]
+    pub fn notional(&self) -> Money {
         (self.current_instrument_price + self.accrued_interest) * self.quantity
     }
 }
@@ -288,23 +303,33 @@ impl<P: Profit> Paper<P> {
         Income::new(self.current() + (div.current - div.balance), self.balance())
     }
 
-    /// Expences (the amount of money thea really spent), i.e. average position price multiplied to quantity
+    /// Money paid for the position.
+    ///
+    /// A futures contract is not paid for at its price, so its balance is zero and its
+    /// variation margin is the whole result.
     #[must_use]
     pub fn balance(&self) -> Money {
-        self.position.average_buy_price * self.position.quantity
+        if self.position.var_margin.is_some() {
+            Money::zero(self.position.current_instrument_price.currency)
+        } else {
+            self.position.average_buy_price * self.position.quantity
+        }
     }
 
-    /// Current position value, i.e. current position price plus accrued interest multiplied to quantity
+    /// Current position value. Futures contribute their variation margin.
     #[must_use]
     pub fn current(&self) -> Money {
         self.position.current()
     }
 
-    /// Gross exposure: absolute current value, so a short position or a futures contract
-    /// counts as much risk as a long one of the same size
+    /// Gross exposure: absolute contract size, so a short position or a futures contract
+    /// counts as much risk as a long one of the same size.
+    ///
+    /// This is the price times quantity, not the variation margin a futures contract
+    /// adds to the portfolio.
     #[must_use]
     pub fn exposure(&self) -> Decimal {
-        self.current().value.abs()
+        self.position.notional().value.abs()
     }
 
     /// Change since the previous trading day relative to the value at its close
@@ -444,6 +469,7 @@ mod tests {
                 daily_yield: Money::zero(currency),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::zero(currency),
@@ -555,5 +581,26 @@ mod tests {
         // Assert
         assert_eq!(income.current, dec!(10055));
         assert_eq!(income.balance, dec!(10000));
+    }
+
+    #[test]
+    fn futures_add_variation_margin_and_expose_the_contract_size() {
+        // Arrange: contract price 93 250, open margin 1 500, held short
+        let mut paper = bond(Decimal::ZERO);
+        paper.position.average_buy_price = Money::from_value(dec!(90000), Currency::RUB);
+        paper.position.current_instrument_price = Money::from_value(dec!(93250), Currency::RUB);
+        paper.position.quantity = dec!(-1);
+        paper.position.var_margin = Some(Money::from_value(dec!(1500), Currency::RUB));
+
+        // Act
+        let (current, balance, exposure) = (paper.current(), paper.balance(), paper.exposure());
+        let terminal = paper.cash_flows_until(Utc::now()).last().map(|f| f.amount);
+
+        // Assert
+        assert_eq!(current.value, dec!(1500));
+        assert_eq!(balance.value, dec!(0));
+        assert_eq!(current.value - balance.value, dec!(1500));
+        assert_eq!(exposure, dec!(93250));
+        assert_eq!(terminal, Some(dec!(1500)));
     }
 }

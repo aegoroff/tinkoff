@@ -806,6 +806,7 @@ mod tests {
                 daily_yield: Money::zero(currency),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::zero(currency),
@@ -833,6 +834,7 @@ mod tests {
                 daily_yield: Money::zero(currency),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::zero(currency),
@@ -869,6 +871,7 @@ mod tests {
                 daily_yield: Money::zero(Currency::RUB),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::zero(Currency::RUB),
@@ -902,6 +905,7 @@ mod tests {
                     daily_yield: Money::zero(Currency::RUB),
                     blocked: false,
                     blocked_lots: dec!(0),
+                    var_margin: None,
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
@@ -925,6 +929,7 @@ mod tests {
                     daily_yield: Money::zero(Currency::USD),
                     blocked: false,
                     blocked_lots: dec!(0),
+                    var_margin: None,
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::USD),
@@ -977,6 +982,7 @@ mod tests {
                 daily_yield: Money::zero(rub),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::zero(rub),
@@ -1218,6 +1224,7 @@ mod tests {
                     daily_yield: Money::zero(Currency::RUB),
                     blocked: false,
                     blocked_lots: dec!(0),
+                    var_margin: None,
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),
@@ -1241,6 +1248,7 @@ mod tests {
                     daily_yield: Money::zero(Currency::RUB),
                     blocked: false,
                     blocked_lots: dec!(0),
+                    var_margin: None,
                 },
                 totals: Totals {
                     additional_profit: Money::zero(Currency::RUB),

@@ -291,6 +291,7 @@ mod tests {
                 daily_yield: rub(dec!(0)),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: rub(dec!(0)),

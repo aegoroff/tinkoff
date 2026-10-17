@@ -1545,6 +1545,7 @@ mod tests {
             daily_yield: Money::zero(currency),
             blocked: false,
             blocked_lots: dec!(0),
+            var_margin: None,
         }
     }
 

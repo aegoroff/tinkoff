@@ -201,6 +201,7 @@ impl TryFrom<&PortfolioPosition> for Position {
             accrued_interest,
             quantity,
             daily_yield,
+            var_margin: None,
             blocked: value.blocked,
             blocked_lots: to_decimal(value.blocked_lots.as_ref()),
         })
@@ -213,6 +214,7 @@ impl TryFrom<&PortfolioPosition> for Position {
 impl From<PortfolioPosition> for AccountPosition {
     fn from(value: PortfolioPosition) -> Self {
         let position = Position::try_from(&value)
+            .map(|p| futures_margin(p, &value))
             .and_then(|p| {
                 ensure_rub(&p)?;
                 Ok(p)
@@ -317,6 +319,15 @@ impl From<OperationItem> for Operation {
     }
 }
 
+/// A futures contract is valued by its variation margin, including when the API omits it.
+fn futures_margin(mut position: Position, value: &PortfolioPosition) -> Position {
+    if InstrumentKind::from_api(&value.instrument_type) == Some(InstrumentKind::Future) {
+        position.var_margin =
+            Some(to_money(value.var_margin.as_ref()).unwrap_or_else(|| Money::zero(Currency::RUB)));
+    }
+    position
+}
+
 /// Checks that position money values are in RUB.
 fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
     for money in [
@@ -324,7 +335,10 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
         position.current_instrument_price,
         position.accrued_interest,
         position.daily_yield,
-    ] {
+    ]
+    .into_iter()
+    .chain(position.var_margin)
+    {
         if money.currency != Currency::RUB {
             return Err(eyre::eyre!(
                 "Expected position prices in RUB, got {}",
@@ -558,6 +572,39 @@ mod tests {
         assert!(position.daily_yield.value.is_zero());
         assert!(!position.blocked);
         assert!(position.blocked_lots.is_zero());
+    }
+
+    #[rstest]
+    #[case::margin("futures", Some(1500), 1, 1500, 93250)]
+    #[case::no_margin("futures", None, 1, 0, 93250)]
+    #[case::short("futures", Some(1500), -1, 1500, -93250)]
+    #[case::share_ignores_margin("share", Some(1500), 2, 186_500, 186_500)]
+    fn futures_position_is_valued_by_variation_margin(
+        #[case] instrument_type: &str,
+        #[case] margin: Option<i64>,
+        #[case] quantity: i64,
+        #[case] value: i64,
+        #[case] notional: i64,
+    ) {
+        // Arrange
+        let position = PortfolioPosition {
+            instrument_type: instrument_type.to_string(),
+            quantity: Some(Quotation {
+                units: quantity,
+                nano: 0,
+            }),
+            average_position_price: Some(rub(90_000)),
+            current_price: Some(rub(93_250)),
+            var_margin: margin.map(rub),
+            ..Default::default()
+        };
+
+        // Act
+        let position = AccountPosition::from(position).position.unwrap();
+
+        // Assert
+        assert_eq!(position.current().value, Decimal::from(value));
+        assert_eq!(position.notional().value, Decimal::from(notional));
     }
 
     #[test]

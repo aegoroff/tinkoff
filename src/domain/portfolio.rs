@@ -599,6 +599,7 @@ mod tests {
                 daily_yield: Money::from_value(dec!(100), currency),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::from_value(dec!(100), currency),
@@ -623,6 +624,7 @@ mod tests {
                 daily_yield: Money::from_value(dec!(-50), currency),
                 blocked: false,
                 blocked_lots: dec!(0),
+                var_margin: None,
             },
             totals: Totals {
                 additional_profit: Money::from_value(dec!(50), currency),
