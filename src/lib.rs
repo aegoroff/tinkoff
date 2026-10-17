@@ -1,14 +1,17 @@
 use chrono::{DateTime, Utc};
-use domain::Money;
+use color_eyre::eyre;
+use domain::{Money, Position};
 use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use t_invest_sdk::api::{AccountStatus, AccountType, MoneyValue, Quotation};
+use t_invest_sdk::api::{AccountStatus, AccountType, MoneyValue, PortfolioPosition, Quotation};
 
+pub mod api;
 pub mod client;
 pub mod domain;
 pub mod progress;
+pub mod reports;
 pub mod ux;
 
 pub use domain::risk;
@@ -153,12 +156,133 @@ pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
     }
 }
 
+impl TryFrom<&PortfolioPosition> for Position {
+    type Error = color_eyre::eyre::Error;
+
+    fn try_from(value: &PortfolioPosition) -> Result<Self, Self::Error> {
+        let currency =
+            to_currency(&value.current_price).ok_or(eyre::eyre!("Failed to get currency"))?;
+
+        let average_buy_price = to_money(value.average_position_price.as_ref())
+            .ok_or(eyre::eyre!("Failed to get average position price"))?;
+
+        let quantity = to_decimal(value.quantity.as_ref());
+
+        let current_instrument_price = to_money(value.current_price.as_ref())
+            .ok_or(eyre::eyre!("Failed to get current price"))?;
+
+        let accrued_interest = to_money(value.current_nkd.as_ref())
+            .filter(|nkd| !nkd.value.is_zero())
+            .unwrap_or_else(|| Money::zero(current_instrument_price.currency));
+
+        let daily_yield = to_money(value.daily_yield.as_ref())
+            .unwrap_or_else(|| Money::zero(current_instrument_price.currency));
+
+        Ok(Self {
+            currency,
+            average_buy_price,
+            current_instrument_price,
+            accrued_interest,
+            quantity,
+            daily_yield,
+            blocked: value.blocked,
+            blocked_lots: to_decimal(value.blocked_lots.as_ref()),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
     use t_invest_sdk::api::AccountType;
 
     use super::*;
+
+    fn rub(units: i64) -> MoneyValue {
+        MoneyValue {
+            currency: "rub".to_string(),
+            units,
+            nano: 0,
+        }
+    }
+
+    #[test]
+    fn position_accrued_interest_from_nkd() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            current_nkd: Some(rub(15)),
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert_eq!(position.accrued_interest.value, dec!(15));
+        assert_eq!(position.accrued_interest.currency, Currency::RUB);
+    }
+
+    #[test]
+    fn position_keeps_daily_yield_and_blocked_lots() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            daily_yield: Some(rub(-20)),
+            blocked: true,
+            blocked_lots: Some(Quotation { units: 1, nano: 0 }),
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert_eq!(position.daily_yield.value, dec!(-20));
+        assert!(position.blocked);
+        assert_eq!(position.blocked_lots, dec!(1));
+    }
+
+    #[test]
+    fn position_daily_yield_zero_when_missing() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert!(position.daily_yield.value.is_zero());
+        assert!(!position.blocked);
+        assert!(position.blocked_lots.is_zero());
+    }
+
+    #[test]
+    fn position_accrued_interest_zero_when_nkd_missing() {
+        // Arrange
+        let position = PortfolioPosition {
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(rub(1000)),
+            current_price: Some(rub(990)),
+            current_nkd: None,
+            ..Default::default()
+        };
+
+        // Act
+        let position = Position::try_from(&position).unwrap();
+
+        // Assert
+        assert!(position.accrued_interest.value.is_zero());
+    }
 
     #[test]
     fn parse_account_type_defaults() {

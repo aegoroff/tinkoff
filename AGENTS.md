@@ -35,7 +35,8 @@ This is a Rust console client for Tinkoff Investment API that provides portfolio
 
 #### Retry Logic
 
-Wrap API calls with `with_retry` (`src/client.rs`). It retries only transient failures
+Wrap raw API calls with `with_retry` in the `InvestApi` implementation (`src/client.rs`);
+reports never retry themselves. It retries only transient failures
 (`is_transient`: gRPC `Unavailable`, `ResourceExhausted`, `DeadlineExceeded`, `Aborted`,
 `Internal`, `Unknown` and transport errors) with exponential backoff, waits for
 `x-ratelimit-reset` on `ResourceExhausted`, and returns other errors immediately.
@@ -43,8 +44,8 @@ Keep `tonic::Status` in the error chain (`.wrap_err(...)`, not `eyre!("{e:?}")`)
 otherwise errors cannot be classified.
 
 ```rust
-pub async fn get_operations_until_done(&self, account_id: String, figi: String) -> Result<Vec<Operation>> {
-    with_retry(|| self.get_operations(account_id.clone(), figi.clone())).await
+async fn dividends(&self, figi: &str) -> color_eyre::Result<Vec<Dividend>> {
+    with_retry(|| self.get_dividends_for_figi(figi.to_string())).await
 }
 ```
 
@@ -97,7 +98,9 @@ or traits instead. The only existing macro is `impl_portfolio_aggregator!`
 src/
 ├── main.rs            # CLI entry point, command handling
 ├── lib.rs             # Library exports, API value conversions
-├── client.rs          # T-Invest API client: requests, retries, use cases
+├── api.rs             # InvestApi trait: the seam between reports and the T-Invest API
+├── client.rs          # gRPC adapter of InvestApi: transport, retries, API → domain mapping
+├── reports.rs         # Reports<A: InvestApi>: use cases, tested with an in-memory FakeApi
 ├── progress.rs        # Progress indicators
 ├── ux.rs              # Table formatting, number formatting
 └── domain/
@@ -134,9 +137,10 @@ src/
 
 ### API Client Patterns
 
-- Methods ending with `_until_done` include retry logic
-- Methods without suffix are raw API calls
-- Use `Arc<T>` for sharing client instances across tasks
+- Use cases live in `Reports` and reach the API only through `InvestApi`
+- `InvestApi` methods of `TinkoffInvestment` retry; its private `get_*` methods are raw API calls
+- Test use cases with `FakeApi` (`src/reports.rs` tests), not with the network
+- `Reports` and `InvestApi` adapters are cheap to clone for spawned tasks
 
 ## CLI Guidelines
 

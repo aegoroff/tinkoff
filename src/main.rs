@@ -1,14 +1,13 @@
-use std::{collections::HashMap, env, future::Future, pin::Pin, str::FromStr};
+use std::{env, future::Future, pin::Pin, str::FromStr};
 
 use clap::{Arg, ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
 use std::sync::Arc;
-use tokio::task::JoinSet;
 
-use t_invest_sdk::api::{AccountType, InstrumentShort, OperationItem};
+use t_invest_sdk::api::AccountType;
 use tinkoff::{
     account_status_name, account_type_name,
-    client::{AccountPortfolio, AccountSelector, TinkoffInvestment},
+    client::TinkoffInvestment,
     domain::{
         InstrumentKind,
         calendar::CalendarKind,
@@ -16,6 +15,7 @@ use tinkoff::{
     },
     parse_account_type,
     progress::Progresser,
+    reports::{AccountPortfolio, AccountSelector, Reports},
     ux,
 };
 
@@ -45,6 +45,10 @@ impl AppConfig {
         };
 
         Ok(Self { token, account })
+    }
+
+    fn reports(&self) -> Reports<TinkoffInvestment> {
+        Reports::new(TinkoffInvestment::new(self.token.clone()))
     }
 }
 
@@ -116,78 +120,29 @@ fn run_subcommand<'a>(
 
 /// Prints portfolio positions of the given kind.
 async fn asset(config: &AppConfig, kind: InstrumentKind) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.load_portfolio(&config.account, Some(kind)).await?;
-    print_positions(&client, &portfolio, true).await;
+    let reports = config.reports();
+    let portfolio = reports.load_portfolio(&config.account, Some(kind)).await?;
+    print_positions(&reports, &portfolio, true).await;
     Ok(())
 }
 
 async fn all(config: &AppConfig, output_papers: bool) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.load_portfolio(&config.account, None).await?;
-    print_positions(&client, &portfolio, output_papers).await;
+    let reports = config.reports();
+    let portfolio = reports.load_portfolio(&config.account, None).await?;
+    print_positions(&reports, &portfolio, output_papers).await;
     Ok(())
 }
 
 async fn history(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
     let ticker = cmd
         .get_one::<String>("TICKER")
         .ok_or_else(|| eyre::eyre!("No ticker passed"))?;
-    let (account, instruments) = tokio::join!(
-        client.get_account(&config.account),
-        client.find_instruments_by_ticker_until_done(ticker),
-    );
-    let account = account?;
-    let instruments = instruments?;
-
-    let client = Arc::new(client);
-    let account_id = account.id.clone();
-
-    let mut set = JoinSet::new();
-    for instr in instruments
-        .into_iter()
-        .filter(|i| i.ticker.eq_ignore_ascii_case(ticker))
-    {
-        let client = Arc::clone(&client);
-        let account_id = account_id.clone();
-        set.spawn(async move {
-            let ops = client
-                .get_operations_until_done(account_id, instr.figi.clone())
-                .await;
-            (instr, ops)
-        });
-    }
-
-    let mut instruments_with_ops: HashMap<String, (InstrumentShort, Vec<OperationItem>)> =
-        HashMap::new();
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok((instr, Ok(ops))) if !ops.is_empty() => {
-                instruments_with_ops.insert(instr.figi.clone(), (instr, ops));
-            }
-            Ok((_, Err(e))) => eprintln!("Failed to load operations: {e:?}"),
-            Err(e) => eprintln!("Task panicked: {e}"),
-            _ => {}
-        }
-    }
-
-    let Some((instrument, operations)) =
-        preferred_figi(instruments_with_ops.keys()).and_then(|f| instruments_with_ops.get(f))
-    else {
-        return Err(eyre::eyre!("No operations with {ticker} on the account"));
-    };
-
-    if let Some(history) = client.history_in_rub(operations, instrument).await? {
-        println!("{history}");
-    }
+    let history = config
+        .reports()
+        .get_history(&config.account, ticker)
+        .await?;
+    println!("{history}");
     Ok(())
-}
-
-/// FIGI whose history is shown when a ticker matches several instruments:
-/// the first one in order, exchange FIGIs before broker's own `TCS` ones.
-fn preferred_figi<'a>(figis: impl IntoIterator<Item = &'a String>) -> Option<&'a String> {
-    figis.into_iter().min_by_key(|f| (f.starts_with("TCS"), *f))
 }
 
 async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> Result<()> {
@@ -195,9 +150,9 @@ async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> R
         .get_one::<u32>("days")
         .copied()
         .ok_or_else(|| eyre::eyre!("Calendar horizon is not set"))?;
-    let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.load_portfolio(&config.account, None).await?;
-    let (calendar, failures) = client.get_calendar(&portfolio, kind, days).await?;
+    let reports = config.reports();
+    let portfolio = reports.load_portfolio(&config.account, None).await?;
+    let (calendar, failures) = reports.get_calendar(&portfolio, kind, days).await?;
     println!("{calendar}");
     report_failures(&failures);
     Ok(())
@@ -205,9 +160,9 @@ async fn calendar(config: &AppConfig, cmd: &ArgMatches, kind: CalendarKind) -> R
 
 /// Prints passive income expected within a year and the portfolio yield.
 async fn income(config: &AppConfig) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.load_portfolio(&config.account, None).await?;
-    let (forecast, failures) = client.get_income_forecast(&portfolio).await?;
+    let reports = config.reports();
+    let portfolio = reports.load_portfolio(&config.account, None).await?;
+    let (forecast, failures) = reports.get_income_forecast(&portfolio).await?;
     println!("{forecast}");
     report_failures(&failures);
     Ok(())
@@ -218,10 +173,10 @@ async fn benchmark(config: &AppConfig) -> Result<()> {
     use chrono::{Datelike, Utc};
     use tinkoff::domain::benchmark::BenchmarkComparison;
 
-    let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.load_portfolio(&config.account, None).await?;
+    let reports = config.reports();
+    let portfolio = reports.load_portfolio(&config.account, None).await?;
     let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
-    let (container, mut failures) = client
+    let (container, mut failures) = reports
         .build_portfolio(&portfolio, false, Some(progress))
         .await;
 
@@ -232,7 +187,7 @@ async fn benchmark(config: &AppConfig) -> Result<()> {
         .map(|f| f.date.year())
         .min()
         .unwrap_or_else(|| now.year());
-    let (indices, index_failures) = client.get_index_histories(since_year).await?;
+    let (indices, index_failures) = reports.get_index_histories(since_year).await?;
     failures.extend(index_failures);
 
     println!("{}", BenchmarkComparison::new(&container, indices, now));
@@ -242,8 +197,8 @@ async fn benchmark(config: &AppConfig) -> Result<()> {
 
 /// Prints income and taxes withheld by year.
 async fn taxes(config: &AppConfig) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let report = client.get_tax_report(&config.account).await?;
+    let reports = config.reports();
+    let report = reports.get_tax_report(&config.account).await?;
     println!("{report}");
     Ok(())
 }
@@ -251,13 +206,13 @@ async fn taxes(config: &AppConfig) -> Result<()> {
 /// Prints analyst forecasts and fundamentals of the portfolio shares,
 /// or detailed ones of the share with the given ticker only.
 async fn analytics(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let mut shares = client
+    let reports = config.reports();
+    let mut shares = reports
         .load_portfolio(&config.account, Some(InstrumentKind::Share))
         .await?;
 
     let Some(ticker) = cmd.get_one::<String>("TICKER") else {
-        let (analytics, failures) = client.get_share_analytics(&shares).await;
+        let (analytics, failures) = reports.get_share_analytics(&shares).await;
         print!("{analytics}");
         report_failures(&failures);
         return Ok(());
@@ -269,7 +224,7 @@ async fn analytics(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     if shares.holdings.is_empty() {
         return Err(eyre::eyre!("No share {ticker} in the portfolio"));
     }
-    let (analytics, failures) = client.get_share_analytics(&shares).await;
+    let (analytics, failures) = reports.get_share_analytics(&shares).await;
     for share in analytics.shares() {
         println!("{share}");
     }
@@ -278,8 +233,8 @@ async fn analytics(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
 }
 
 async fn accounts(config: &AppConfig) -> Result<()> {
-    let client = TinkoffInvestment::new(config.token.clone());
-    let accounts = client.get_accounts().await?;
+    let reports = config.reports();
+    let accounts = reports.get_accounts().await?;
 
     let mut table = ux::new_table();
     table.set_header(["ID", "Name", "Type", "Status", "Opened"]);
@@ -308,10 +263,10 @@ async fn accounts(config: &AppConfig) -> Result<()> {
 async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis};
 
-    let client = TinkoffInvestment::new(config.token.clone());
-    let portfolio = client.load_portfolio(&config.account, None).await?;
+    let reports = config.reports();
+    let portfolio = reports.load_portfolio(&config.account, None).await?;
     let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
-    let (container, failures) = client
+    let (container, failures) = reports
         .build_portfolio(&portfolio, false, Some(progress))
         .await;
 
@@ -328,12 +283,12 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
 }
 
 async fn print_positions(
-    client: &TinkoffInvestment,
+    reports: &Reports<TinkoffInvestment>,
     portfolio: &AccountPortfolio,
     output_papers: bool,
 ) {
     let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
-    let (container, failures) = client
+    let (container, failures) = reports
         .build_portfolio(portfolio, output_papers, Some(progress))
         .await;
     print!("{container}");
@@ -526,28 +481,4 @@ fn risk_cmd() -> Command {
                     TargetAllocation::presets_help()
                 )),
         )
-}
-
-#[cfg(test)]
-mod tests {
-    use rstest::rstest;
-
-    use super::*;
-
-    #[rstest]
-    #[case::exchange_before_broker(&["TCS00A107T19", "BBG004730N88"], Some("BBG004730N88"))]
-    #[case::broker_first_in_input(&["BBG004730N88", "TCS00A107T19"], Some("BBG004730N88"))]
-    #[case::exchange_ones_ordered(&["BBG2", "BBG1", "TCS1"], Some("BBG1"))]
-    #[case::only_broker_ones(&["TCS2", "TCS1"], Some("TCS1"))]
-    #[case::none(&[], None)]
-    fn preferred_figi_cases(#[case] figis: &[&str], #[case] expected: Option<&str>) {
-        // Arrange
-        let figis: Vec<String> = figis.iter().map(ToString::to_string).collect();
-
-        // Act
-        let figi = preferred_figi(&figis);
-
-        // Assert
-        assert_eq!(figi.map(String::as_str), expected);
-    }
 }
