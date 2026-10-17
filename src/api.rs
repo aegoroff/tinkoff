@@ -3,15 +3,14 @@ use std::future::Future;
 
 use color_eyre::eyre::Result;
 use iso_currency::Currency;
-use t_invest_sdk::api::{
-    Account, Dividend, IndicativeResponse, InstrumentShort, OperationItem, OperationType,
-};
+use t_invest_sdk::api::{Account, Dividend, IndicativeResponse, InstrumentShort};
 
 use crate::domain::{
     AccountPosition, Instrument, InstrumentKind,
     analytics::{Forecast, Fundamentals},
     bond::BondEvent,
     fx::{DailyCloses, FxCandidate},
+    operation::{Operation, OperationKind},
 };
 
 /// Which executed operations of an account to get.
@@ -19,8 +18,8 @@ use crate::domain::{
 pub enum OperationsFilter<'a> {
     /// All operations with the instrument of this FIGI.
     Instrument(&'a str),
-    /// Operations of these types with any instrument.
-    Types(&'a [OperationType]),
+    /// Operations of these kinds with any instrument; there must be at least one kind.
+    Kinds(&'a [OperationKind]),
 }
 
 /// Data the reports need from the T-Invest API.
@@ -54,7 +53,7 @@ pub trait InvestApi: DailyCloses + Clone + Send + Sync + 'static {
         &self,
         account_id: &str,
         filter: OperationsFilter<'_>,
-    ) -> impl Future<Output = Result<Vec<OperationItem>>> + Send;
+    ) -> impl Future<Output = Result<Vec<Operation>>> + Send;
 
     /// Consensus forecast of an instrument; `None` when investment houses give none.
     /// `currency` is used when the API does not specify the forecast currency.

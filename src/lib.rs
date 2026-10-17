@@ -1,11 +1,17 @@
 use chrono::{DateTime, Utc};
 use color_eyre::eyre;
-use domain::{AccountPosition, Money, Position};
+use domain::{
+    AccountPosition, InstrumentKind, Money, Position,
+    operation::{Operation, OperationKind, OperationState},
+};
 use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use t_invest_sdk::api::{AccountStatus, AccountType, MoneyValue, PortfolioPosition, Quotation};
+use t_invest_sdk::api::{
+    AccountStatus, AccountType, MoneyValue, OperationItem, OperationState as ApiOperationState,
+    OperationType, PortfolioPosition, Quotation,
+};
 
 pub mod api;
 pub mod client;
@@ -211,6 +217,95 @@ impl From<PortfolioPosition> for AccountPosition {
     }
 }
 
+/// Kinds of API operation types; types absent here are [`OperationKind::Other`].
+pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 38] = [
+    (OperationType::Buy, OperationKind::Buy),
+    (OperationType::BuyCard, OperationKind::Buy),
+    (OperationType::BuyMargin, OperationKind::Buy),
+    (OperationType::Sell, OperationKind::Sell),
+    (OperationType::SellCard, OperationKind::Sell),
+    (OperationType::SellMargin, OperationKind::Sell),
+    (OperationType::Dividend, OperationKind::Dividend),
+    (OperationType::DivExt, OperationKind::Dividend),
+    (OperationType::Coupon, OperationKind::Coupon),
+    (OperationType::DividendTax, OperationKind::DividendTax),
+    (
+        OperationType::DividendTaxProgressive,
+        OperationKind::DividendTax,
+    ),
+    (OperationType::BondTax, OperationKind::CouponTax),
+    (OperationType::BondTaxProgressive, OperationKind::CouponTax),
+    (OperationType::TaxCorrectionCoupon, OperationKind::CouponTax),
+    (OperationType::Tax, OperationKind::OtherTax),
+    (OperationType::TaxProgressive, OperationKind::OtherTax),
+    (OperationType::TaxCorrection, OperationKind::OtherTax),
+    (
+        OperationType::TaxCorrectionProgressive,
+        OperationKind::OtherTax,
+    ),
+    (OperationType::BenefitTax, OperationKind::OtherTax),
+    (
+        OperationType::BenefitTaxProgressive,
+        OperationKind::OtherTax,
+    ),
+    (OperationType::TaxRepo, OperationKind::OtherTax),
+    (OperationType::TaxRepoProgressive, OperationKind::OtherTax),
+    (OperationType::TaxRepoHold, OperationKind::OtherTax),
+    (
+        OperationType::TaxRepoHoldProgressive,
+        OperationKind::OtherTax,
+    ),
+    (OperationType::TaxRepoRefund, OperationKind::OtherTax),
+    (
+        OperationType::TaxRepoRefundProgressive,
+        OperationKind::OtherTax,
+    ),
+    (OperationType::Overnight, OperationKind::Overnight),
+    (OperationType::ServiceFee, OperationKind::Fee),
+    (OperationType::MarginFee, OperationKind::Fee),
+    (OperationType::BrokerFee, OperationKind::Fee),
+    (OperationType::SuccessFee, OperationKind::Fee),
+    (OperationType::TrackMfee, OperationKind::Fee),
+    (OperationType::TrackPfee, OperationKind::Fee),
+    (OperationType::CashFee, OperationKind::Fee),
+    (OperationType::OutFee, OperationKind::Fee),
+    (OperationType::OutStampDuty, OperationKind::Fee),
+    (OperationType::AdviceFee, OperationKind::Fee),
+    (OperationType::OutputPenalty, OperationKind::Fee),
+];
+
+/// Kind of an API operation type code; unknown codes are [`OperationKind::Other`].
+fn operation_kind(code: i32) -> OperationKind {
+    OPERATION_KINDS
+        .iter()
+        .find(|(api, _)| *api as i32 == code)
+        .map_or(OperationKind::Other, |(_, kind)| *kind)
+}
+
+impl From<OperationItem> for Operation {
+    fn from(op: OperationItem) -> Self {
+        let state = match op.state() {
+            ApiOperationState::Executed => OperationState::Executed,
+            ApiOperationState::Canceled => OperationState::Canceled,
+            ApiOperationState::Progress => OperationState::InProgress,
+            ApiOperationState::Unspecified => OperationState::Unspecified,
+        };
+        Self {
+            kind: operation_kind(op.r#type),
+            state,
+            date: to_datetime_utc(op.date.as_ref()),
+            instrument_kind: InstrumentKind::from_api(&op.instrument_type),
+            payment: to_money(op.payment.as_ref()),
+            price: to_money(op.price.as_ref()),
+            accrued_interest: to_money(op.accrued_int.as_ref()),
+            quantity: op.quantity,
+            quantity_rest: op.quantity_rest,
+            description: op.description,
+            id: op.id,
+        }
+    }
+}
+
 /// Checks that position money values are in RUB.
 fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
     for money in [
@@ -232,6 +327,7 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
+    use rstest::rstest;
     use t_invest_sdk::api::AccountType;
 
     use super::*;
@@ -242,6 +338,88 @@ mod tests {
             units,
             nano: 0,
         }
+    }
+
+    #[rstest]
+    #[case::buy_card(OperationType::BuyCard, OperationKind::Buy)]
+    #[case::sell_margin(OperationType::SellMargin, OperationKind::Sell)]
+    #[case::dividend_to_card(OperationType::DivExt, OperationKind::Dividend)]
+    #[case::coupon_tax_correction(OperationType::TaxCorrectionCoupon, OperationKind::CouponTax)]
+    #[case::progressive_tax(OperationType::TaxProgressive, OperationKind::OtherTax)]
+    #[case::overnight(OperationType::Overnight, OperationKind::Overnight)]
+    #[case::penalty(OperationType::OutputPenalty, OperationKind::Fee)]
+    #[case::input(OperationType::Input, OperationKind::Other)]
+    fn operation_kind_of_api_type(#[case] api: OperationType, #[case] expected: OperationKind) {
+        // Act
+        let kind = operation_kind(api as i32);
+
+        // Assert
+        assert_eq!(kind, expected);
+    }
+
+    #[test]
+    fn operation_kind_of_unknown_code_is_other() {
+        // Act
+        let kind = operation_kind(-1);
+
+        // Assert
+        assert_eq!(kind, OperationKind::Other);
+    }
+
+    #[test]
+    fn operation_keeps_api_values() {
+        // Arrange
+        let item = OperationItem {
+            id: "OP1".to_string(),
+            r#type: OperationType::Buy as i32,
+            state: ApiOperationState::Executed as i32,
+            date: Some(Timestamp {
+                seconds: 1_758_790_800,
+                nanos: 0,
+            }),
+            instrument_type: "bond".to_string(),
+            payment: Some(rub(-1020)),
+            price: Some(rub(1000)),
+            accrued_int: Some(rub(20)),
+            quantity: 1,
+            description: "Bond purchase".to_string(),
+            ..Default::default()
+        };
+
+        // Act
+        let op = Operation::from(item);
+
+        // Assert
+        assert_eq!(op.id, "OP1");
+        assert_eq!(op.kind, OperationKind::Buy);
+        assert_eq!(op.state, OperationState::Executed);
+        assert_eq!(op.date.timestamp(), 1_758_790_800);
+        assert_eq!(op.instrument_kind, Some(InstrumentKind::Bond));
+        assert_eq!(op.payment.map(|p| p.value), Some(dec!(-1020)));
+        assert_eq!(op.price.map(|p| p.value), Some(dec!(1000)));
+        assert_eq!(op.accrued_interest.map(|p| p.value), Some(dec!(20)));
+        assert_eq!(op.quantity, 1);
+        assert_eq!(op.description, "Bond purchase");
+    }
+
+    #[test]
+    fn operation_without_known_currency_has_no_payment() {
+        // Arrange
+        let item = OperationItem {
+            payment: Some(MoneyValue {
+                currency: "xyz".to_string(),
+                units: 1,
+                nano: 0,
+            }),
+            ..Default::default()
+        };
+
+        // Act
+        let op = Operation::from(item);
+
+        // Assert
+        assert!(op.payment.is_none());
+        assert_eq!(op.instrument_kind, None);
     }
 
     fn api_position(price: MoneyValue) -> PortfolioPosition {

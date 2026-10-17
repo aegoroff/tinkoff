@@ -106,6 +106,7 @@ src/
 └── domain/
     ├── mod.rs         # Re-exports, NumberRange trait
     ├── money.rs       # Money and Income
+    ├── operation.rs   # Account operations and what their kinds mean for income and taxes
     ├── paper.rs       # Paper, Position, Instrument, Profit kinds
     ├── portfolio.rs   # Portfolio and Asset containers, LoadedPaper
     ├── analytics.rs   # Analyst forecasts and fundamentals of shares

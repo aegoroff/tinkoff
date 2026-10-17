@@ -1,11 +1,8 @@
-use chrono::{DateTime, Utc};
-use iso_currency::Currency;
-use t_invest_sdk::api::{OperationItem, OperationState};
-
-use crate::{to_datetime_utc, to_money};
-
 use super::NumberRange;
 use super::money::Money;
+use super::operation::Operation;
+use chrono::{DateTime, Utc};
+use iso_currency::Currency;
 
 pub struct History {
     pub name: String,
@@ -56,39 +53,18 @@ impl History {
 }
 
 impl HistoryItem {
+    /// History line of an operation; missing amounts are zero in the payment currency.
     #[must_use]
-    pub fn from(op: &OperationItem) -> Self {
-        let currency = op
-            .payment
-            .as_ref()
-            .and_then(|m| Currency::from_code(&m.currency.to_ascii_uppercase()))
-            .unwrap_or(Currency::RUB);
-        let payment = if let Some(payment) = to_money(op.payment.as_ref()) {
-            payment
-        } else {
-            Money::zero(currency)
-        };
-        let price = if let Some(price) = to_money(op.price.as_ref()) {
-            price
-        } else {
-            Money::zero(currency)
-        };
-        let state = match op.state() {
-            OperationState::Unspecified => "Not specified",
-            OperationState::Executed => "Executed",
-            OperationState::Canceled => "Canceled",
-            OperationState::Progress => "In progress",
-        };
-
-        let dt = to_datetime_utc(op.date.as_ref());
+    pub fn from(op: &Operation) -> Self {
+        let currency = op.payment.map_or(Currency::RUB, |p| p.currency);
         Self {
-            datetime: dt,
+            datetime: op.date,
             quantity: op.quantity,
             quantity_rest: op.quantity_rest,
-            price,
-            payment,
+            price: op.price.unwrap_or_else(|| Money::zero(currency)),
+            payment: op.payment.unwrap_or_else(|| Money::zero(currency)),
             description: op.description.clone(),
-            operation_state: state,
+            operation_state: op.state.label(),
         }
     }
 }

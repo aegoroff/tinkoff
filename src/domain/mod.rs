@@ -9,6 +9,7 @@ pub mod fx;
 pub mod history;
 pub mod income;
 pub mod money;
+pub mod operation;
 pub mod paper;
 pub mod portfolio;
 pub mod risk;

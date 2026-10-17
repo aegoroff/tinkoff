@@ -36,6 +36,7 @@ const INVEST_API_ENDPOINT: &str = "https://invest-public-api.tbank.ru:443/";
 const RUSSIAN_TRUSTED_CAS: &[u8] = include_bytes!("../certs/russian_trusted_cas.pem");
 
 use crate::{
+    OPERATION_KINDS,
     api::{InvestApi, OperationsFilter},
     domain::{
         AccountPosition, Instrument, InstrumentKind, Money, Ticker,
@@ -43,6 +44,7 @@ use crate::{
         bond::{BondEvent, BondEventKind, mark_amortizations},
         fx::{DailyCloses, DailyPrices, FxCandidate},
         moscow_date,
+        operation::{Operation, OperationKind},
     },
     to_decimal, to_metric, to_money, to_optional_datetime_utc,
 };
@@ -555,18 +557,20 @@ impl InvestApi for TinkoffInvestment {
         &self,
         account_id: &str,
         filter: OperationsFilter<'_>,
-    ) -> color_eyre::Result<Vec<OperationItem>> {
+    ) -> color_eyre::Result<Vec<Operation>> {
         let (instrument_id, operation_types) = match filter {
             OperationsFilter::Instrument(figi) => (Some(figi.to_string()), Vec::new()),
-            OperationsFilter::Types(types) => (None, types.iter().map(|t| *t as i32).collect()),
+            OperationsFilter::Kinds(kinds) => (None, api_operation_types(kinds)),
         };
-        self.get_all_operations(GetOperationsByCursorRequest {
-            account_id: account_id.to_string(),
-            instrument_id,
-            operation_types,
-            ..Default::default()
-        })
-        .await
+        let items = self
+            .get_all_operations(GetOperationsByCursorRequest {
+                account_id: account_id.to_string(),
+                instrument_id,
+                operation_types,
+                ..Default::default()
+            })
+            .await?;
+        Ok(items.into_iter().map(Operation::from).collect())
     }
 
     async fn forecast(
@@ -616,6 +620,15 @@ impl DailyCloses for TinkoffInvestment {
         let candles = with_retry(|| self.get_year_candles(instrument_id, year)).await?;
         Ok(daily_closes(&candles))
     }
+}
+
+/// API operation type codes of the given kinds.
+fn api_operation_types(kinds: &[OperationKind]) -> Vec<i32> {
+    OPERATION_KINDS
+        .iter()
+        .filter(|(_, kind)| kinds.contains(kind))
+        .map(|(api, _)| *api as i32)
+        .collect()
 }
 
 /// Start of `year` and start of the next one in UTC.
@@ -818,9 +831,25 @@ mod tests {
     use rust_decimal_macros::dec;
     use std::sync::atomic::{AtomicU32, Ordering};
     use t_invest_sdk::api::{
-        MoneyValue,
+        MoneyValue, OperationType,
         get_forecast_response::{ConsensusItem, TargetItem},
     };
+
+    #[test]
+    fn api_operation_types_of_kinds() {
+        // Act
+        let types = api_operation_types(&[OperationKind::Dividend, OperationKind::Overnight]);
+
+        // Assert
+        assert_eq!(
+            types,
+            [
+                OperationType::Dividend as i32,
+                OperationType::DivExt as i32,
+                OperationType::Overnight as i32,
+            ]
+        );
+    }
 
     fn rub(units: i64) -> MoneyValue {
         MoneyValue {

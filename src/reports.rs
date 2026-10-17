@@ -6,9 +6,7 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use t_invest_sdk::api::{
-    Account, AccountStatus, AccountType, Dividend, InstrumentShort, OperationItem, OperationType,
-};
+use t_invest_sdk::api::{Account, AccountStatus, AccountType, Dividend, InstrumentShort};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -26,11 +24,12 @@ use crate::{
         fx::{DailyCloses, RubConverter},
         history::{History, HistoryItem},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
-        tax::{TaxOperation, TaxOperationKind, TaxReport},
+        operation::{Operation, OperationKind},
+        tax::{TaxOperation, TaxReport},
         xirr::CashFlow,
     },
     progress::Progress,
-    to_datetime_utc, to_money, to_optional_datetime_utc,
+    to_money, to_optional_datetime_utc,
 };
 
 /// Passive income forecast horizon in days.
@@ -188,16 +187,6 @@ impl AccountPortfolio {
             .map(|p| skipped(eyre::eyre!("{}", p.reason), &p.instrument, &p.figi))
             .collect()
     }
-}
-
-enum OperationInfluence {
-    /// Anything that affects to dividends or coupons value.<br/>
-    /// Including negative values like dividend tax etc. to calculate pure income<br/>
-    /// without taxes.
-    PureIncome,
-    /// Comissions and other losses
-    Fees,
-    Unspecified,
 }
 
 /// Portfolio reports built from the data of an [`InvestApi`].
@@ -504,19 +493,16 @@ impl<A: InvestApi> Reports<A> {
         let account = self.get_account(selector).await?;
         let operations = self
             .api
-            .operations(&account.id, OperationsFilter::Types(&TAX_OPERATION_TYPES))
+            .operations(&account.id, OperationsFilter::Kinds(&OperationKind::TAXED))
             .await?;
         let fx = self.load_fx_rates().await?;
 
         let mut items = Vec::new();
         for op in operations.iter().unique_by(|op| &op.id) {
-            let kind = OperationType::try_from(op.r#type)
-                .ok()
-                .and_then(tax_operation_kind);
-            let (Some(kind), Some(payment)) = (kind, to_money(op.payment.as_ref())) else {
+            let (Some(kind), Some(payment)) = (op.kind.tax_kind(), op.payment) else {
                 continue;
             };
-            let date = to_datetime_utc(op.date.as_ref());
+            let date = op.date;
             let amount = fx.to_rub(payment, date).await?;
             items.push(TaxOperation { date, kind, amount });
         }
@@ -671,7 +657,7 @@ impl<A: InvestApi> Reports<A> {
     /// `None` without operations.
     async fn history_in_rub(
         &self,
-        operations: &[OperationItem],
+        operations: &[Operation],
         instrument: &InstrumentShort,
     ) -> color_eyre::Result<Option<History>> {
         let fx = self.load_fx_rates().await?;
@@ -974,100 +960,21 @@ impl<A: InvestApi> Reports<A> {
     }
 }
 
-#[must_use]
-fn to_influence(op: OperationType) -> OperationInfluence {
-    match op {
-        t_invest_sdk::api::OperationType::DividendTax
-        | t_invest_sdk::api::OperationType::DividendTaxProgressive
-        | t_invest_sdk::api::OperationType::BondTax
-        | t_invest_sdk::api::OperationType::BondTaxProgressive
-        | t_invest_sdk::api::OperationType::Coupon
-        | t_invest_sdk::api::OperationType::BenefitTax
-        | t_invest_sdk::api::OperationType::BenefitTaxProgressive
-        | t_invest_sdk::api::OperationType::Overnight
-        | t_invest_sdk::api::OperationType::Tax
-        | t_invest_sdk::api::OperationType::Dividend => OperationInfluence::PureIncome,
-        t_invest_sdk::api::OperationType::ServiceFee
-        | t_invest_sdk::api::OperationType::MarginFee
-        | t_invest_sdk::api::OperationType::BrokerFee
-        | t_invest_sdk::api::OperationType::SuccessFee
-        | t_invest_sdk::api::OperationType::TrackMfee
-        | t_invest_sdk::api::OperationType::TrackPfee
-        | t_invest_sdk::api::OperationType::CashFee
-        | t_invest_sdk::api::OperationType::OutFee
-        | t_invest_sdk::api::OperationType::OutStampDuty
-        | t_invest_sdk::api::OperationType::AdviceFee
-        | t_invest_sdk::api::OperationType::OutputPenalty => OperationInfluence::Fees,
-        _ => OperationInfluence::Unspecified,
-    }
-}
-
-/// Operation types that affect taxes: income and taxes on it, taxes and their corrections.
-const TAX_OPERATION_TYPES: [OperationType; 20] = [
-    OperationType::Dividend,
-    OperationType::DivExt,
-    OperationType::Coupon,
-    OperationType::DividendTax,
-    OperationType::DividendTaxProgressive,
-    OperationType::BondTax,
-    OperationType::BondTaxProgressive,
-    OperationType::TaxCorrectionCoupon,
-    OperationType::Tax,
-    OperationType::TaxProgressive,
-    OperationType::TaxCorrection,
-    OperationType::TaxCorrectionProgressive,
-    OperationType::BenefitTax,
-    OperationType::BenefitTaxProgressive,
-    OperationType::TaxRepo,
-    OperationType::TaxRepoProgressive,
-    OperationType::TaxRepoHold,
-    OperationType::TaxRepoHoldProgressive,
-    OperationType::TaxRepoRefund,
-    OperationType::TaxRepoRefundProgressive,
-];
-
-/// Tax kind of an operation; `None` for operations that do not affect taxes.
-fn tax_operation_kind(op: OperationType) -> Option<TaxOperationKind> {
-    match op {
-        OperationType::Dividend | OperationType::DivExt => Some(TaxOperationKind::Dividend),
-        OperationType::Coupon => Some(TaxOperationKind::Coupon),
-        OperationType::DividendTax | OperationType::DividendTaxProgressive => {
-            Some(TaxOperationKind::DividendTax)
-        }
-        OperationType::BondTax
-        | OperationType::BondTaxProgressive
-        | OperationType::TaxCorrectionCoupon => Some(TaxOperationKind::CouponTax),
-        OperationType::Tax
-        | OperationType::TaxProgressive
-        | OperationType::TaxCorrection
-        | OperationType::TaxCorrectionProgressive
-        | OperationType::BenefitTax
-        | OperationType::BenefitTaxProgressive
-        | OperationType::TaxRepo
-        | OperationType::TaxRepoProgressive
-        | OperationType::TaxRepoHold
-        | OperationType::TaxRepoHoldProgressive
-        | OperationType::TaxRepoRefund
-        | OperationType::TaxRepoRefundProgressive => Some(TaxOperationKind::OtherTax),
-        _ => None,
-    }
-}
-
 /// Totals of a paper's operations in RUB: income net of taxes, fees and cash flows.
 ///
 /// NKD paid or received on bond trades counts as coupon income.
 async fn reduce<S: DailyCloses>(
     fx: &RubConverter<S>,
-    operations: &[OperationItem],
+    operations: &[Operation],
 ) -> color_eyre::Result<Totals> {
     let mut income = Vec::new();
     let mut fees = Vec::new();
     let mut cash_flows = Vec::new();
     for op in operations {
-        let Some(payment) = to_money(op.payment.as_ref()) else {
+        let Some(payment) = op.payment else {
             continue;
         };
-        let at = to_datetime_utc(op.date.as_ref());
+        let at = op.date;
         if let Some(accrued_interest) = trade_accrued_interest(op) {
             income.push(fx.to_rub(accrued_interest, at).await?);
         }
@@ -1078,10 +985,10 @@ async fn reduce<S: DailyCloses>(
                 amount: payment.value,
             });
         }
-        match to_influence(op.r#type()) {
-            OperationInfluence::PureIncome => income.push(payment),
-            OperationInfluence::Fees => fees.push(payment),
-            OperationInfluence::Unspecified => {}
+        if op.kind.is_income() {
+            income.push(payment);
+        } else if op.kind.is_fee() {
+            fees.push(payment);
         }
     }
     Ok(Totals {
@@ -1094,18 +1001,16 @@ async fn reduce<S: DailyCloses>(
 ///
 /// A bond trade payment includes NKD besides `price × quantity`, so adding it to coupons
 /// gives the net coupon income.
-fn trade_accrued_interest(op: &OperationItem) -> Option<Money> {
-    if InstrumentKind::from_api(&op.instrument_type) != Some(InstrumentKind::Bond) {
+fn trade_accrued_interest(op: &Operation) -> Option<Money> {
+    if op.instrument_kind != Some(InstrumentKind::Bond) {
         return None;
     }
-    let direction = match op.r#type() {
-        OperationType::Buy | OperationType::BuyCard | OperationType::BuyMargin => {
-            Decimal::NEGATIVE_ONE
-        }
-        OperationType::Sell | OperationType::SellCard | OperationType::SellMargin => Decimal::ONE,
+    let direction = match op.kind {
+        OperationKind::Buy => Decimal::NEGATIVE_ONE,
+        OperationKind::Sell => Decimal::ONE,
         _ => return None,
     };
-    let accrued = to_money(op.accrued_int.as_ref())?;
+    let accrued = op.accrued_interest?;
     (!accrued.value.is_zero()).then(|| accrued * direction)
 }
 
@@ -1234,6 +1139,7 @@ mod tests {
         analytics::{Forecast, Fundamentals},
         bond::BondEvent,
         fx::{DailyPrices, FxCandidate},
+        operation::OperationState,
     };
 
     /// In-memory T-Invest API serving fixed data.
@@ -1244,7 +1150,7 @@ mod tests {
         instruments: HashMap<String, Instrument>,
         found: Vec<InstrumentShort>,
         /// Operations by FIGI.
-        operations: HashMap<String, Vec<OperationItem>>,
+        operations: HashMap<String, Vec<Operation>>,
         dividends: HashMap<String, Vec<Dividend>>,
         bond_events: HashMap<String, Vec<BondEvent>>,
         /// Forecasts by instrument UID.
@@ -1320,14 +1226,14 @@ mod tests {
             &self,
             _: &str,
             filter: OperationsFilter<'_>,
-        ) -> impl Future<Output = color_eyre::Result<Vec<OperationItem>>> + Send {
+        ) -> impl Future<Output = color_eyre::Result<Vec<Operation>>> + Send {
             ready(match filter {
                 OperationsFilter::Instrument(figi) => self.get(&self.operations, figi),
-                OperationsFilter::Types(types) => Ok(self
+                OperationsFilter::Kinds(kinds) => Ok(self
                     .operations
                     .values()
                     .flatten()
-                    .filter(|op| types.contains(&op.r#type()))
+                    .filter(|op| kinds.contains(&op.kind))
                     .cloned()
                     .collect()),
             })
@@ -1426,12 +1332,8 @@ mod tests {
         }
     }
 
-    fn usd(units: i64) -> MoneyValue {
-        MoneyValue {
-            currency: "usd".to_string(),
-            units,
-            nano: 0,
-        }
+    fn usd(units: i64) -> Money {
+        Money::from_value(Decimal::from(units), Currency::USD)
     }
 
     fn timestamp(at: DateTime<Utc>) -> prost_types::Timestamp {
@@ -1822,32 +1724,29 @@ mod tests {
     }
 
     fn trade(
-        instrument_type: &str,
-        operation_type: OperationType,
-        accrued_int: Option<i64>,
-    ) -> OperationItem {
-        OperationItem {
-            instrument_type: instrument_type.to_string(),
-            r#type: operation_type as i32,
-            accrued_int: accrued_int.map(rub),
-            ..Default::default()
+        instrument_kind: InstrumentKind,
+        kind: OperationKind,
+        accrued_interest: Option<i64>,
+    ) -> Operation {
+        Operation {
+            accrued_interest: accrued_interest.map(rub),
+            ..operation(kind, Some(instrument_kind), rub(-1000))
         }
     }
 
     #[rstest]
-    #[case::buy_pays_nkd(OperationType::Buy, Some(19), Some(dec!(-19)))]
-    #[case::buy_card_pays_nkd(OperationType::BuyCard, Some(19), Some(dec!(-19)))]
-    #[case::sell_receives_nkd(OperationType::Sell, Some(19), Some(dec!(19)))]
-    #[case::buy_without_nkd(OperationType::Buy, None, None)]
-    #[case::zero_nkd(OperationType::Buy, Some(0), None)]
-    #[case::coupon_is_not_a_trade(OperationType::Coupon, Some(19), None)]
+    #[case::buy_pays_nkd(OperationKind::Buy, Some(19), Some(dec!(-19)))]
+    #[case::sell_receives_nkd(OperationKind::Sell, Some(19), Some(dec!(19)))]
+    #[case::buy_without_nkd(OperationKind::Buy, None, None)]
+    #[case::zero_nkd(OperationKind::Buy, Some(0), None)]
+    #[case::coupon_is_not_a_trade(OperationKind::Coupon, Some(19), None)]
     fn trade_accrued_interest_of_bond(
-        #[case] operation_type: OperationType,
+        #[case] kind: OperationKind,
         #[case] accrued_int: Option<i64>,
         #[case] expected: Option<Decimal>,
     ) {
         // Arrange
-        let op = trade("bond", operation_type, accrued_int);
+        let op = trade(InstrumentKind::Bond, kind, accrued_int);
 
         // Act
         let accrued = trade_accrued_interest(&op);
@@ -1859,7 +1758,7 @@ mod tests {
     #[test]
     fn trade_accrued_interest_ignores_shares() {
         // Arrange
-        let op = trade("share", OperationType::Buy, Some(19));
+        let op = trade(InstrumentKind::Share, OperationKind::Buy, Some(19));
 
         // Act
         let accrued = trade_accrued_interest(&op);
@@ -1929,12 +1828,8 @@ mod tests {
         assert_eq!(messages, ["Index MCFTR skipped", "Index RGBITR skipped"]);
     }
 
-    fn rub(units: i64) -> MoneyValue {
-        MoneyValue {
-            currency: "rub".to_string(),
-            units,
-            nano: 0,
-        }
+    fn rub(units: i64) -> Money {
+        Money::from_value(Decimal::from(units), Currency::RUB)
     }
 
     /// Closes of every instrument, whatever its ID and year.
@@ -1965,20 +1860,22 @@ mod tests {
     }
 
     fn operation(
-        operation_type: OperationType,
-        instrument_type: &str,
-        payment: MoneyValue,
-    ) -> OperationItem {
-        let date: DateTime<Utc> = "2026-09-25T09:00:00Z".parse().unwrap();
-        OperationItem {
-            r#type: operation_type as i32,
-            instrument_type: instrument_type.to_string(),
+        kind: OperationKind,
+        instrument_kind: Option<InstrumentKind>,
+        payment: Money,
+    ) -> Operation {
+        Operation {
+            id: String::new(),
+            kind,
+            state: OperationState::Executed,
+            date: "2026-09-25T09:00:00Z".parse().unwrap(),
+            instrument_kind,
             payment: Some(payment),
-            date: Some(prost_types::Timestamp {
-                seconds: date.timestamp(),
-                nanos: 0,
-            }),
-            ..Default::default()
+            price: None,
+            accrued_interest: None,
+            quantity: 1,
+            quantity_rest: 0,
+            description: String::new(),
         }
     }
 
@@ -1986,9 +1883,13 @@ mod tests {
     async fn reduce_sums_income_net_of_taxes_and_fees() {
         // Arrange
         let operations = [
-            operation(OperationType::Coupon, "bond", rub(50)),
-            operation(OperationType::BondTax, "bond", rub(-7)),
-            operation(OperationType::BrokerFee, "bond", rub(-3)),
+            operation(OperationKind::Coupon, Some(InstrumentKind::Bond), rub(50)),
+            operation(
+                OperationKind::CouponTax,
+                Some(InstrumentKind::Bond),
+                rub(-7),
+            ),
+            operation(OperationKind::Fee, Some(InstrumentKind::Bond), rub(-3)),
         ];
 
         // Act
@@ -2001,11 +1902,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reduce_takes_other_taxes_out_of_income() {
+        // Arrange
+        let share = Some(InstrumentKind::Share);
+        let operations = [
+            operation(OperationKind::Dividend, share, rub(100)),
+            operation(OperationKind::OtherTax, share, rub(-13)),
+        ];
+
+        // Act
+        let totals = reduce(&usd_at_90(), &operations).await.unwrap();
+
+        // Assert
+        assert_eq!(totals.additional_profit.value, dec!(87));
+    }
+
+    #[tokio::test]
     async fn reduce_counts_bond_trade_accrued_interest_as_income() {
         // Arrange
-        let buy = OperationItem {
-            accrued_int: Some(rub(20)),
-            ..operation(OperationType::Buy, "bond", rub(-1020))
+        let buy = Operation {
+            accrued_interest: Some(rub(20)),
+            ..operation(OperationKind::Buy, Some(InstrumentKind::Bond), rub(-1020))
         };
 
         // Act
@@ -2021,13 +1938,9 @@ mod tests {
     async fn reduce_converts_foreign_payments_to_rub() {
         // Arrange
         let dividend = operation(
-            OperationType::Dividend,
-            "share",
-            MoneyValue {
-                currency: "usd".to_string(),
-                units: 10,
-                nano: 0,
-            },
+            OperationKind::Dividend,
+            Some(InstrumentKind::Share),
+            usd(10),
         );
 
         // Act
@@ -2045,8 +1958,8 @@ mod tests {
     async fn reduce_leaves_zero_payments_out_of_cash_flows() {
         // Arrange
         let operations = [
-            operation(OperationType::Dividend, "share", rub(0)),
-            operation(OperationType::Input, "", rub(100)),
+            operation(OperationKind::Dividend, Some(InstrumentKind::Share), rub(0)),
+            operation(OperationKind::Other, None, rub(100)),
         ];
 
         // Act
@@ -2123,9 +2036,9 @@ mod tests {
             operations: HashMap::from([(
                 "FIGI1".to_string(),
                 vec![
-                    operation(OperationType::Buy, "share", rub(-1000)),
-                    operation(OperationType::Dividend, "share", usd(1)),
-                    operation(OperationType::BrokerFee, "share", rub(-3)),
+                    operation(OperationKind::Buy, Some(InstrumentKind::Share), rub(-1000)),
+                    operation(OperationKind::Dividend, Some(InstrumentKind::Share), usd(1)),
+                    operation(OperationKind::Fee, Some(InstrumentKind::Share), rub(-3)),
                 ],
             )]),
             ..api()
@@ -2177,9 +2090,13 @@ mod tests {
         );
     }
 
-    fn dividend(payment: DateTime<Utc>, per_share: MoneyValue) -> Dividend {
+    fn dividend(payment: DateTime<Utc>, usd_per_share: i64) -> Dividend {
         Dividend {
-            dividend_net: Some(per_share),
+            dividend_net: Some(MoneyValue {
+                currency: "usd".to_string(),
+                units: usd_per_share,
+                nano: 0,
+            }),
             payment_date: Some(timestamp(payment)),
             ..Default::default()
         }
@@ -2194,10 +2111,10 @@ mod tests {
             dividends: HashMap::from([(
                 "FIGI1".to_string(),
                 vec![
-                    dividend(now + ChronoDuration::days(20), usd(1)),
-                    dividend(now + ChronoDuration::days(10), usd(2)),
-                    dividend(now + ChronoDuration::days(400), usd(3)),
-                    dividend(now - ChronoDuration::days(10), usd(4)),
+                    dividend(now + ChronoDuration::days(20), 1),
+                    dividend(now + ChronoDuration::days(10), 2),
+                    dividend(now + ChronoDuration::days(400), 3),
+                    dividend(now - ChronoDuration::days(10), 4),
                 ],
             )]),
             ..api()
@@ -2327,11 +2244,14 @@ mod tests {
     #[tokio::test]
     async fn tax_report_counts_repeated_operations_once() {
         // Arrange
-        let with_id = |id: &str, op: OperationItem| OperationItem {
+        let with_id = |id: &str, op: Operation| Operation {
             id: id.to_string(),
             ..op
         };
-        let dividend = with_id("1", operation(OperationType::Dividend, "share", usd(1)));
+        let dividend = with_id(
+            "1",
+            operation(OperationKind::Dividend, Some(InstrumentKind::Share), usd(1)),
+        );
         let api = FakeApi {
             operations: HashMap::from([(
                 "FIGI1".to_string(),
@@ -2340,9 +2260,16 @@ mod tests {
                     dividend,
                     with_id(
                         "2",
-                        operation(OperationType::DividendTax, "share", rub(-12)),
+                        operation(
+                            OperationKind::DividendTax,
+                            Some(InstrumentKind::Share),
+                            rub(-12),
+                        ),
                     ),
-                    with_id("3", operation(OperationType::Buy, "share", rub(-1000))),
+                    with_id(
+                        "3",
+                        operation(OperationKind::Buy, Some(InstrumentKind::Share), rub(-1000)),
+                    ),
                 ],
             )]),
             ..api()
@@ -2369,7 +2296,13 @@ mod tests {
     #[tokio::test]
     async fn history_prefers_exchange_instrument_with_operations() {
         // Arrange
-        let buy = || vec![operation(OperationType::Buy, "share", rub(-1000))];
+        let buy = || {
+            vec![operation(
+                OperationKind::Buy,
+                Some(InstrumentKind::Share),
+                rub(-1000),
+            )]
+        };
         let api = FakeApi {
             found: vec![
                 found("SBER", "TCS00A107T19"),
