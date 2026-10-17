@@ -814,7 +814,8 @@ impl<A: InvestApi> Reports<A> {
     }
 
     /// Passive income expected within a year: coupons, declared dividends and dividends
-    /// estimated by the last year ones, with the current portfolio value for its yield.
+    /// estimated by the last year ones or, of monthly payers, by the latest ones,
+    /// with the current portfolio value for its yield.
     ///
     /// Amounts are before taxes; foreign currency payments are converted at today's rate.
     ///

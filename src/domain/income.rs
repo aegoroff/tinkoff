@@ -13,7 +13,7 @@ pub enum IncomeKind {
     Coupon,
     /// Dividend declared by the issuer
     Dividend,
-    /// Dividend expected as the one paid a year before
+    /// Dividend expected as the one paid a year before or, of a monthly payer, as its latest one
     EstimatedDividend,
 }
 
@@ -32,11 +32,16 @@ pub struct DividendRecord {
     pub per_share: Money,
 }
 
+/// Payments within a year that mark a monthly payer, e.g. a fund; it may skip a month or two.
+const MONTHLY_PAYMENTS_A_YEAR: usize = 10;
+
 /// Dividends of `quantity` shares expected from `from` until `until`, days inclusive.
 ///
 /// Declared dividends are taken as is. Dividends paid within the year before `from`
 /// are expected again a year later, except the earliest ones replaced by declared dividends:
-/// an issuer usually declares its nearest payments only. Dividends of unknown amount are skipped.
+/// an issuer usually declares its nearest payments only. A monthly payer is expected
+/// to pay its latest known amount instead, as its payments follow the current rates.
+/// Dividends of unknown amount are skipped.
 #[must_use]
 pub fn expected_dividends(
     records: &[DividendRecord],
@@ -59,11 +64,24 @@ pub fn expected_dividends(
         .map(|r| item(r.date, IncomeKind::Dividend, r))
         .collect();
 
+    let year_before = from
+        .checked_sub_months(Months::new(12))
+        .map(|d| d.date_naive());
+    let paid_last_year = known
+        .clone()
+        .filter(|r| year_before.is_some_and(|y| (y..start).contains(&r.date.date_naive())))
+        .count();
+    let latest = if paid_last_year >= MONTHLY_PAYMENTS_A_YEAR {
+        known.clone().max_by_key(|r| r.date)
+    } else {
+        None
+    };
+
     let mut repeated: Vec<IncomeItem> = known
         .filter(|r| r.date.date_naive() < start)
         .filter_map(|r| {
             let date = r.date.checked_add_months(Months::new(12))?;
-            contains(date).then(|| item(date, IncomeKind::EstimatedDividend, r))
+            contains(date).then(|| item(date, IncomeKind::EstimatedDividend, latest.unwrap_or(r)))
         })
         .collect();
     repeated.sort_by_key(|i| i.date);
@@ -262,6 +280,51 @@ mod tests {
                 income(at(2026, 11, 10), IncomeKind::EstimatedDividend, dec!(4)),
             ]
         );
+    }
+
+    #[rstest]
+    #[case::paid_latest(None, dec!(1))]
+    #[case::declared_latest(Some(dec!(1.1)), dec!(1.1))]
+    fn expected_dividends_of_monthly_payer_repeat_latest_amount(
+        #[case] declared: Option<Decimal>,
+        #[case] expected: Decimal,
+    ) {
+        // Arrange: paid monthly in 2025 with the amount falling from 2.1 to 1.0
+        let mut records: Vec<DividendRecord> = (1..=12)
+            .map(|month| {
+                record(
+                    at(2025, month, 10),
+                    dec!(2.2) - Decimal::from(month) / dec!(10),
+                )
+            })
+            .collect();
+        if let Some(per_share) = declared {
+            records.push(record(at(2026, 1, 10), per_share));
+        }
+
+        // Act
+        let items = expected_dividends(&records, dec!(10), at(2026, 1, 1), at(2026, 12, 31));
+
+        // Assert: twelve payments, each of the latest known amount
+        assert_eq!(items.len(), 12);
+        assert!(items.iter().all(|i| i.amount == rub(expected * dec!(10))));
+    }
+
+    #[test]
+    fn expected_dividends_of_quarterly_payer_repeat_last_year_amounts() {
+        // Arrange
+        let records: Vec<DividendRecord> =
+            [(3, dec!(1)), (6, dec!(2)), (9, dec!(3)), (12, dec!(4))]
+                .into_iter()
+                .map(|(month, per_share)| record(at(2025, month, 10), per_share))
+                .collect();
+
+        // Act
+        let items = expected_dividends(&records, dec!(1), at(2026, 1, 1), at(2026, 12, 31));
+
+        // Assert
+        let amounts: Vec<Money> = items.iter().map(|i| i.amount).collect();
+        assert_eq!(amounts, [dec!(1), dec!(2), dec!(3), dec!(4)].map(rub));
     }
 
     #[rstest]

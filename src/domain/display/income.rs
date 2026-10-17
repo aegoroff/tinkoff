@@ -70,7 +70,8 @@ impl Display for IncomeForecast {
         writeln!(f, "\n{}", create_summary_table(self))?;
         writeln!(
             f,
-            "Amounts are before taxes. Estimated dividends repeat the ones paid a year before."
+            "Amounts are before taxes. Estimated dividends repeat the ones paid a year before, \
+             of monthly payers the latest ones."
         )
     }
 }
