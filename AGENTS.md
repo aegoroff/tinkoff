@@ -97,7 +97,7 @@ or traits instead. The only existing macro is `impl_portfolio_aggregator!`
 src/
 ├── main.rs            # CLI entry point, command handling
 ├── lib.rs             # Library exports, API value conversions
-├── client.rs          # T-Invest API client: requests, retries, FX conversion
+├── client.rs          # T-Invest API client: requests, retries, use cases
 ├── progress.rs        # Progress indicators
 ├── ux.rs              # Table formatting, number formatting
 └── domain/
@@ -111,7 +111,7 @@ src/
     ├── calendar.rs    # Dividend and bond payments calendars
     ├── history.rs     # Instrument operations history
     ├── income.rs      # Passive income forecast and portfolio yield
-    ├── fx.rs          # FX instrument selection and rate math
+    ├── fx.rs          # Conversion to RUB at daily rates behind the DailyCloses seam
     ├── risk.rs        # Risk analysis, target allocation, rebalancing
     ├── tax.rs         # Income and taxes withheld by year
     ├── xirr.rs        # XIRR solver on Decimal

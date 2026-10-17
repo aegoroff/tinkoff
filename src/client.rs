@@ -4,7 +4,7 @@ use iso_currency::Currency;
 use itertools::Itertools;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use t_invest_sdk::{
@@ -51,7 +51,7 @@ use crate::{
         benchmark::{BENCHMARKS, IndexHistory, IndexPrices},
         bond::{BondEvent, BondEventKind, bond_info, mark_amortizations},
         calendar::{Calendar, CalendarKind, CombinedCalendar},
-        fx::{FxCandidate, FxInstrument, build_fx_map, quote_to_rub_rate},
+        fx::{DailyCloses, DailyPrices, FxCandidate, RubConverter},
         history::{History, HistoryItem},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
         moscow_date,
@@ -61,9 +61,6 @@ use crate::{
     progress::Progress,
     to_currency, to_datetime_utc, to_decimal, to_metric, to_money, to_optional_datetime_utc,
 };
-
-/// How many days back to look for an FX candle; covers the New Year holidays.
-const FX_LOOKBACK_DAYS: i64 = 14;
 
 /// How far ahead bond events are requested; covers the longest bond maturities.
 const BOND_EVENTS_HORIZON_DAYS: i64 = 50 * 365;
@@ -80,18 +77,8 @@ const OPERATIONS_PAGE_SIZE: i32 = 1000;
 /// Maximum number of concurrent API requests when loading portfolio positions or calendars.
 pub const MAX_CONCURRENT_REQUESTS: usize = 10;
 
-/// Daily close rates to RUB by date.
-type DailyRates = BTreeMap<NaiveDate, Decimal>;
-
-/// Lazily loaded daily rates of one currency for one calendar year.
-type YearRates = Arc<OnceCell<DailyRates>>;
-
-/// FX instrument map + per-request cache of daily rates.
-pub struct FxBook {
-    instruments: HashMap<Currency, FxInstrument>,
-    /// Rates loaded once per currency and calendar year; concurrent requests share one load.
-    daily: Mutex<HashMap<(Currency, i32), YearRates>>,
-}
+/// Converter to RUB at daily rates loaded from the T-Invest API.
+pub type FxRates = RubConverter<TinkoffInvestment>;
 
 /// How the account to work with is chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -737,14 +724,11 @@ impl TinkoffInvestment {
         progress: Option<Arc<dyn Progress>>,
     ) -> (Portfolio, Vec<eyre::Report>) {
         let account_id = account_id.to_string();
-        let fx = match self.load_fx_book().await {
+        let fx = match self.load_fx_rates().await {
             Ok(fx) => fx,
             Err(e) => {
-                eprintln!("Failed to load FX book: {e:?}");
-                Arc::new(FxBook {
-                    instruments: HashMap::new(),
-                    daily: Mutex::new(HashMap::new()),
-                })
+                eprintln!("Failed to load FX rates: {e:?}");
+                Arc::new(RubConverter::new(std::iter::empty(), self.clone()))
             }
         };
 
@@ -793,7 +777,7 @@ impl TinkoffInvestment {
         instruments: &HashMap<String, Instrument>,
         account_id: &str,
         position: &PortfolioPosition,
-        fx: &FxBook,
+        fx: &FxRates,
         with_bond_details: bool,
     ) -> color_eyre::Result<LoadedPaper> {
         let skip = |e| {
@@ -992,7 +976,7 @@ impl TinkoffInvestment {
                 ..Default::default()
             })
             .await?;
-        let fx = self.load_fx_book().await?;
+        let fx = self.load_fx_rates().await?;
 
         let mut items = Vec::new();
         for op in operations.iter().unique_by(|op| &op.id) {
@@ -1003,7 +987,7 @@ impl TinkoffInvestment {
                 continue;
             };
             let date = to_datetime_utc(op.date.as_ref());
-            let amount = self.money_to_rub(&fx, payment, date).await?;
+            let amount = fx.to_rub(payment, date).await?;
             items.push(TaxOperation { date, kind, amount });
         }
         Ok(TaxReport::new(&items))
@@ -1040,7 +1024,7 @@ impl TinkoffInvestment {
         instruments: &HashMap<String, Instrument>,
         account_id: String,
         portfolio_position: &PortfolioPosition,
-        fx: &FxBook,
+        fx: &FxRates,
     ) -> color_eyre::Result<Paper<NoneProfit>> {
         // Portfolio is requested in RUB; the position keeps the currency it is exposed to.
         let mut position = Position::try_from(portfolio_position)?;
@@ -1055,7 +1039,7 @@ impl TinkoffInvestment {
             .get_operations_until_done(account_id, portfolio_position.figi.clone())
             .await?;
 
-        let totals = self.reduce(fx, &executed_ops).await?;
+        let totals = reduce(fx, &executed_ops).await?;
 
         Ok(Paper {
             name: instrument.name,
@@ -1090,41 +1074,6 @@ impl TinkoffInvestment {
         }
     }
 
-    async fn reduce(
-        &self,
-        fx: &FxBook,
-        operations: &[OperationItem],
-    ) -> color_eyre::Result<Totals> {
-        let mut income = Vec::new();
-        let mut fees = Vec::new();
-        let mut cash_flows = Vec::new();
-        for op in operations {
-            let Some(payment) = crate::to_money(op.payment.as_ref()) else {
-                continue;
-            };
-            let at = to_datetime_utc(op.date.as_ref());
-            if let Some(accrued_interest) = trade_accrued_interest(op) {
-                income.push(self.money_to_rub(fx, accrued_interest, at).await?);
-            }
-            let payment = self.money_to_rub(fx, payment, at).await?;
-            if !payment.value.is_zero() {
-                cash_flows.push(CashFlow {
-                    date: at,
-                    amount: payment.value,
-                });
-            }
-            match to_influence(op.r#type()) {
-                OperationInfluence::PureIncome => income.push(payment),
-                OperationInfluence::Fees => fees.push(payment),
-                OperationInfluence::Unspecified => {}
-            }
-        }
-        Ok(Totals {
-            cash_flows,
-            ..Self::accumulate_totals_rub(income, fees)
-        })
-    }
-
     /// Fetches payments of the given kind for portfolio positions due within `days` from today.
     ///
     /// Positions whose payments failed to load are not included into the calendar;
@@ -1141,7 +1090,7 @@ impl TinkoffInvestment {
         days: u32,
     ) -> color_eyre::Result<(Calendar, Vec<eyre::Report>)> {
         let period = CalendarPeriod::days_ahead(Utc::now(), days);
-        let fx = self.load_fx_book().await?;
+        let fx = self.load_fx_rates().await?;
         match kind {
             CalendarKind::Dividends => {
                 let (calendar, failures) = self
@@ -1181,13 +1130,13 @@ impl TinkoffInvestment {
         operations: &[OperationItem],
         instrument: &InstrumentShort,
     ) -> color_eyre::Result<Option<History>> {
-        let fx = self.load_fx_book().await?;
+        let fx = self.load_fx_rates().await?;
         let mut items: Vec<HistoryItem> = Vec::new();
         for op in operations.iter().unique_by(|op| &op.id) {
             let mut item = HistoryItem::from(op);
             let at = item.datetime;
-            item.payment = self.money_to_rub(&fx, item.payment, at).await?;
-            item.price = self.money_to_rub(&fx, item.price, at).await?;
+            item.payment = fx.to_rub(item.payment, at).await?;
+            item.price = fx.to_rub(item.price, at).await?;
             items.push(item);
         }
         items.sort_by(|a, b| Ord::cmp(&a.datetime, &b.datetime));
@@ -1203,12 +1152,12 @@ impl TinkoffInvestment {
         }))
     }
 
-    /// Loads currency instruments for FX conversion.
+    /// Loads currency instruments for conversion to RUB at daily rates.
     ///
     /// # Errors
     ///
     /// Returns an error if the Currencies catalog cannot be fetched.
-    pub async fn load_fx_book(&self) -> color_eyre::Result<Arc<FxBook>> {
+    pub async fn load_fx_rates(&self) -> color_eyre::Result<Arc<FxRates>> {
         let mut instruments = self
             .client(InstrumentsServiceClient::with_interceptor)
             .await?;
@@ -1236,95 +1185,7 @@ impl TinkoffInvestment {
                 })
             });
 
-        Ok(Arc::new(FxBook {
-            instruments: build_fx_map(candidates),
-            daily: Mutex::new(HashMap::new()),
-        }))
-    }
-
-    /// Converts `money` to RUB at the daily rate of the `at` date.
-    async fn money_to_rub(
-        &self,
-        fx: &FxBook,
-        money: Money,
-        at: DateTime<Utc>,
-    ) -> color_eyre::Result<Money> {
-        if money.currency == Currency::RUB {
-            return Ok(money);
-        }
-        let rate = self.rate_to_rub(fx, money.currency, at).await?;
-        Ok(money.to_currency(rate, Currency::RUB))
-    }
-
-    async fn rate_to_rub(
-        &self,
-        fx: &FxBook,
-        currency: Currency,
-        at: DateTime<Utc>,
-    ) -> color_eyre::Result<Decimal> {
-        if currency == Currency::RUB {
-            return Ok(Decimal::ONE);
-        }
-        let instr = fx
-            .instruments
-            .get(&currency)
-            .ok_or_else(|| eyre::eyre!("No FX instrument for currency {currency:?}"))?;
-        self.hist_rate(fx, currency, instr, at).await
-    }
-
-    async fn hist_rate(
-        &self,
-        fx: &FxBook,
-        currency: Currency,
-        instr: &FxInstrument,
-        at: DateTime<Utc>,
-    ) -> color_eyre::Result<Decimal> {
-        let date = moscow_date(at);
-        // Weekends and holidays have no candle: take the closest earlier trading day.
-        for offset in 0..=FX_LOOKBACK_DAYS {
-            let day = date
-                .checked_sub_signed(ChronoDuration::days(offset))
-                .unwrap_or(date);
-            if let Some(rate) = self.daily_rate(fx, currency, instr, day).await? {
-                return Ok(rate);
-            }
-        }
-        Err(eyre::eyre!("No FX candle for {currency:?} around {date}"))
-    }
-
-    /// Rate of `day` from the daily candles of its year, loading them on first use.
-    async fn daily_rate(
-        &self,
-        fx: &FxBook,
-        currency: Currency,
-        instr: &FxInstrument,
-        day: NaiveDate,
-    ) -> color_eyre::Result<Option<Decimal>> {
-        let year = day.year();
-        let cell = {
-            let mut cells = fx
-                .daily
-                .lock()
-                .map_err(|e| eyre::eyre!("FX cache is poisoned: {e}"))?;
-            Arc::clone(cells.entry((currency, year)).or_default())
-        };
-        let rates = cell
-            .get_or_try_init(|| with_retry(|| self.get_year_rates(currency, instr, year)))
-            .await?;
-        Ok(rates.get(&day).copied())
-    }
-
-    async fn get_year_rates(
-        &self,
-        currency: Currency,
-        instr: &FxInstrument,
-        year: i32,
-    ) -> color_eyre::Result<DailyRates> {
-        let candles = self
-            .get_year_candles(&instr.instrument_id, year)
-            .await
-            .wrap_err_with(|| format!("GetCandles failed for {currency:?} in {year}"))?;
-        Ok(daily_rates(&candles, instr))
+        Ok(Arc::new(RubConverter::new(candidates, self.clone())))
     }
 
     /// Daily candles of an instrument within a calendar year.
@@ -1394,16 +1255,15 @@ impl TinkoffInvestment {
                 let uid = uid.clone();
                 set.spawn(async move {
                     let _permit = permit;
-                    let candles = with_retry(|| client.get_year_candles(&uid, year)).await;
-                    (index, candles)
+                    (index, client.daily_closes(&uid, year).await)
                 });
             }
         }
         while let Some(res) = set.join_next().await {
             match res {
-                Ok((index, candles)) => {
+                Ok((index, closes)) => {
                     if let Some(prices) = loaded.get_mut(index) {
-                        add_index_candles(prices, candles);
+                        add_index_closes(prices, closes);
                     }
                 }
                 Err(e) => eprintln!("Task panicked or cancelled: {e}"),
@@ -1429,7 +1289,7 @@ impl TinkoffInvestment {
         portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
         period: &CalendarPeriod,
-        fx: &FxBook,
+        fx: &FxRates,
     ) -> color_eyre::Result<(DividendCalendar, Vec<eyre::Report>)> {
         let pairs = self.fetch_portfolio_dividends(portfolio).await;
 
@@ -1458,9 +1318,7 @@ impl TinkoffInvestment {
                 }
 
                 // Future payments are converted at today's rate.
-                let dividend_per_share = self
-                    .money_to_rub(fx, dividend_per_share, period.from)
-                    .await?;
+                let dividend_per_share = fx.to_rub(dividend_per_share, period.from).await?;
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(DividendPayment {
@@ -1516,7 +1374,7 @@ impl TinkoffInvestment {
         instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<(IncomeForecast, Vec<eyre::Report>)> {
         let period = CalendarPeriod::days_ahead(Utc::now(), INCOME_FORECAST_DAYS);
-        let fx = self.load_fx_book().await?;
+        let fx = self.load_fx_rates().await?;
 
         let (coupons, mut failures) = self
             .get_coupon_calendar(portfolio, instruments, &period, &fx)
@@ -1547,9 +1405,7 @@ impl TinkoffInvestment {
                     continue;
                 };
                 // Past and future payments are all converted at today's rate.
-                let per_share = self
-                    .money_to_rub(&fx, dividend_per_share(dividend), period.from)
-                    .await?;
+                let per_share = fx.to_rub(dividend_per_share(dividend), period.from).await?;
                 records.push(DividendRecord { date, per_share });
             }
             let quantity = to_decimal(position.quantity.as_ref());
@@ -1602,7 +1458,7 @@ impl TinkoffInvestment {
         portfolio: &AccountPortfolio,
         instruments: &HashMap<String, Instrument>,
         period: &CalendarPeriod,
-        fx: &FxBook,
+        fx: &FxRates,
     ) -> color_eyre::Result<(CouponCalendar, Vec<eyre::Report>)> {
         let bond_positions: Vec<PortfolioPosition> = portfolio
             .positions
@@ -1636,7 +1492,7 @@ impl TinkoffInvestment {
                     continue;
                 }
 
-                let coupon_value = self.money_to_rub(fx, coupon_value, period.from).await?;
+                let coupon_value = fx.to_rub(coupon_value, period.from).await?;
 
                 let quantity = to_decimal(position.quantity.as_ref());
                 upcoming.push(CouponPayment {
@@ -1698,15 +1554,26 @@ impl TinkoffInvestment {
         &self,
         figi: &str,
         position: &Position,
-        fx: &FxBook,
+        fx: &FxRates,
     ) -> color_eyre::Result<BondInfo> {
         let now = Utc::now();
         let mut events = with_retry(|| self.get_bond_events(figi.to_string())).await?;
         for event in &mut events {
-            event.per_bond = self.money_to_rub(fx, event.per_bond, now).await?;
+            event.per_bond = fx.to_rub(event.per_bond, now).await?;
         }
         let dirty_price = position.current_instrument_price.value + position.accrued_interest.value;
         Ok(bond_info(&events, dirty_price, now))
+    }
+}
+
+impl DailyCloses for TinkoffInvestment {
+    async fn daily_closes(
+        &self,
+        instrument_id: &str,
+        year: i32,
+    ) -> color_eyre::Result<DailyPrices> {
+        let candles = with_retry(|| self.get_year_candles(instrument_id, year)).await?;
+        Ok(daily_closes(&candles))
     }
 }
 
@@ -1727,6 +1594,43 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Totals of a paper's operations in RUB: income net of taxes, fees and cash flows.
+///
+/// NKD paid or received on bond trades counts as coupon income.
+async fn reduce<S: DailyCloses>(
+    fx: &RubConverter<S>,
+    operations: &[OperationItem],
+) -> color_eyre::Result<Totals> {
+    let mut income = Vec::new();
+    let mut fees = Vec::new();
+    let mut cash_flows = Vec::new();
+    for op in operations {
+        let Some(payment) = crate::to_money(op.payment.as_ref()) else {
+            continue;
+        };
+        let at = to_datetime_utc(op.date.as_ref());
+        if let Some(accrued_interest) = trade_accrued_interest(op) {
+            income.push(fx.to_rub(accrued_interest, at).await?);
+        }
+        let payment = fx.to_rub(payment, at).await?;
+        if !payment.value.is_zero() {
+            cash_flows.push(CashFlow {
+                date: at,
+                amount: payment.value,
+            });
+        }
+        match to_influence(op.r#type()) {
+            OperationInfluence::PureIncome => income.push(payment),
+            OperationInfluence::Fees => fees.push(payment),
+            OperationInfluence::Unspecified => {}
+        }
+    }
+    Ok(Totals {
+        cash_flows,
+        ..TinkoffInvestment::accumulate_totals_rub(income, fees)
+    })
 }
 
 /// Accrued coupon interest (NKD) paid on a bond buy (negative) or received on a sell (positive).
@@ -1758,19 +1662,16 @@ fn year_bounds(year: i32) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     Some((start(year)?, start(year.checked_add(1)?)?))
 }
 
-/// Adds a year of index candles to the prices; any failed year fails the whole index.
-fn add_index_candles(
+/// Adds a year of index closes to the prices; any failed year fails the whole index.
+fn add_index_closes(
     prices: &mut color_eyre::Result<IndexPrices>,
-    candles: color_eyre::Result<Vec<HistoricCandle>>,
+    closes: color_eyre::Result<IndexPrices>,
 ) {
     let Ok(loaded) = prices else {
         return;
     };
-    match candles {
-        Ok(candles) => loaded.extend(candles.iter().filter_map(|c| {
-            let date = moscow_date(to_optional_datetime_utc(c.time.as_ref())?);
-            Some((date, to_decimal(c.close.as_ref())))
-        })),
+    match closes {
+        Ok(closes) => loaded.extend(closes),
         Err(e) => *prices = Err(e),
     }
 }
@@ -1795,15 +1696,14 @@ fn index_histories(
     (histories, failures)
 }
 
-/// Maps daily candles to RUB rates by Moscow date of a candle; the last candle of a date wins.
-fn daily_rates(candles: &[HistoricCandle], instr: &FxInstrument) -> DailyRates {
+/// Maps daily candles to closes by Moscow date of a candle; the last candle of a date wins.
+/// Candles without a time or a close are skipped.
+fn daily_closes(candles: &[HistoricCandle]) -> DailyPrices {
     candles
         .iter()
         .filter_map(|c| {
             let date = moscow_date(to_optional_datetime_utc(c.time.as_ref())?);
-            let close = c.close.as_ref()?;
-            let rate = quote_to_rub_rate(to_decimal(Some(close)), instr.nominal);
-            Some((date, rate))
+            Some((date, to_decimal(Some(c.close.as_ref()?))))
         })
         .collect()
 }
@@ -2299,10 +2199,7 @@ mod tests {
     async fn paper_for_position_reports_unsupported_type() {
         // Arrange
         let client = TinkoffInvestment::new(String::new());
-        let fx = FxBook {
-            instruments: HashMap::new(),
-            daily: Mutex::new(HashMap::new()),
-        };
+        let fx = RubConverter::new(std::iter::empty(), client.clone());
         let instruments = HashMap::from([(
             "OPT1".to_string(),
             Instrument {
@@ -3041,19 +2938,13 @@ mod tests {
     }
 
     #[test]
-    fn add_index_candles_merges_years_in_any_order() {
+    fn add_index_closes_merges_years_in_any_order() {
         // Arrange
         let mut prices = Ok(IndexPrices::new());
 
         // Act
-        add_index_candles(&mut prices, Ok(vec![candle("2025-01-03T07:00:00Z", 2900)]));
-        add_index_candles(
-            &mut prices,
-            Ok(vec![
-                candle("2024-01-03T07:00:00Z", 3100),
-                HistoricCandle::default(),
-            ]),
-        );
+        add_index_closes(&mut prices, Ok([(day(2025, 1, 3), dec!(2900))].into()));
+        add_index_closes(&mut prices, Ok([(day(2024, 1, 3), dec!(3100))].into()));
 
         // Assert
         let expected: IndexPrices =
@@ -3064,19 +2955,19 @@ mod tests {
     #[rstest]
     #[case::failed_year_after_loaded(true)]
     #[case::loaded_year_after_failed(false)]
-    fn add_index_candles_fails_index_on_any_failed_year(#[case] loaded_first: bool) {
+    fn add_index_closes_fails_index_on_any_failed_year(#[case] loaded_first: bool) {
         // Arrange
         let mut prices = Ok(IndexPrices::new());
-        let loaded = || Ok(vec![candle("2025-01-03T07:00:00Z", 2900)]);
+        let loaded = || Ok([(day(2025, 1, 3), dec!(2900))].into());
         let failed = || Err(eyre::eyre!("year failed"));
 
         // Act
         if loaded_first {
-            add_index_candles(&mut prices, loaded());
-            add_index_candles(&mut prices, failed());
+            add_index_closes(&mut prices, loaded());
+            add_index_closes(&mut prices, failed());
         } else {
-            add_index_candles(&mut prices, failed());
-            add_index_candles(&mut prices, loaded());
+            add_index_closes(&mut prices, failed());
+            add_index_closes(&mut prices, loaded());
         }
 
         // Assert
@@ -3108,12 +2999,8 @@ mod tests {
     }
 
     #[test]
-    fn daily_rates_keyed_by_candle_date() {
+    fn daily_closes_keyed_by_candle_date() {
         // Arrange
-        let instr = FxInstrument {
-            instrument_id: "USD".to_string(),
-            nominal: dec!(1),
-        };
         let candles = [
             candle("2026-09-24T07:00:00Z", 90),
             candle("2026-09-25T07:00:00Z", 91),
@@ -3121,74 +3008,40 @@ mod tests {
         ];
 
         // Act
-        let rates = daily_rates(&candles, &instr);
+        let closes = daily_closes(&candles);
 
         // Assert
-        let expected: DailyRates = [
-            (NaiveDate::from_ymd_opt(2026, 9, 24).unwrap(), dec!(90)),
-            (NaiveDate::from_ymd_opt(2026, 9, 25).unwrap(), dec!(91)),
-        ]
-        .into();
-        assert_eq!(rates, expected);
+        let expected: DailyPrices =
+            [(day(2026, 9, 24), dec!(90)), (day(2026, 9, 25), dec!(91))].into();
+        assert_eq!(closes, expected);
     }
 
     #[test]
-    fn daily_rates_keyed_by_moscow_date() {
+    fn daily_closes_keyed_by_moscow_date() {
         // Arrange
-        let instr = FxInstrument {
-            instrument_id: "USD".to_string(),
-            nominal: dec!(1),
-        };
         let candles = [candle("2026-09-24T21:00:00Z", 90)];
 
         // Act
-        let rates = daily_rates(&candles, &instr);
+        let closes = daily_closes(&candles);
 
         // Assert
-        let expected: DailyRates =
-            [(NaiveDate::from_ymd_opt(2026, 9, 25).unwrap(), dec!(90))].into();
-        assert_eq!(rates, expected);
+        let expected: DailyPrices = [(day(2026, 9, 25), dec!(90))].into();
+        assert_eq!(closes, expected);
     }
 
     #[test]
-    fn daily_rates_ignore_lot_size() {
+    fn daily_closes_skip_candles_without_close() {
         // Arrange
-        let fx = build_fx_map([FxCandidate {
-            currency: Currency::USD,
-            instrument_id: "USD000UTSTOM".to_string(),
-            lot: 1000,
-            nominal: dec!(1),
-            settlement_is_rub: true,
-        }]);
-        let candles = [candle("2026-09-25T07:00:00Z", 90)];
+        let candles = [HistoricCandle {
+            close: None,
+            ..candle("2026-09-25T07:00:00Z", 90)
+        }];
 
         // Act
-        let rates = daily_rates(&candles, &fx[&Currency::USD]);
+        let closes = daily_closes(&candles);
 
         // Assert
-        assert_eq!(
-            rates.get(&NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()),
-            Some(&dec!(90))
-        );
-    }
-
-    #[test]
-    fn daily_rates_apply_nominal() {
-        // Arrange
-        let instr = FxInstrument {
-            instrument_id: "KZT".to_string(),
-            nominal: dec!(100),
-        };
-        let candles = [candle("2026-09-25T07:00:00Z", 18)];
-
-        // Act
-        let rates = daily_rates(&candles, &instr);
-
-        // Assert
-        assert_eq!(
-            rates.get(&NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()),
-            Some(&dec!(0.18))
-        );
+        assert!(closes.is_empty());
     }
 
     fn api_event(event_type: EventType, pay_date: Option<i64>, event_date: i64) -> ApiBondEvent {
@@ -3254,11 +3107,123 @@ mod tests {
         }
     }
 
-    #[test]
-    fn money_to_rub_via_rate_matches_spot_math() {
-        let usd = Money::from_value(dec!(2), Currency::USD);
-        let rub = usd.to_currency(quote_to_rub_rate(dec!(90), dec!(1)), Currency::RUB);
-        assert_eq!(rub.value, dec!(180));
-        assert_eq!(rub.currency, Currency::RUB);
+    /// Closes of every instrument, whatever its ID and year.
+    struct FixedCloses(DailyPrices);
+
+    impl DailyCloses for FixedCloses {
+        fn daily_closes(
+            &self,
+            _: &str,
+            _: i32,
+        ) -> impl Future<Output = color_eyre::Result<DailyPrices>> + Send {
+            std::future::ready(Ok(self.0.clone()))
+        }
+    }
+
+    /// Converter with USD at 90 RUB on the date of [`operation`].
+    fn usd_at_90() -> RubConverter<FixedCloses> {
+        RubConverter::new(
+            [FxCandidate {
+                currency: Currency::USD,
+                instrument_id: "USD".to_string(),
+                lot: 1,
+                nominal: dec!(1),
+                settlement_is_rub: true,
+            }],
+            FixedCloses([(day(2026, 9, 25), dec!(90))].into()),
+        )
+    }
+
+    fn operation(
+        operation_type: OperationType,
+        instrument_type: &str,
+        payment: MoneyValue,
+    ) -> OperationItem {
+        let date: DateTime<Utc> = "2026-09-25T09:00:00Z".parse().unwrap();
+        OperationItem {
+            r#type: operation_type as i32,
+            instrument_type: instrument_type.to_string(),
+            payment: Some(payment),
+            date: Some(prost_types::Timestamp {
+                seconds: date.timestamp(),
+                nanos: 0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn reduce_sums_income_net_of_taxes_and_fees() {
+        // Arrange
+        let operations = [
+            operation(OperationType::Coupon, "bond", rub(50)),
+            operation(OperationType::BondTax, "bond", rub(-7)),
+            operation(OperationType::BrokerFee, "bond", rub(-3)),
+        ];
+
+        // Act
+        let totals = reduce(&usd_at_90(), &operations).await.unwrap();
+
+        // Assert
+        assert_eq!(totals.additional_profit.value, dec!(43));
+        assert_eq!(totals.fees.value, dec!(-3));
+        assert_eq!(totals.cash_flows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn reduce_counts_bond_trade_accrued_interest_as_income() {
+        // Arrange
+        let buy = OperationItem {
+            accrued_int: Some(rub(20)),
+            ..operation(OperationType::Buy, "bond", rub(-1020))
+        };
+
+        // Act
+        let totals = reduce(&usd_at_90(), &[buy]).await.unwrap();
+
+        // Assert
+        assert_eq!(totals.additional_profit.value, dec!(-20));
+        assert!(totals.fees.value.is_zero());
+        assert_eq!(totals.cash_flows[0].amount, dec!(-1020));
+    }
+
+    #[tokio::test]
+    async fn reduce_converts_foreign_payments_to_rub() {
+        // Arrange
+        let dividend = operation(
+            OperationType::Dividend,
+            "share",
+            MoneyValue {
+                currency: "usd".to_string(),
+                units: 10,
+                nano: 0,
+            },
+        );
+
+        // Act
+        let totals = reduce(&usd_at_90(), &[dividend]).await.unwrap();
+
+        // Assert
+        assert_eq!(
+            totals.additional_profit,
+            Money::from_value(dec!(900), Currency::RUB)
+        );
+        assert_eq!(totals.cash_flows[0].amount, dec!(900));
+    }
+
+    #[tokio::test]
+    async fn reduce_leaves_zero_payments_out_of_cash_flows() {
+        // Arrange
+        let operations = [
+            operation(OperationType::Dividend, "share", rub(0)),
+            operation(OperationType::Input, "", rub(100)),
+        ];
+
+        // Act
+        let totals = reduce(&usd_at_90(), &operations).await.unwrap();
+
+        // Assert
+        assert!(totals.additional_profit.value.is_zero());
+        assert_eq!(totals.cash_flows.len(), 1);
     }
 }
