@@ -306,6 +306,7 @@ impl From<OperationItem> for Operation {
             date: to_datetime_utc(op.date.as_ref()),
             instrument_kind: InstrumentKind::from_api(&op.instrument_type),
             payment: to_money(op.payment.as_ref()),
+            commission: to_money(op.commission.as_ref()),
             price: to_money(op.price.as_ref()),
             accrued_interest: to_money(op.accrued_int.as_ref()),
             quantity: op.quantity,
@@ -388,6 +389,7 @@ mod tests {
             }),
             instrument_type: "bond".to_string(),
             payment: Some(rub(-1020)),
+            commission: Some(rub(-15)),
             price: Some(rub(1000)),
             accrued_int: Some(rub(20)),
             quantity: 1,
@@ -405,6 +407,7 @@ mod tests {
         assert_eq!(op.date.timestamp(), 1_758_790_800);
         assert_eq!(op.instrument_kind, Some(InstrumentKind::Bond));
         assert_eq!(op.payment.map(|p| p.value), Some(dec!(-1020)));
+        assert_eq!(op.commission.map(|p| p.value), Some(dec!(-15)));
         assert_eq!(op.price.map(|p| p.value), Some(dec!(1000)));
         assert_eq!(op.accrued_interest.map(|p| p.value), Some(dec!(20)));
         assert_eq!(op.quantity, 1);

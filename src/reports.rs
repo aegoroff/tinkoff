@@ -959,6 +959,7 @@ impl<A: InvestApi> Reports<A> {
 /// Totals of a paper's operations in RUB: income net of taxes, fees and cash flows.
 ///
 /// NKD paid or received on bond trades counts as coupon income.
+/// A trade commission is not part of its payment, so it is added to fees and cash flows.
 async fn reduce<S: DailyCloses>(
     fx: &RubConverter<S>,
     operations: &[Operation],
@@ -967,30 +968,46 @@ async fn reduce<S: DailyCloses>(
     let mut fees = Vec::new();
     let mut cash_flows = Vec::new();
     for op in operations {
-        let Some(payment) = op.payment else {
-            continue;
-        };
         let at = op.date;
-        if let Some(accrued_interest) = trade_accrued_interest(op) {
-            income.push(fx.to_rub(accrued_interest, at).await?);
+        if let Some(payment) = op.payment {
+            if let Some(accrued_interest) = trade_accrued_interest(op) {
+                income.push(fx.to_rub(accrued_interest, at).await?);
+            }
+            let payment = fx.to_rub(payment, at).await?;
+            if !payment.value.is_zero() {
+                cash_flows.push(CashFlow {
+                    date: at,
+                    amount: payment.value,
+                });
+            }
+            if op.kind.is_income() {
+                income.push(payment);
+            } else if op.kind.is_fee() {
+                fees.push(payment);
+            }
         }
-        let payment = fx.to_rub(payment, at).await?;
-        if !payment.value.is_zero() {
+        if let Some(commission) = trade_commission(op) {
+            let commission = fx.to_rub(commission, at).await?;
             cash_flows.push(CashFlow {
                 date: at,
-                amount: payment.value,
+                amount: commission.value,
             });
-        }
-        if op.kind.is_income() {
-            income.push(payment);
-        } else if op.kind.is_fee() {
-            fees.push(payment);
+            fees.push(commission);
         }
     }
     Ok(Totals {
         cash_flows,
         ..accumulate_totals_rub(income, fees)
     })
+}
+
+/// Broker commission of a trade. Fee operations already carry theirs in the payment.
+fn trade_commission(op: &Operation) -> Option<Money> {
+    if op.kind.is_fee() {
+        return None;
+    }
+    let commission = op.commission?;
+    (!commission.value.is_zero()).then_some(commission)
 }
 
 /// Accrued coupon interest (NKD) paid on a bond buy (negative) or received on a sell (positive).
@@ -1847,6 +1864,7 @@ mod tests {
             date: "2026-09-25T09:00:00Z".parse().unwrap(),
             instrument_kind,
             payment: Some(payment),
+            commission: None,
             price: None,
             accrued_interest: None,
             quantity: 1,
@@ -1908,6 +1926,44 @@ mod tests {
         assert_eq!(totals.additional_profit.value, dec!(-20));
         assert!(totals.fees.value.is_zero());
         assert_eq!(totals.cash_flows[0].amount, dec!(-1020));
+    }
+
+    #[tokio::test]
+    async fn reduce_counts_trade_commission_as_fee_and_cash_flow() {
+        // Arrange: payment is price × quantity; commission sits beside it
+        let sale = Operation {
+            commission: Some(Money::from_value(dec!(-142.62), Currency::RUB)),
+            ..operation(
+                OperationKind::Sell,
+                Some(InstrumentKind::Currency),
+                Money::from_value(dec!(285243.75), Currency::RUB),
+            )
+        };
+
+        // Act
+        let totals = reduce(&usd_at_90(), &[sale]).await.unwrap();
+
+        // Assert
+        assert_eq!(totals.fees.value, dec!(-142.62));
+        assert!(totals.additional_profit.value.is_zero());
+        let amounts: Vec<Decimal> = totals.cash_flows.iter().map(|f| f.amount).collect();
+        assert_eq!(amounts, vec![dec!(285243.75), dec!(-142.62)]);
+    }
+
+    #[tokio::test]
+    async fn reduce_leaves_fee_operation_commission_out() {
+        // Arrange: a service fee already is its payment
+        let fee = Operation {
+            commission: Some(rub(-3)),
+            ..operation(OperationKind::Fee, Some(InstrumentKind::Share), rub(-3))
+        };
+
+        // Act
+        let totals = reduce(&usd_at_90(), &[fee]).await.unwrap();
+
+        // Assert
+        assert_eq!(totals.fees.value, dec!(-3));
+        assert_eq!(totals.cash_flows.len(), 1);
     }
 
     #[tokio::test]

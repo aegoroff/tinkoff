@@ -87,8 +87,13 @@ pub struct Operation {
     pub date: DateTime<Utc>,
     /// Kind of the instrument; `None` for operations without one or of an unsupported one
     pub instrument_kind: Option<InstrumentKind>,
-    /// `None` when the API gave no amount or one of an unknown currency
+    /// `None` when the API gave no amount or one of an unknown currency.
+    /// A trade commission is not included; see [`Self::commission`].
     pub payment: Option<Money>,
+    /// Broker commission of this operation, negative when withheld.
+    /// `None` when the API gave none or one of an unknown currency.
+    /// Fee operations carry their amount in [`Self::payment`] instead.
+    pub commission: Option<Money>,
     pub price: Option<Money>,
     /// Accrued coupon interest (NKD) of a bond trade
     pub accrued_interest: Option<Money>,
