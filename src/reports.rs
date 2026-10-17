@@ -21,7 +21,7 @@ use crate::{
         bond::{BondEventKind, bond_info},
         calendar::{Calendar, CalendarKind, CombinedCalendar, Dividend},
         fx::{DailyCloses, RubConverter},
-        history::{History, HistoryItem},
+        history::{History, HistoryItem, HistoryPrice},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
         operation::{Operation, OperationKind},
         tax::{TaxOperation, TaxReport},
@@ -664,7 +664,9 @@ impl<A: InvestApi> Reports<A> {
             let mut item = HistoryItem::from(op);
             let at = item.datetime;
             item.payment = fx.to_rub(item.payment, at).await?;
-            item.price = fx.to_rub(item.price, at).await?;
+            if let HistoryPrice::Money(price) = item.price {
+                item.price = HistoryPrice::Money(fx.to_rub(price, at).await?);
+            }
             items.push(item);
         }
         items.sort_by(|a, b| Ord::cmp(&a.datetime, &b.datetime));
@@ -2320,6 +2322,48 @@ mod tests {
             figi: figi.to_string(),
             name: format!("{ticker} {figi}"),
         }
+    }
+
+    #[tokio::test]
+    async fn history_leaves_futures_price_in_points() {
+        // Arrange: the API writes points into a money field, here tagged USD
+        let mut buy = operation(OperationKind::Buy, Some(InstrumentKind::Future), usd(-10));
+        buy.price = Some(Money::from_value(dec!(93_250), Currency::USD));
+
+        // Act
+        let history = Reports::new(api())
+            .history_in_rub(&[buy], &found("SiZ5", "FUTSI"))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Assert: points stay 93 250; the cash payment is converted at 90
+        let rendered = history.to_string();
+        assert_eq!(history.items[0].price, HistoryPrice::Points(dec!(93_250)));
+        assert_eq!(history.items[0].payment.value, dec!(-900));
+        assert!(rendered.contains("pt"), "{rendered}");
+        assert!(!rendered.contains('$'), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn history_converts_share_price_to_rub() {
+        // Arrange
+        let mut buy = operation(OperationKind::Buy, Some(InstrumentKind::Share), usd(-10));
+        buy.price = Some(usd(2));
+
+        // Act
+        let history = Reports::new(api())
+            .history_in_rub(&[buy], &found("SBER", "BBG004730N88"))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Assert
+        assert_eq!(
+            history.items[0].price,
+            HistoryPrice::Money(Money::from_value(dec!(180), Currency::RUB))
+        );
+        assert_eq!(history.items[0].payment.value, dec!(-900));
     }
 
     #[tokio::test]
