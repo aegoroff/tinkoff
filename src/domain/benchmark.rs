@@ -20,6 +20,14 @@ pub struct Benchmark {
     pub description: &'static str,
 }
 
+/// Market index the API knows.
+#[derive(Clone, Debug)]
+pub struct MarketIndex {
+    pub ticker: String,
+    /// Instrument UID its candles are requested by
+    pub uid: String,
+}
+
 /// Indices of shares and government bonds: price ones with a long history
 /// and total return ones (dividends and coupons reinvested) with a shorter one.
 pub const BENCHMARKS: [Benchmark; 4] = [

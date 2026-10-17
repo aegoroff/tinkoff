@@ -105,6 +105,7 @@ src/
 ├── ux.rs              # Table formatting, number formatting
 └── domain/
     ├── mod.rs         # Re-exports, NumberRange trait
+    ├── account.rs     # Accounts, their types and statuses
     ├── money.rs       # Money and Income
     ├── operation.rs   # Account operations and what their kinds mean for income and taxes
     ├── paper.rs       # Paper, Position, Instrument, Profit kinds

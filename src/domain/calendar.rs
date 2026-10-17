@@ -8,6 +8,25 @@ use super::bond::BondEventKind;
 use super::money::Money;
 use super::paper::{Figi, Ticker};
 
+/// Dividend of a share or an ETF, past or declared.
+#[derive(Clone, Debug)]
+pub struct Dividend {
+    /// Dividend per share before taxes; zero when not known yet
+    pub per_share: Money,
+    pub payment_date: Option<DateTime<Utc>>,
+    /// Date the register of shareholders entitled to the dividend is fixed
+    pub record_date: Option<DateTime<Utc>>,
+    pub dividend_type: String,
+}
+
+impl Dividend {
+    /// Payment date, or the record date when the payment date is unknown.
+    #[must_use]
+    pub fn date(&self) -> Option<DateTime<Utc>> {
+        self.payment_date.or(self.record_date)
+    }
+}
+
 /// Dividend payment information
 #[derive(Clone)]
 pub struct DividendPayment {

@@ -1,5 +1,6 @@
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 
+pub mod account;
 pub mod analytics;
 pub mod benchmark;
 pub mod bond;
@@ -22,8 +23,8 @@ pub use calendar::{
 pub use history::{History, HistoryItem};
 pub use money::{Income, Money};
 pub use paper::{
-    AccountPosition, BondInfo, CouponProfit, DividendProfit, Figi, Instrument, InstrumentKind,
-    NoneProfit, Paper, Position, Profit, Ticker, Totals,
+    AccountPosition, BondInfo, CouponProfit, DividendProfit, Figi, FoundInstrument, Instrument,
+    InstrumentKind, NoneProfit, Paper, Position, Profit, Ticker, Totals,
 };
 pub use portfolio::{Asset, LoadedPaper, Portfolio};
 

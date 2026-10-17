@@ -141,6 +141,14 @@ pub struct Instrument {
     pub sector: Option<String>,
 }
 
+/// Instrument found by its ticker or name.
+#[derive(Clone, Debug)]
+pub struct FoundInstrument {
+    pub figi: String,
+    pub ticker: String,
+    pub name: String,
+}
+
 #[derive(Clone, Copy)]
 pub struct Position {
     pub currency: Currency,

@@ -3,12 +3,14 @@ use std::future::Future;
 
 use color_eyre::eyre::Result;
 use iso_currency::Currency;
-use t_invest_sdk::api::{Account, Dividend, IndicativeResponse, InstrumentShort};
 
 use crate::domain::{
-    AccountPosition, Instrument, InstrumentKind,
+    AccountPosition, FoundInstrument, Instrument, InstrumentKind,
+    account::Account,
     analytics::{Forecast, Fundamentals},
+    benchmark::MarketIndex,
     bond::BondEvent,
+    calendar::Dividend,
     fx::{DailyCloses, FxCandidate},
     operation::{Operation, OperationKind},
 };
@@ -46,7 +48,7 @@ pub trait InvestApi: DailyCloses + Clone + Send + Sync + 'static {
     fn find_instruments(
         &self,
         query: &str,
-    ) -> impl Future<Output = Result<Vec<InstrumentShort>>> + Send;
+    ) -> impl Future<Output = Result<Vec<FoundInstrument>>> + Send;
 
     /// All executed operations of the account matching `filter`.
     fn operations(
@@ -79,5 +81,5 @@ pub trait InvestApi: DailyCloses + Clone + Send + Sync + 'static {
     fn fx_candidates(&self) -> impl Future<Output = Result<Vec<FxCandidate>>> + Send;
 
     /// Market indices with their tickers and UIDs.
-    fn indices(&self) -> impl Future<Output = Result<Vec<IndicativeResponse>>> + Send;
+    fn indices(&self) -> impl Future<Output = Result<Vec<MarketIndex>>> + Send;
 }

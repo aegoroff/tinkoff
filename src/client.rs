@@ -8,16 +8,17 @@ use std::sync::{Arc, Mutex};
 use t_invest_sdk::{
     TInvestInterceptor,
     api::{
-        Account, AccountStatus, Bond as ApiBond, CandleInterval, Currency as ApiCurrency, Dividend,
-        Etf as ApiEtf, FindInstrumentRequest, Future as ApiFuture, GetAccountsRequest,
-        GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest, GetCandlesRequest,
-        GetDividendsRequest, GetForecastRequest, GetForecastResponse, GetOperationsByCursorRequest,
-        GetOperationsByCursorResponse, HistoricCandle, IndicativeResponse, IndicativesRequest,
-        Instrument as ApiInstrument, InstrumentIdType, InstrumentRequest, InstrumentShort,
-        InstrumentStatus, InstrumentType, InstrumentsRequest, OperationItem, OperationState,
-        PortfolioPosition, PortfolioRequest, Quotation, Recommendation as ApiRecommendation,
-        Share as ApiShare, get_asset_fundamentals_response::StatisticResponse,
-        get_bond_events_request::EventType, get_bond_events_response::BondEvent as ApiBondEvent,
+        AccountStatus, Bond as ApiBond, CandleInterval, Currency as ApiCurrency,
+        Dividend as ApiDividend, Etf as ApiEtf, FindInstrumentRequest, Future as ApiFuture,
+        GetAccountsRequest, GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest,
+        GetCandlesRequest, GetDividendsRequest, GetForecastRequest, GetForecastResponse,
+        GetOperationsByCursorRequest, GetOperationsByCursorResponse, HistoricCandle,
+        IndicativeResponse, IndicativesRequest, Instrument as ApiInstrument, InstrumentIdType,
+        InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest,
+        OperationItem, OperationState, PortfolioPosition, PortfolioRequest, Quotation,
+        Recommendation as ApiRecommendation, Share as ApiShare,
+        get_asset_fundamentals_response::StatisticResponse, get_bond_events_request::EventType,
+        get_bond_events_response::BondEvent as ApiBondEvent,
         instruments_service_client::InstrumentsServiceClient,
         market_data_service_client::MarketDataServiceClient,
         operations_service_client::OperationsServiceClient, portfolio_request::CurrencyRequest,
@@ -39,9 +40,12 @@ use crate::{
     OPERATION_KINDS,
     api::{InvestApi, OperationsFilter},
     domain::{
-        AccountPosition, Instrument, InstrumentKind, Money, Ticker,
+        AccountPosition, FoundInstrument, Instrument, InstrumentKind, Money, Ticker,
+        account::Account,
         analytics::{Forecast, Fundamentals, HouseForecast, Recommendation},
+        benchmark::MarketIndex,
         bond::{BondEvent, BondEventKind, mark_amortizations},
+        calendar::Dividend,
         fx::{DailyCloses, DailyPrices, FxCandidate},
         moscow_date,
         operation::{Operation, OperationKind},
@@ -443,7 +447,7 @@ impl TinkoffInvestment {
         Ok(response.into_inner().instruments)
     }
 
-    async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<Dividend>> {
+    async fn get_dividends_for_figi(&self, figi: String) -> color_eyre::Result<Vec<ApiDividend>> {
         let mut instruments = self
             .client(InstrumentsServiceClient::with_interceptor)
             .await?;
@@ -530,7 +534,7 @@ impl TinkoffInvestment {
 impl InvestApi for TinkoffInvestment {
     async fn accounts(&self) -> color_eyre::Result<Vec<Account>> {
         let response = with_retry(|| self.get_accounts_response()).await?;
-        Ok(response.accounts)
+        Ok(response.accounts.into_iter().map(Account::from).collect())
     }
 
     async fn portfolio_positions(
@@ -549,8 +553,9 @@ impl InvestApi for TinkoffInvestment {
         with_retry(|| self.get_instrument(figi.to_string(), kind)).await
     }
 
-    async fn find_instruments(&self, query: &str) -> color_eyre::Result<Vec<InstrumentShort>> {
-        with_retry(|| self.find_instruments_by_ticker(query.to_string())).await
+    async fn find_instruments(&self, query: &str) -> color_eyre::Result<Vec<FoundInstrument>> {
+        let found = with_retry(|| self.find_instruments_by_ticker(query.to_string())).await?;
+        Ok(found.into_iter().map(FoundInstrument::from).collect())
     }
 
     async fn operations(
@@ -595,7 +600,8 @@ impl InvestApi for TinkoffInvestment {
     }
 
     async fn dividends(&self, figi: &str) -> color_eyre::Result<Vec<Dividend>> {
-        with_retry(|| self.get_dividends_for_figi(figi.to_string())).await
+        let dividends = with_retry(|| self.get_dividends_for_figi(figi.to_string())).await?;
+        Ok(dividends.into_iter().map(Dividend::from).collect())
     }
 
     async fn bond_events(&self, figi: &str) -> color_eyre::Result<Vec<BondEvent>> {
@@ -606,8 +612,9 @@ impl InvestApi for TinkoffInvestment {
         with_retry(|| self.get_fx_candidates()).await
     }
 
-    async fn indices(&self) -> color_eyre::Result<Vec<IndicativeResponse>> {
-        with_retry(|| self.get_indicatives()).await
+    async fn indices(&self) -> color_eyre::Result<Vec<MarketIndex>> {
+        let indices = with_retry(|| self.get_indicatives()).await?;
+        Ok(indices.into_iter().map(MarketIndex::from).collect())
     }
 }
 

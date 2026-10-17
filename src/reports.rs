@@ -6,21 +6,20 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use t_invest_sdk::api::{Account, AccountStatus, AccountType, Dividend, InstrumentShort};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::{
-    account_type_name,
     api::{InvestApi, OperationsFilter},
     domain::{
         AccountPosition, BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar,
-        DividendPayment, DividendProfit, Figi, Instrument, InstrumentKind, LoadedPaper, Money,
-        NoneProfit, Paper, Portfolio, Position, Ticker, Totals,
+        DividendPayment, DividendProfit, Figi, FoundInstrument, Instrument, InstrumentKind,
+        LoadedPaper, Money, NoneProfit, Paper, Portfolio, Position, Ticker, Totals,
+        account::{Account, AccountStatus, AccountType},
         analytics::{Analytics, ShareAnalytics},
         benchmark::{BENCHMARKS, IndexHistory, IndexPrices},
         bond::{BondEventKind, bond_info},
-        calendar::{Calendar, CalendarKind, CombinedCalendar},
+        calendar::{Calendar, CalendarKind, CombinedCalendar, Dividend},
         fx::{DailyCloses, RubConverter},
         history::{History, HistoryItem},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
@@ -29,7 +28,6 @@ use crate::{
         xirr::CashFlow,
     },
     progress::Progress,
-    to_money, to_optional_datetime_utc,
 };
 
 /// Passive income forecast horizon in days.
@@ -61,12 +59,12 @@ pub fn select_account<'a>(
         AccountSelector::Id(id) => accounts.iter().filter(|a| &a.id == id).collect(),
         AccountSelector::Type(account_type) => accounts
             .iter()
-            .filter(|a| a.r#type() == *account_type && a.status() == AccountStatus::Open)
+            .filter(|a| a.account_type == *account_type && a.status == AccountStatus::Open)
             .collect(),
     };
     let wanted = match selector {
         AccountSelector::Id(id) => format!("account with ID {id}"),
-        AccountSelector::Type(t) => format!("open {} account", account_type_name(*t)),
+        AccountSelector::Type(t) => format!("open {} account", t.name()),
     };
     match matching.as_slice() {
         [account] => Ok(account),
@@ -84,7 +82,7 @@ pub fn select_account<'a>(
 /// Formats accounts as `ID (name, type)` for error messages.
 fn describe_accounts<'a>(accounts: impl Iterator<Item = &'a Account>) -> String {
     let described = accounts
-        .map(|a| format!("{} ({}, {})", a.id, a.name, account_type_name(a.r#type())))
+        .map(|a| format!("{} ({}, {})", a.id, a.name, a.account_type.name()))
         .join(", ");
     if described.is_empty() {
         "none".to_string()
@@ -621,7 +619,7 @@ impl<A: InvestApi> Reports<A> {
             .parallel_for(
                 &matching,
                 None,
-                move |reports, instrument: InstrumentShort| {
+                move |reports, instrument: FoundInstrument| {
                     let account_id = account_id.clone();
                     async move {
                         let operations = reports
@@ -658,7 +656,7 @@ impl<A: InvestApi> Reports<A> {
     async fn history_in_rub(
         &self,
         operations: &[Operation],
-        instrument: &InstrumentShort,
+        instrument: &FoundInstrument,
     ) -> color_eyre::Result<Option<History>> {
         let fx = self.load_fx_rates().await?;
         let mut items: Vec<HistoryItem> = Vec::new();
@@ -764,11 +762,8 @@ impl<A: InvestApi> Reports<A> {
                 }
             };
             for dividend in dividends {
-                let dividend_per_share = dividend_per_share(&dividend);
-                let payment_date = to_optional_datetime_utc(dividend.payment_date.as_ref());
-                let record_date = to_optional_datetime_utc(dividend.record_date.as_ref());
                 // Without any date a dividend cannot be placed into the calendar.
-                let Some(calendar_date) = dividend_date(&dividend) else {
+                let Some(calendar_date) = dividend.date() else {
                     continue;
                 };
 
@@ -777,7 +772,7 @@ impl<A: InvestApi> Reports<A> {
                 }
 
                 // Future payments are converted at today's rate.
-                let dividend_per_share = fx.to_rub(dividend_per_share, period.from).await?;
+                let dividend_per_share = fx.to_rub(dividend.per_share, period.from).await?;
 
                 let quantity = position.quantity;
                 upcoming.push(DividendPayment {
@@ -788,8 +783,8 @@ impl<A: InvestApi> Reports<A> {
                     dividend_per_share,
                     total_dividend: dividend_per_share * quantity,
                     quantity,
-                    ex_dividend_date: record_date.unwrap_or(calendar_date),
-                    payment_date,
+                    ex_dividend_date: dividend.record_date.unwrap_or(calendar_date),
+                    payment_date: dividend.payment_date,
                     dividend_type: dividend.dividend_type,
                 });
             }
@@ -856,11 +851,11 @@ impl<A: InvestApi> Reports<A> {
             };
             let mut records = Vec::new();
             for dividend in &dividends {
-                let Some(date) = dividend_date(dividend) else {
+                let Some(date) = dividend.date() else {
                     continue;
                 };
                 // Past and future payments are all converted at today's rate.
-                let per_share = fx.to_rub(dividend_per_share(dividend), period.from).await?;
+                let per_share = fx.to_rub(dividend.per_share, period.from).await?;
                 records.push(DividendRecord { date, per_share });
             }
             let quantity = holding.position.quantity;
@@ -1069,17 +1064,6 @@ impl CalendarPeriod {
     }
 }
 
-/// Dividend per share before taxes; zero when not known yet.
-fn dividend_per_share(dividend: &Dividend) -> Money {
-    to_money(dividend.dividend_net.as_ref()).unwrap_or_else(|| Money::zero(Currency::RUB))
-}
-
-/// Payment date of a dividend, or its record date when the payment date is unknown.
-fn dividend_date(dividend: &Dividend) -> Option<DateTime<Utc>> {
-    to_optional_datetime_utc(dividend.payment_date.as_ref())
-        .or_else(|| to_optional_datetime_utc(dividend.record_date.as_ref()))
-}
-
 /// Adds to `e` which position was skipped because of it.
 fn skipped(e: eyre::Report, instrument: &Instrument, figi: &str) -> eyre::Report {
     e.wrap_err(format!("Position {} ({figi}) skipped", instrument.ticker))
@@ -1133,10 +1117,10 @@ mod tests {
     use rstest::rstest;
     use rust_decimal_macros::dec;
     use std::future::ready;
-    use t_invest_sdk::api::{IndicativeResponse, MoneyValue};
 
     use crate::domain::{
         analytics::{Forecast, Fundamentals},
+        benchmark::MarketIndex,
         bond::BondEvent,
         fx::{DailyPrices, FxCandidate},
         operation::OperationState,
@@ -1148,7 +1132,7 @@ mod tests {
         accounts: Vec<Account>,
         positions: Vec<AccountPosition>,
         instruments: HashMap<String, Instrument>,
-        found: Vec<InstrumentShort>,
+        found: Vec<FoundInstrument>,
         /// Operations by FIGI.
         operations: HashMap<String, Vec<Operation>>,
         dividends: HashMap<String, Vec<Dividend>>,
@@ -1158,7 +1142,7 @@ mod tests {
         fx: Vec<FxCandidate>,
         /// Close of every day of any year.
         close: Decimal,
-        indices: Vec<IndicativeResponse>,
+        indices: Vec<MarketIndex>,
         /// FIGIs and instrument UIDs whose requests fail.
         failing: Vec<String>,
     }
@@ -1218,7 +1202,7 @@ mod tests {
         fn find_instruments(
             &self,
             _: &str,
-        ) -> impl Future<Output = color_eyre::Result<Vec<InstrumentShort>>> + Send {
+        ) -> impl Future<Output = color_eyre::Result<Vec<FoundInstrument>>> + Send {
             ready(Ok(self.found.clone()))
         }
 
@@ -1283,9 +1267,7 @@ mod tests {
             ready(Ok(self.fx.clone()))
         }
 
-        fn indices(
-            &self,
-        ) -> impl Future<Output = color_eyre::Result<Vec<IndicativeResponse>>> + Send {
+        fn indices(&self) -> impl Future<Output = color_eyre::Result<Vec<MarketIndex>>> + Send {
             ready(Ok(self.indices.clone()))
         }
     }
@@ -1334,13 +1316,6 @@ mod tests {
 
     fn usd(units: i64) -> Money {
         Money::from_value(Decimal::from(units), Currency::USD)
-    }
-
-    fn timestamp(at: DateTime<Utc>) -> prost_types::Timestamp {
-        prost_types::Timestamp {
-            seconds: at.timestamp(),
-            nanos: 0,
-        }
     }
 
     fn day(year: i32, month: u32, day: u32) -> NaiveDate {
@@ -1624,9 +1599,9 @@ mod tests {
         Account {
             id: id.to_string(),
             name: format!("Account {id}"),
-            r#type: account_type as i32,
-            status: status as i32,
-            ..Default::default()
+            account_type,
+            status,
+            opened: None,
         }
     }
 
@@ -2092,13 +2067,10 @@ mod tests {
 
     fn dividend(payment: DateTime<Utc>, usd_per_share: i64) -> Dividend {
         Dividend {
-            dividend_net: Some(MoneyValue {
-                currency: "usd".to_string(),
-                units: usd_per_share,
-                nano: 0,
-            }),
-            payment_date: Some(timestamp(payment)),
-            ..Default::default()
+            per_share: Money::from_value(Decimal::from(usd_per_share), Currency::USD),
+            payment_date: Some(payment),
+            record_date: None,
+            dividend_type: String::new(),
         }
     }
 
@@ -2284,12 +2256,11 @@ mod tests {
         assert_eq!(total.dividend_tax.value, dec!(12));
     }
 
-    fn found(ticker: &str, figi: &str) -> InstrumentShort {
-        InstrumentShort {
+    fn found(ticker: &str, figi: &str) -> FoundInstrument {
+        FoundInstrument {
             ticker: ticker.to_string(),
             figi: figi.to_string(),
             name: format!("{ticker} {figi}"),
-            ..Default::default()
         }
     }
 
@@ -2394,10 +2365,9 @@ mod tests {
     async fn index_histories_report_indices_not_found() {
         // Arrange
         let api = FakeApi {
-            indices: vec![IndicativeResponse {
+            indices: vec![MarketIndex {
                 ticker: "IMOEX".to_string(),
                 uid: "IMOEX-UID".to_string(),
-                ..Default::default()
             }],
             ..api()
         };

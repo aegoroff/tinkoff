@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
 use color_eyre::eyre;
 use domain::{
-    AccountPosition, InstrumentKind, Money, Position,
+    AccountPosition, FoundInstrument, InstrumentKind, Money, Position,
+    account::{Account, AccountStatus, AccountType},
+    benchmark::MarketIndex,
+    calendar::Dividend,
     operation::{Operation, OperationKind, OperationState},
 };
 use iso_currency::Currency;
@@ -9,8 +12,9 @@ use prost_types::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use t_invest_sdk::api::{
-    AccountStatus, AccountType, MoneyValue, OperationItem, OperationState as ApiOperationState,
-    OperationType, PortfolioPosition, Quotation,
+    Account as ApiAccount, AccountStatus as ApiAccountStatus, AccountType as ApiAccountType,
+    Dividend as ApiDividend, IndicativeResponse, InstrumentShort, MoneyValue, OperationItem,
+    OperationState as ApiOperationState, OperationType, PortfolioPosition, Quotation,
 };
 
 pub mod api;
@@ -21,69 +25,6 @@ pub mod reports;
 pub mod ux;
 
 pub use domain::risk;
-
-const ACCOUNT_TYPE_HELP: &str =
-    "tinkoff (broker, default), iis, invest-box, invest-fund, debit, saving, dfa";
-
-/// Parses a CLI account type name into [`AccountType`].
-///
-/// # Errors
-///
-/// Returns an error if `value` is not a known account type name.
-pub fn parse_account_type(value: &str) -> Result<AccountType, String> {
-    if value.eq_ignore_ascii_case("tinkoff") || value.eq_ignore_ascii_case("broker") {
-        return Ok(AccountType::Tinkoff);
-    }
-    if value.eq_ignore_ascii_case("iis") || value.eq_ignore_ascii_case("tinkoff-iis") {
-        return Ok(AccountType::TinkoffIis);
-    }
-    if value.eq_ignore_ascii_case("invest-box") || value.eq_ignore_ascii_case("investbox") {
-        return Ok(AccountType::InvestBox);
-    }
-    if value.eq_ignore_ascii_case("invest-fund") || value.eq_ignore_ascii_case("investfund") {
-        return Ok(AccountType::InvestFund);
-    }
-    if value.eq_ignore_ascii_case("debit") {
-        return Ok(AccountType::Debit);
-    }
-    if value.eq_ignore_ascii_case("saving") {
-        return Ok(AccountType::Saving);
-    }
-    if value.eq_ignore_ascii_case("dfa") {
-        return Ok(AccountType::Dfa);
-    }
-
-    Err(format!(
-        "unknown account type '{value}'; expected one of: {ACCOUNT_TYPE_HELP}"
-    ))
-}
-
-/// Returns the CLI name of an account type, the inverse of [`parse_account_type`].
-#[must_use]
-pub fn account_type_name(account_type: AccountType) -> &'static str {
-    match account_type {
-        AccountType::Tinkoff => "tinkoff",
-        AccountType::TinkoffIis => "iis",
-        AccountType::InvestBox => "invest-box",
-        AccountType::InvestFund => "invest-fund",
-        AccountType::Debit => "debit",
-        AccountType::Saving => "saving",
-        AccountType::Dfa => "dfa",
-        AccountType::Unspecified => "unspecified",
-    }
-}
-
-/// Returns a short lowercase name of an account status.
-#[must_use]
-pub fn account_status_name(status: AccountStatus) -> &'static str {
-    match status {
-        AccountStatus::New => "new",
-        AccountStatus::Open => "open",
-        AccountStatus::Closed => "closed",
-        AccountStatus::All => "all",
-        AccountStatus::Unspecified => "unspecified",
-    }
-}
 
 /// Converts an `Option<&Quotation>` to `Decimal`.
 ///
@@ -159,6 +100,75 @@ pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(dt.seconds, 0).unwrap_or_default()
     } else {
         DateTime::<Utc>::default()
+    }
+}
+
+impl From<ApiAccountType> for AccountType {
+    fn from(account_type: ApiAccountType) -> Self {
+        match account_type {
+            ApiAccountType::Tinkoff => Self::Tinkoff,
+            ApiAccountType::TinkoffIis => Self::TinkoffIis,
+            ApiAccountType::InvestBox => Self::InvestBox,
+            ApiAccountType::InvestFund => Self::InvestFund,
+            ApiAccountType::Debit => Self::Debit,
+            ApiAccountType::Saving => Self::Saving,
+            ApiAccountType::Dfa => Self::Dfa,
+            ApiAccountType::Unspecified => Self::Unspecified,
+        }
+    }
+}
+
+impl From<ApiAccountStatus> for AccountStatus {
+    fn from(status: ApiAccountStatus) -> Self {
+        match status {
+            ApiAccountStatus::New => Self::New,
+            ApiAccountStatus::Open => Self::Open,
+            ApiAccountStatus::Closed => Self::Closed,
+            ApiAccountStatus::All | ApiAccountStatus::Unspecified => Self::Unspecified,
+        }
+    }
+}
+
+impl From<ApiAccount> for Account {
+    fn from(account: ApiAccount) -> Self {
+        Self {
+            account_type: account.r#type().into(),
+            status: account.status().into(),
+            opened: to_optional_datetime_utc(account.opened_date.as_ref()),
+            id: account.id,
+            name: account.name,
+        }
+    }
+}
+
+impl From<ApiDividend> for Dividend {
+    fn from(dividend: ApiDividend) -> Self {
+        Self {
+            per_share: to_money(dividend.dividend_net.as_ref())
+                .unwrap_or_else(|| Money::zero(Currency::RUB)),
+            payment_date: to_optional_datetime_utc(dividend.payment_date.as_ref()),
+            record_date: to_optional_datetime_utc(dividend.record_date.as_ref()),
+            dividend_type: dividend.dividend_type,
+        }
+    }
+}
+
+impl From<InstrumentShort> for FoundInstrument {
+    fn from(instrument: InstrumentShort) -> Self {
+        Self {
+            figi: instrument.figi,
+            ticker: instrument.ticker,
+            name: instrument.name,
+        }
+    }
+}
+
+impl From<IndicativeResponse> for MarketIndex {
+    fn from(index: IndicativeResponse) -> Self {
+        Self {
+            ticker: index.ticker,
+            uid: index.uid,
+        }
     }
 }
 
@@ -328,7 +338,6 @@ fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
 mod tests {
     use iso_currency::Currency;
     use rstest::rstest;
-    use t_invest_sdk::api::AccountType;
 
     use super::*;
 
@@ -566,38 +575,93 @@ mod tests {
         assert!(position.accrued_interest.value.is_zero());
     }
 
-    #[test]
-    fn parse_account_type_defaults() {
-        assert_eq!(parse_account_type("tinkoff").unwrap(), AccountType::Tinkoff);
-        assert_eq!(parse_account_type("iis").unwrap(), AccountType::TinkoffIis);
+    #[rstest]
+    #[case::open(ApiAccountStatus::Open, AccountStatus::Open)]
+    #[case::closed(ApiAccountStatus::Closed, AccountStatus::Closed)]
+    #[case::all(ApiAccountStatus::All, AccountStatus::Unspecified)]
+    fn account_from_api(#[case] api_status: ApiAccountStatus, #[case] status: AccountStatus) {
+        // Arrange
+        let account = ApiAccount {
+            id: "ACC".to_string(),
+            name: "Broker".to_string(),
+            r#type: ApiAccountType::TinkoffIis as i32,
+            status: api_status as i32,
+            opened_date: Some(Timestamp {
+                seconds: 1_790_000_000,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+
+        // Act
+        let account = Account::from(account);
+
+        // Assert
         assert_eq!(
-            parse_account_type("invest-box").unwrap(),
-            AccountType::InvestBox
+            (account.id.as_str(), account.name.as_str()),
+            ("ACC", "Broker")
+        );
+        assert_eq!(account.account_type, AccountType::TinkoffIis);
+        assert_eq!(account.status, status);
+        assert_eq!(
+            account.opened,
+            DateTime::<Utc>::from_timestamp(1_790_000_000, 0)
         );
     }
 
-    #[rstest::rstest]
-    #[case(AccountType::Tinkoff)]
-    #[case(AccountType::TinkoffIis)]
-    #[case(AccountType::InvestBox)]
-    #[case(AccountType::InvestFund)]
-    #[case(AccountType::Debit)]
-    #[case(AccountType::Saving)]
-    #[case(AccountType::Dfa)]
-    fn account_type_name_round_trips(#[case] account_type: AccountType) {
+    #[test]
+    fn dividend_from_api() {
         // Arrange
-        let name = account_type_name(account_type);
+        let dividend = ApiDividend {
+            dividend_net: Some(MoneyValue {
+                currency: "usd".to_string(),
+                units: 2,
+                nano: 500_000_000,
+            }),
+            record_date: Some(Timestamp {
+                seconds: 1_790_000_000,
+                nanos: 0,
+            }),
+            payment_date: Some(Timestamp {
+                seconds: 0,
+                nanos: 0,
+            }),
+            dividend_type: "Regular Cash".to_string(),
+            ..Default::default()
+        };
 
         // Act
-        let parsed = parse_account_type(name);
+        let dividend = Dividend::from(dividend);
 
         // Assert
-        assert_eq!(parsed, Ok(account_type));
+        assert_eq!(
+            dividend.per_share,
+            Money::from_value(dec!(2.5), Currency::USD)
+        );
+        assert_eq!(dividend.payment_date, None);
+        assert_eq!(
+            dividend.date(),
+            DateTime::<Utc>::from_timestamp(1_790_000_000, 0)
+        );
+        assert_eq!(dividend.dividend_type, "Regular Cash");
     }
 
-    #[test]
-    fn parse_account_type_unknown() {
-        assert!(parse_account_type("savings").is_err());
+    #[rstest]
+    #[case::absent(None)]
+    #[case::unknown_currency(Some(MoneyValue { currency: "xxx1".to_string(), units: 1, nano: 0 }))]
+    fn dividend_from_api_without_amount_is_zero_rub(#[case] dividend_net: Option<MoneyValue>) {
+        // Arrange
+        let dividend = ApiDividend {
+            dividend_net,
+            ..Default::default()
+        };
+
+        // Act
+        let dividend = Dividend::from(dividend);
+
+        // Assert
+        assert_eq!(dividend.per_share, Money::zero(Currency::RUB));
+        assert_eq!(dividend.date(), None);
     }
 
     #[rstest::rstest]

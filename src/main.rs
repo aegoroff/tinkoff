@@ -4,16 +4,14 @@ use clap::{Arg, ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
 use std::sync::Arc;
 
-use t_invest_sdk::api::AccountType;
 use tinkoff::{
-    account_status_name, account_type_name,
     client::TinkoffInvestment,
     domain::{
         InstrumentKind, Portfolio,
+        account::AccountType,
         calendar::CalendarKind,
         risk::{TARGET_ASSET_TYPES, TargetAllocation},
     },
-    parse_account_type,
     progress::Progresser,
     reports::{AccountSelector, Reports},
     ux,
@@ -234,19 +232,14 @@ async fn accounts(config: &AppConfig) -> Result<()> {
     table.set_header(["ID", "Name", "Type", "Status", "Opened"]);
     for account in &accounts {
         let opened = account
-            .opened_date
-            .as_ref()
-            .map(|d| {
-                tinkoff::to_datetime_utc(Some(d))
-                    .format("%Y-%m-%d")
-                    .to_string()
-            })
+            .opened
+            .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_default();
         table.add_row([
             account.id.clone(),
             account.name.clone(),
-            account_type_name(account.r#type()).to_string(),
-            account_status_name(account.status()).to_string(),
+            account.account_type.name().to_string(),
+            account.status.name().to_string(),
             opened,
         ]);
     }
@@ -315,7 +308,7 @@ fn build_cli() -> Command {
             arg!(--account <TYPE>)
                 .required(false)
                 .default_value("tinkoff")
-                .value_parser(parse_account_type)
+                .value_parser(AccountType::parse)
                 .help(
                     "Account type: tinkoff (broker, default), iis, invest-box, invest-fund, \
                      debit, saving, dfa. Selects the only open account of this type",
