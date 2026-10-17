@@ -43,8 +43,8 @@ use crate::{
     account_type_name,
     domain::{
         BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
-        DividendProfit, Figi, Instrument, LoadedPaper, Money, NoneProfit, Paper, Portfolio,
-        Position, Ticker, Totals,
+        DividendProfit, Figi, Instrument, InstrumentKind, LoadedPaper, Money, NoneProfit, Paper,
+        Portfolio, Position, Ticker, Totals,
         analytics::{
             Analytics, Forecast, Fundamentals, HouseForecast, Recommendation, ShareAnalytics,
         },
@@ -135,10 +135,82 @@ fn describe_accounts<'a>(accounts: impl Iterator<Item = &'a Account>) -> String 
     }
 }
 
-#[derive(Default)]
+/// Portfolio position of a supported kind with its instrument.
+#[derive(Clone)]
+pub struct Holding {
+    pub kind: InstrumentKind,
+    /// Loaded instrument or, when it failed to load, one named after the FIGI
+    pub instrument: Instrument,
+    pub position: PortfolioPosition,
+}
+
+impl Holding {
+    /// Adds to `e` that this position was skipped because of it.
+    fn skipped(&self, e: eyre::Report) -> eyre::Report {
+        skipped(e, &self.instrument, &self.position.figi)
+    }
+}
+
+/// Position of an instrument type the reports do not support, e.g. an option.
+struct UnsupportedPosition {
+    instrument: Instrument,
+    figi: String,
+    instrument_type: String,
+}
+
+/// Account portfolio with instruments of its positions.
 pub struct AccountPortfolio {
     pub account_id: String,
-    pub positions: Vec<PortfolioPosition>,
+    pub holdings: Vec<Holding>,
+    unsupported_positions: Vec<UnsupportedPosition>,
+}
+
+impl AccountPortfolio {
+    /// Pairs positions with their instruments, falling back to FIGI for the ones not loaded;
+    /// positions of unsupported types are set aside.
+    fn new(
+        account_id: String,
+        positions: Vec<PortfolioPosition>,
+        instruments: &HashMap<String, Instrument>,
+    ) -> Self {
+        let mut holdings = Vec::new();
+        let mut unsupported_positions = Vec::new();
+        for position in positions {
+            let instrument = instrument_or_figi(instruments, &position.figi);
+            match InstrumentKind::from_api(&position.instrument_type) {
+                Some(kind) => holdings.push(Holding {
+                    kind,
+                    instrument,
+                    position,
+                }),
+                None => unsupported_positions.push(UnsupportedPosition {
+                    instrument,
+                    figi: position.figi,
+                    instrument_type: position.instrument_type,
+                }),
+            }
+        }
+        Self {
+            account_id,
+            holdings,
+            unsupported_positions,
+        }
+    }
+
+    /// Errors telling which positions of unsupported types the reports leave out.
+    #[must_use]
+    pub fn unsupported(&self) -> Vec<eyre::Report> {
+        self.unsupported_positions
+            .iter()
+            .map(|p| {
+                skipped(
+                    eyre::eyre!("Unsupported instrument type '{}'", p.instrument_type),
+                    &p.instrument,
+                    &p.figi,
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -422,37 +494,45 @@ impl TinkoffInvestment {
             .cloned()
     }
 
-    /// Loads the portfolio and instruments of its positions.
+    /// Loads the portfolio of the account with instruments of its positions.
+    ///
+    /// With `kind`, only positions of this kind are loaded; otherwise all of them,
+    /// and positions of unsupported types are kept for [`AccountPortfolio::unsupported`].
+    /// Instruments that fail to load are named after the FIGI.
     ///
     /// # Errors
     ///
-    /// Returns an error if the portfolio request fails after retries.
-    pub async fn get_portfolio_and_instruments(
+    /// Returns an error if the account or its portfolio cannot be loaded after retries.
+    pub async fn load_portfolio(
         &self,
         selector: &AccountSelector,
-    ) -> color_eyre::Result<(AccountPortfolio, HashMap<String, Instrument>)> {
-        let portfolio = self.get_portfolio_until_done(selector).await?;
-        let instruments = self
-            .get_instruments_for_positions(&portfolio.positions)
-            .await;
-        Ok((portfolio, instruments))
+        kind: Option<InstrumentKind>,
+    ) -> color_eyre::Result<AccountPortfolio> {
+        let account = self.get_account(selector).await?;
+        let mut positions = with_retry(|| self.get_portfolio_positions(&account.id)).await?;
+        if let Some(kind) = kind {
+            positions.retain(|p| InstrumentKind::from_api(&p.instrument_type) == Some(kind));
+        }
+        let instruments = self.get_instruments_for_positions(&positions).await;
+        Ok(AccountPortfolio::new(account.id, positions, &instruments))
     }
 
-    /// Looks up instruments of the given positions by FIGI concurrently.
-    ///
-    /// Instruments that could not be loaded are absent from the result;
-    /// callers fall back to FIGI for their name and ticker.
-    pub async fn get_instruments_for_positions(
+    /// Looks up instruments of the given positions by FIGI concurrently;
+    /// instruments that could not be loaded are absent from the result.
+    async fn get_instruments_for_positions(
         &self,
         positions: &[PortfolioPosition],
     ) -> HashMap<String, Instrument> {
-        self.parallel_for_positions(positions, None, |client, position| async move {
-            let instrument = with_retry(|| {
-                client.get_instrument(position.figi.clone(), &position.instrument_type)
-            })
-            .await;
-            (position.figi, instrument)
-        })
+        self.parallel_for(
+            positions,
+            None,
+            |client, position: PortfolioPosition| async move {
+                let kind = InstrumentKind::from_api(&position.instrument_type);
+                let instrument =
+                    with_retry(|| client.get_instrument(position.figi.clone(), kind)).await;
+                (position.figi, instrument)
+            },
+        )
         .await
         .into_iter()
         .filter_map(|(figi, instrument)| Some((figi, instrument.ok()?)))
@@ -465,7 +545,7 @@ impl TinkoffInvestment {
     async fn get_instrument(
         &self,
         figi: String,
-        instrument_type: &str,
+        kind: Option<InstrumentKind>,
     ) -> color_eyre::Result<Instrument> {
         let mut instruments = self
             .client(InstrumentsServiceClient::with_interceptor)
@@ -475,28 +555,28 @@ impl TinkoffInvestment {
             class_code: None,
             id: figi.clone(),
         };
-        let instrument = match instrument_type {
-            "bond" => instruments
+        let instrument = match kind {
+            Some(InstrumentKind::Bond) => instruments
                 .bond_by(request)
                 .await
                 .map(|r| r.into_inner().instrument.map(from_api_bond)),
-            "currency" => instruments
+            Some(InstrumentKind::Currency) => instruments
                 .currency_by(request)
                 .await
                 .map(|r| r.into_inner().instrument.map(from_api_currency)),
-            "share" => instruments
+            Some(InstrumentKind::Share) => instruments
                 .share_by(request)
                 .await
                 .map(|r| r.into_inner().instrument.map(from_api_share)),
-            "etf" => instruments
+            Some(InstrumentKind::Etf) => instruments
                 .etf_by(request)
                 .await
                 .map(|r| r.into_inner().instrument.map(from_api_etf)),
-            "futures" => instruments
+            Some(InstrumentKind::Future) => instruments
                 .future_by(request)
                 .await
                 .map(|r| r.into_inner().instrument.map(from_api_future)),
-            _ => instruments
+            None => instruments
                 .get_instrument_by(request)
                 .await
                 .map(|r| r.into_inner().instrument.map(from_api_instrument)),
@@ -505,36 +585,30 @@ impl TinkoffInvestment {
         instrument.ok_or_else(|| eyre::eyre!("Instrument {figi} not found"))
     }
 
-    /// Loads analyst forecasts and fundamentals of the given share positions.
+    /// Loads analyst forecasts and fundamentals of the portfolio holdings, meant for shares.
     ///
     /// Shares without a forecast or fundamentals are kept with `None`; failed requests
     /// are returned alongside so the caller can tell the user that the output is incomplete.
     pub async fn get_share_analytics(
         &self,
-        positions: &[PortfolioPosition],
-        instruments: &HashMap<String, Instrument>,
+        portfolio: &AccountPortfolio,
     ) -> (Analytics, Vec<eyre::Report>) {
-        let asset_uids = positions
+        let holdings = &portfolio.holdings;
+        let asset_uids = holdings
             .iter()
-            .filter_map(|p| instruments.get(&p.figi)?.asset_uid.clone())
+            .filter_map(|h| h.instrument.asset_uid.clone())
             .unique()
             .collect_vec();
-        let currencies: Arc<HashMap<String, Currency>> = Arc::new(
-            instruments
-                .iter()
-                .filter_map(|(figi, i)| Some((figi.clone(), i.currency?)))
-                .collect(),
-        );
         let (forecasts, fundamentals) = tokio::join!(
-            self.parallel_for_positions(positions, None, move |client, position| {
-                let currency = currencies.get(&position.figi).copied();
-                async move {
-                    let forecast = with_retry(|| {
-                        client.get_forecast(position.instrument_uid.clone(), currency)
-                    })
-                    .await;
-                    (position.figi, forecast)
-                }
+            self.parallel_for(holdings, None, |client, holding: Holding| async move {
+                let forecast = with_retry(|| {
+                    client.get_forecast(
+                        holding.position.instrument_uid.clone(),
+                        holding.instrument.currency,
+                    )
+                })
+                .await;
+                (holding, forecast)
             }),
             self.get_fundamentals_until_done(&asset_uids),
         );
@@ -545,32 +619,30 @@ impl TinkoffInvestment {
             HashMap::new()
         });
         let mut forecasts_by_figi = HashMap::new();
-        for (figi, forecast) in forecasts {
+        for (holding, forecast) in forecasts {
             match forecast {
                 Ok(forecast) => {
-                    forecasts_by_figi.insert(figi, forecast);
+                    forecasts_by_figi.insert(holding.position.figi, forecast);
                 }
                 Err(e) => {
-                    let ticker = instrument_or_figi(instruments, &figi).ticker;
+                    let ticker = &holding.instrument.ticker;
                     failures.push(e.wrap_err(format!("Forecast for {ticker} not loaded")));
                 }
             }
         }
 
-        let shares = positions
+        let shares = holdings
             .iter()
-            .map(|p| {
-                let instrument = instrument_or_figi(instruments, &p.figi);
-                ShareAnalytics {
-                    forecast: forecasts_by_figi.get(&p.figi).cloned().flatten(),
-                    fundamentals: instrument
-                        .asset_uid
-                        .as_ref()
-                        .and_then(|uid| fundamentals.get(uid))
-                        .copied(),
-                    name: instrument.name,
-                    ticker: instrument.ticker,
-                }
+            .map(|h| ShareAnalytics {
+                forecast: forecasts_by_figi.get(&h.position.figi).cloned().flatten(),
+                fundamentals: h
+                    .instrument
+                    .asset_uid
+                    .as_ref()
+                    .and_then(|uid| fundamentals.get(uid))
+                    .copied(),
+                name: h.instrument.name.clone(),
+                ticker: h.instrument.ticker.clone(),
             })
             .collect();
         (Analytics::new(shares), failures)
@@ -630,53 +702,55 @@ impl TinkoffInvestment {
             .collect())
     }
 
-    /// Fetches data for each position in parallel with retries,
+    /// Fetches data for each holding in parallel with retries,
     /// limiting concurrent requests with a semaphore.
     ///
-    /// Returns pairs of (position, fetch result); task panics are logged to stderr.
+    /// Returns pairs of (holding, fetch result); task panics are logged to stderr.
     async fn fetch_parallel<T, F, Fut>(
         &self,
-        positions: &[PortfolioPosition],
+        holdings: &[Holding],
         fetch: F,
-    ) -> Vec<(PortfolioPosition, color_eyre::Result<Vec<T>>)>
+    ) -> Vec<(Holding, color_eyre::Result<Vec<T>>)>
     where
         T: Send + 'static,
         F: Fn(Self, String) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = color_eyre::Result<Vec<T>>> + Send,
     {
         let fetch = Arc::new(fetch);
-        self.parallel_for_positions(positions, None, {
-            move |client, position| {
+        self.parallel_for(holdings, None, {
+            move |client, holding: Holding| {
                 let fetch = Arc::clone(&fetch);
                 async move {
-                    let items = with_retry(|| fetch(client.clone(), position.figi.clone())).await;
-                    (position, items)
+                    let items =
+                        with_retry(|| fetch(client.clone(), holding.position.figi.clone())).await;
+                    (holding, items)
                 }
             }
         })
         .await
     }
 
-    /// Runs `task` for each position concurrently, limited by [`MAX_CONCURRENT_REQUESTS`].
+    /// Runs `task` for each item concurrently, limited by [`MAX_CONCURRENT_REQUESTS`].
     ///
-    /// Task panics are logged to stderr; failed permit acquisition skips the position.
+    /// Task panics are logged to stderr; failed permit acquisition skips the item.
     /// When `progress` is set, it is incremented once per completed task.
-    async fn parallel_for_positions<T, F, Fut>(
+    async fn parallel_for<I, T, F, Fut>(
         &self,
-        positions: &[PortfolioPosition],
+        items: &[I],
         progress: Option<Arc<dyn Progress>>,
         task: F,
     ) -> Vec<T>
     where
+        I: Clone + Send + 'static,
         T: Send + 'static,
-        F: Fn(TinkoffInvestment, PortfolioPosition) -> Fut + Send + Sync + 'static,
+        F: Fn(TinkoffInvestment, I) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = T> + Send + 'static,
     {
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
         let task = Arc::new(task);
         let mut set = JoinSet::new();
 
-        for position in positions {
+        for item in items {
             let client = self.clone();
             let permit = match semaphore.clone().acquire_owned().await {
                 Ok(p) => p,
@@ -685,13 +759,13 @@ impl TinkoffInvestment {
                     continue;
                 }
             };
-            let position = position.clone();
+            let item = item.clone();
             let task = Arc::clone(&task);
             let progress = progress.clone();
 
             set.spawn(async move {
                 let _permit = permit;
-                let result = task(client, position).await;
+                let result = task(client, item).await;
                 if let Some(p) = &progress {
                     p.progress();
                 }
@@ -702,28 +776,26 @@ impl TinkoffInvestment {
         let mut results = Vec::new();
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(item) => results.push(item),
+                Ok(result) => results.push(result),
                 Err(e) => eprintln!("Task panicked or cancelled: {e}"),
             }
         }
         results
     }
 
-    /// Builds a [`Portfolio`] by loading papers for each position in parallel.
+    /// Builds a [`Portfolio`] by loading papers for each holding in parallel.
     ///
     /// Position money fields and operation totals are converted to RUB via FX rates.
-    /// Positions that failed to load are not included into the portfolio; their errors
-    /// are returned alongside so the caller can tell the user that totals are incomplete.
-    /// Bond details are loaded only with `output_papers`, since only paper cards show them.
+    /// Positions that failed to load or are unsupported are not included into the portfolio;
+    /// their errors are returned alongside so the caller can tell the user that totals are
+    /// incomplete. Bond details are loaded only with `output_papers`, since only paper cards
+    /// show them.
     pub async fn build_portfolio(
         &self,
-        instruments: Arc<HashMap<String, Instrument>>,
-        positions: &[PortfolioPosition],
-        account_id: &str,
+        portfolio: &AccountPortfolio,
         output_papers: bool,
         progress: Option<Arc<dyn Progress>>,
     ) -> (Portfolio, Vec<eyre::Report>) {
-        let account_id = account_id.to_string();
         let fx = match self.load_fx_rates().await {
             Ok(fx) => fx,
             Err(e) => {
@@ -733,22 +805,14 @@ impl TinkoffInvestment {
         };
 
         let papers = self
-            .parallel_for_positions(positions, progress.clone(), {
-                let account_id = account_id.clone();
-                let fx = fx.clone();
-                move |client, position| {
-                    let instruments = instruments.clone();
+            .parallel_for(&portfolio.holdings, progress.clone(), {
+                let account_id = portfolio.account_id.clone();
+                move |client, holding: Holding| {
                     let account_id = account_id.clone();
                     let fx = fx.clone();
                     async move {
                         client
-                            .paper_for_position(
-                                &instruments,
-                                &account_id,
-                                &position,
-                                &fx,
-                                output_papers,
-                            )
+                            .paper_for_position(&account_id, &holding, &fx, output_papers)
                             .await
                     }
                 }
@@ -759,60 +823,50 @@ impl TinkoffInvestment {
             p.finish();
         }
 
-        let mut portfolio = Portfolio::new(output_papers);
-        let mut failures = Vec::new();
+        let mut loaded = Portfolio::new(output_papers);
+        let mut failures = portfolio.unsupported();
         for paper in papers {
             match paper {
-                Ok(paper) => portfolio.add_loaded_paper(paper),
+                Ok(paper) => loaded.add_loaded_paper(paper),
                 Err(e) => failures.push(e),
             }
         }
-        (portfolio, failures)
+        (loaded, failures)
     }
 
-    /// Loads a position as a paper; bond details (events, YTM) only when `with_bond_details`,
+    /// Loads a holding as a paper; bond details (events, YTM) only when `with_bond_details`,
     /// as they are shown in paper cards only and cost a request per bond.
     async fn paper_for_position(
         &self,
-        instruments: &HashMap<String, Instrument>,
         account_id: &str,
-        position: &PortfolioPosition,
+        holding: &Holding,
         fx: &FxRates,
         with_bond_details: bool,
     ) -> color_eyre::Result<LoadedPaper> {
-        let skip = |e| {
-            skipped(
-                e,
-                &instrument_or_figi(instruments, &position.figi),
-                &position.figi,
-            )
-        };
-        // Checked before any request, so unsupported positions cost no API calls.
-        let tag: fn(Paper<NoneProfit>) -> LoadedPaper = match position.instrument_type.as_str() {
-            "bond" => |p| LoadedPaper::Bond(p.with_profit(CouponProfit)),
-            "share" => |p| LoadedPaper::Share(p.with_profit(DividendProfit)),
-            "etf" => |p| LoadedPaper::Etf(p.with_profit(DividendProfit)),
-            "currency" => LoadedPaper::Currency,
-            "futures" => LoadedPaper::Future,
-            other => {
-                return Err(skip(eyre::eyre!("Unsupported instrument type '{other}'")));
-            }
-        };
         let mut paper = self
-            .create_paper_from_position(instruments, account_id.to_string(), position, fx)
+            .create_paper_from_position(account_id.to_string(), holding, fx)
             .await
-            .map_err(skip)?;
-        if with_bond_details && position.instrument_type == "bond" {
+            .map_err(|e| holding.skipped(e))?;
+        if with_bond_details && holding.kind == InstrumentKind::Bond {
             // Bond details are informational: the position stays in totals without them.
             paper.bond = self
-                .load_bond_info(&position.figi, &paper.position, fx)
+                .load_bond_info(&holding.position.figi, &paper.position, fx)
                 .await
                 .ok();
         }
-        Ok(tag(paper))
+        Ok(match holding.kind {
+            InstrumentKind::Bond => LoadedPaper::Bond(paper.with_profit(CouponProfit)),
+            InstrumentKind::Share => LoadedPaper::Share(paper.with_profit(DividendProfit)),
+            InstrumentKind::Etf => LoadedPaper::Etf(paper.with_profit(DividendProfit)),
+            InstrumentKind::Currency => LoadedPaper::Currency(paper),
+            InstrumentKind::Future => LoadedPaper::Future(paper),
+        })
     }
 
-    async fn get_portfolio(&self, account_id: &str) -> color_eyre::Result<AccountPortfolio> {
+    async fn get_portfolio_positions(
+        &self,
+        account_id: &str,
+    ) -> color_eyre::Result<Vec<PortfolioPosition>> {
         let mut operations = self
             .client(OperationsServiceClient::with_interceptor)
             .await?;
@@ -825,10 +879,7 @@ impl TinkoffInvestment {
             })
             .await
             .wrap_err("Failed to get portfolio")?;
-        Ok(AccountPortfolio {
-            account_id: account_id.to_string(),
-            positions: portfolio.into_inner().positions,
-        })
+        Ok(portfolio.into_inner().positions)
     }
 
     /// Get accounts response from API.
@@ -901,19 +952,6 @@ impl TinkoffInvestment {
         ticker: &str,
     ) -> color_eyre::Result<Vec<InstrumentShort>> {
         with_retry(|| self.find_instruments_by_ticker(ticker.to_string())).await
-    }
-
-    /// Get portfolio until done with retry logic.
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if portfolio cannot be retrieved after multiple retries.
-    pub async fn get_portfolio_until_done(
-        &self,
-        selector: &AccountSelector,
-    ) -> color_eyre::Result<AccountPortfolio> {
-        let account = self.get_account(selector).await?;
-        with_retry(|| self.get_portfolio(&account.id)).await
     }
 
     async fn get_operations_page(
@@ -1021,16 +1059,16 @@ impl TinkoffInvestment {
     /// or operations cannot be loaded.
     pub async fn create_paper_from_position(
         &self,
-        instruments: &HashMap<String, Instrument>,
         account_id: String,
-        portfolio_position: &PortfolioPosition,
+        holding: &Holding,
         fx: &FxRates,
     ) -> color_eyre::Result<Paper<NoneProfit>> {
+        let portfolio_position = &holding.position;
         // Portfolio is requested in RUB; the position keeps the currency it is exposed to.
         let mut position = Position::try_from(portfolio_position)?;
         ensure_rub(&position)?;
 
-        let instrument = instrument_or_figi(instruments, &portfolio_position.figi);
+        let instrument = holding.instrument.clone();
         if let Some(currency) = instrument.currency {
             position.currency = currency;
         }
@@ -1085,7 +1123,6 @@ impl TinkoffInvestment {
     pub async fn get_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
         kind: CalendarKind,
         days: u32,
     ) -> color_eyre::Result<(Calendar, Vec<eyre::Report>)> {
@@ -1093,24 +1130,20 @@ impl TinkoffInvestment {
         let fx = self.load_fx_rates().await?;
         match kind {
             CalendarKind::Dividends => {
-                let (calendar, failures) = self
-                    .get_dividend_calendar(portfolio, instruments, &period, &fx)
-                    .await?;
+                let (calendar, failures) =
+                    self.get_dividend_calendar(portfolio, &period, &fx).await?;
                 Ok((Calendar::Dividends(calendar), failures))
             }
             CalendarKind::Coupons => {
-                let (calendar, failures) = self
-                    .get_coupon_calendar(portfolio, instruments, &period, &fx)
-                    .await?;
+                let (calendar, failures) =
+                    self.get_coupon_calendar(portfolio, &period, &fx).await?;
                 Ok((Calendar::Coupons(calendar), failures))
             }
             CalendarKind::Combined => {
-                let (dividends, mut failures) = self
-                    .get_dividend_calendar(portfolio, instruments, &period, &fx)
-                    .await?;
-                let (coupons, coupon_failures) = self
-                    .get_coupon_calendar(portfolio, instruments, &period, &fx)
-                    .await?;
+                let (dividends, mut failures) =
+                    self.get_dividend_calendar(portfolio, &period, &fx).await?;
+                let (coupons, coupon_failures) =
+                    self.get_coupon_calendar(portfolio, &period, &fx).await?;
                 failures.extend(coupon_failures);
                 Ok((
                     Calendar::Combined(CombinedCalendar::merge(dividends, coupons)),
@@ -1287,7 +1320,6 @@ impl TinkoffInvestment {
     async fn get_dividend_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
         period: &CalendarPeriod,
         fx: &FxRates,
     ) -> color_eyre::Result<(DividendCalendar, Vec<eyre::Report>)> {
@@ -1295,12 +1327,12 @@ impl TinkoffInvestment {
 
         let mut upcoming = Vec::new();
         let mut failures = Vec::new();
-        for (position, dividends) in pairs {
-            let instrument = instrument_or_figi(instruments, &position.figi);
+        for (holding, dividends) in pairs {
+            let (instrument, position) = (&holding.instrument, &holding.position);
             let dividends = match dividends {
                 Ok(dividends) => dividends,
                 Err(e) => {
-                    failures.push(skipped(e, &instrument, &position.figi));
+                    failures.push(holding.skipped(e));
                     continue;
                 }
             };
@@ -1344,12 +1376,12 @@ impl TinkoffInvestment {
     async fn fetch_portfolio_dividends(
         &self,
         portfolio: &AccountPortfolio,
-    ) -> Vec<(PortfolioPosition, color_eyre::Result<Vec<Dividend>>)> {
+    ) -> Vec<(Holding, color_eyre::Result<Vec<Dividend>>)> {
         // The API rejects dividend requests for anything but shares and ETFs.
-        let dividend_positions: Vec<PortfolioPosition> = portfolio
-            .positions
+        let dividend_positions: Vec<Holding> = portfolio
+            .holdings
             .iter()
-            .filter(|p| p.instrument_type == "share" || p.instrument_type == "etf")
+            .filter(|h| h.kind.pays_dividends())
             .cloned()
             .collect();
 
@@ -1371,14 +1403,11 @@ impl TinkoffInvestment {
     pub async fn get_income_forecast(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
     ) -> color_eyre::Result<(IncomeForecast, Vec<eyre::Report>)> {
         let period = CalendarPeriod::days_ahead(Utc::now(), INCOME_FORECAST_DAYS);
         let fx = self.load_fx_rates().await?;
 
-        let (coupons, mut failures) = self
-            .get_coupon_calendar(portfolio, instruments, &period, &fx)
-            .await?;
+        let (coupons, mut failures) = self.get_coupon_calendar(portfolio, &period, &fx).await?;
         let mut items: Vec<IncomeItem> = coupons
             .upcoming
             .iter()
@@ -1390,12 +1419,11 @@ impl TinkoffInvestment {
             })
             .collect();
 
-        for (position, dividends) in self.fetch_portfolio_dividends(portfolio).await {
+        for (holding, dividends) in self.fetch_portfolio_dividends(portfolio).await {
             let dividends = match dividends {
                 Ok(dividends) => dividends,
                 Err(e) => {
-                    let instrument = instrument_or_figi(instruments, &position.figi);
-                    failures.push(skipped(e, &instrument, &position.figi));
+                    failures.push(holding.skipped(e));
                     continue;
                 }
             };
@@ -1408,7 +1436,7 @@ impl TinkoffInvestment {
                 let per_share = fx.to_rub(dividend_per_share(dividend), period.from).await?;
                 records.push(DividendRecord { date, per_share });
             }
-            let quantity = to_decimal(position.quantity.as_ref());
+            let quantity = to_decimal(holding.position.quantity.as_ref());
             items.extend(expected_dividends(
                 &records,
                 quantity,
@@ -1417,18 +1445,17 @@ impl TinkoffInvestment {
             ));
         }
 
+        // Unsupported positions are left out of the portfolio value, as out of the other reports.
+        failures.extend(portfolio.unsupported());
         let mut portfolio_value = Money::zero(Currency::RUB);
-        for position in &portfolio.positions {
-            let value = Position::try_from(position).and_then(|p| {
+        for holding in &portfolio.holdings {
+            let value = Position::try_from(&holding.position).and_then(|p| {
                 ensure_rub(&p)?;
                 Ok(p.current())
             });
             match value {
                 Ok(value) => portfolio_value += value,
-                Err(e) => {
-                    let instrument = instrument_or_figi(instruments, &position.figi);
-                    failures.push(skipped(e, &instrument, &position.figi));
-                }
+                Err(e) => failures.push(holding.skipped(e)),
             }
         }
 
@@ -1456,14 +1483,13 @@ impl TinkoffInvestment {
     async fn get_coupon_calendar(
         &self,
         portfolio: &AccountPortfolio,
-        instruments: &HashMap<String, Instrument>,
         period: &CalendarPeriod,
         fx: &FxRates,
     ) -> color_eyre::Result<(CouponCalendar, Vec<eyre::Report>)> {
-        let bond_positions: Vec<PortfolioPosition> = portfolio
-            .positions
+        let bond_positions: Vec<Holding> = portfolio
+            .holdings
             .iter()
-            .filter(|p| p.instrument_type == "bond")
+            .filter(|h| h.kind == InstrumentKind::Bond)
             .cloned()
             .collect();
 
@@ -1475,12 +1501,12 @@ impl TinkoffInvestment {
 
         let mut upcoming = Vec::new();
         let mut failures = Vec::new();
-        for (position, events) in pairs {
-            let instrument = instrument_or_figi(instruments, &position.figi);
+        for (holding, events) in pairs {
+            let (instrument, position) = (&holding.instrument, &holding.position);
             let events = match events {
                 Ok(events) => events,
                 Err(e) => {
-                    failures.push(skipped(e, &instrument, &position.figi));
+                    failures.push(holding.skipped(e));
                     continue;
                 }
             };
@@ -1638,7 +1664,7 @@ async fn reduce<S: DailyCloses>(
 /// A bond trade payment includes NKD besides `price × quantity`, so adding it to coupons
 /// gives the net coupon income.
 fn trade_accrued_interest(op: &OperationItem) -> Option<Money> {
-    if op.instrument_type != "bond" {
+    if InstrumentKind::from_api(&op.instrument_type) != Some(InstrumentKind::Bond) {
         return None;
     }
     let direction = match op.r#type() {
@@ -2195,39 +2221,97 @@ mod tests {
         assert!(position.accrued_interest.value.is_zero());
     }
 
-    #[tokio::test]
-    async fn paper_for_position_reports_unsupported_type() {
-        // Arrange
-        let client = TinkoffInvestment::new(String::new());
-        let fx = RubConverter::new(std::iter::empty(), client.clone());
-        let instruments = HashMap::from([(
-            "OPT1".to_string(),
-            Instrument {
-                name: "Option".to_string(),
-                ticker: Ticker::new("OPTX"),
-                currency: Some(Currency::RUB),
-                asset_uid: None,
-                sector: None,
-            },
-        )]);
-        let position = PortfolioPosition {
-            figi: "OPT1".to_string(),
-            instrument_type: "option".to_string(),
+    fn portfolio_position(figi: &str, instrument_type: &str) -> PortfolioPosition {
+        PortfolioPosition {
+            figi: figi.to_string(),
+            instrument_type: instrument_type.to_string(),
             ..Default::default()
-        };
+        }
+    }
+
+    fn named(name: &str, ticker: &str) -> Instrument {
+        Instrument {
+            name: name.to_string(),
+            ticker: Ticker::new(ticker),
+            currency: Some(Currency::RUB),
+            asset_uid: None,
+            sector: None,
+        }
+    }
+
+    #[test]
+    fn account_portfolio_pairs_positions_with_instruments() {
+        // Arrange
+        let positions = vec![
+            portfolio_position("FIGI1", "share"),
+            portfolio_position("FIGI2", "bond"),
+        ];
+        let instruments = HashMap::from([("FIGI1".to_string(), named("Sber", "SBER"))]);
 
         // Act
-        let result = client
-            .paper_for_position(&instruments, "account", &position, &fx, true)
-            .await;
+        let portfolio = AccountPortfolio::new("account".to_string(), positions, &instruments);
 
         // Assert
-        let message = format!("{:#}", result.err().unwrap());
-        assert!(message.contains("OPTX (OPT1) skipped"), "{message}");
-        assert!(
-            message.contains("Unsupported instrument type 'option'"),
-            "{message}"
+        let holdings: Vec<_> = portfolio
+            .holdings
+            .iter()
+            .map(|h| {
+                (
+                    h.kind,
+                    h.instrument.ticker.as_str(),
+                    h.position.figi.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            holdings,
+            [
+                (InstrumentKind::Share, "SBER", "FIGI1"),
+                (InstrumentKind::Bond, "FIGI2", "FIGI2"),
+            ]
         );
+        assert!(portfolio.unsupported().is_empty());
+    }
+
+    #[test]
+    fn account_portfolio_sets_unsupported_positions_aside() {
+        // Arrange
+        let positions = vec![
+            portfolio_position("OPT1", "option"),
+            portfolio_position("FIGI1", "etf"),
+        ];
+        let instruments = HashMap::from([("OPT1".to_string(), named("Option", "OPTX"))]);
+
+        // Act
+        let portfolio = AccountPortfolio::new("account".to_string(), positions, &instruments);
+
+        // Assert
+        assert_eq!(portfolio.holdings.len(), 1);
+        assert_eq!(portfolio.holdings[0].kind, InstrumentKind::Etf);
+        let messages: Vec<_> = portfolio
+            .unsupported()
+            .iter()
+            .map(|e| format!("{e:#}"))
+            .collect();
+        assert_eq!(
+            messages,
+            ["Position OPTX (OPT1) skipped: Unsupported instrument type 'option'"]
+        );
+    }
+
+    #[test]
+    fn account_portfolio_reports_unsupported_positions_on_every_call() {
+        // Arrange
+        let positions = vec![portfolio_position("OPT1", "option")];
+        let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
+
+        // Act
+        let first = portfolio.unsupported();
+        let second = portfolio.unsupported();
+
+        // Assert
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
     }
 
     #[test]
@@ -2265,12 +2349,13 @@ mod tests {
         assert_eq!(instrument.ticker.as_str(), "FIGI2");
     }
 
-    fn positions(figis: &[&str]) -> Vec<PortfolioPosition> {
+    fn holdings(figis: &[&str]) -> Vec<Holding> {
         figis
             .iter()
-            .map(|figi| PortfolioPosition {
-                figi: (*figi).to_string(),
-                ..Default::default()
+            .map(|figi| Holding {
+                kind: InstrumentKind::Share,
+                instrument: instrument_or_figi(&HashMap::new(), figi),
+                position: portfolio_position(figi, "share"),
             })
             .collect()
     }
@@ -2279,7 +2364,7 @@ mod tests {
     async fn fetch_parallel_keeps_failed_positions_as_errors() {
         // Arrange
         let client = TinkoffInvestment::new(String::new());
-        let positions = positions(&["OK", "BAD"]);
+        let positions = holdings(&["OK", "BAD"]);
 
         // Act
         let results = client
@@ -2295,7 +2380,7 @@ mod tests {
         // Assert
         let results: HashMap<_, _> = results
             .into_iter()
-            .map(|(position, items)| (position.figi, items))
+            .map(|(holding, items)| (holding.position.figi, items))
             .collect();
         assert_eq!(results.len(), 2);
         assert_eq!(results["OK"].as_ref().ok(), Some(&vec!["OK".to_string()]));
@@ -2306,7 +2391,7 @@ mod tests {
     async fn fetch_parallel_retries_rate_limited_requests() {
         // Arrange
         let client = TinkoffInvestment::new(String::new());
-        let positions = positions(&["FIGI"]);
+        let positions = holdings(&["FIGI"]);
         let calls = Arc::new(AtomicU32::new(0));
 
         // Act

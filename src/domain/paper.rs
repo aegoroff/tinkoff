@@ -88,6 +88,46 @@ impl AsRef<str> for Ticker {
     }
 }
 
+/// Kind of a portfolio instrument supported by the reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentKind {
+    Share,
+    Bond,
+    Etf,
+    Currency,
+    Future,
+}
+
+impl InstrumentKind {
+    /// Kind of an API instrument type such as `share`; `None` for unsupported ones.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tinkoff::domain::InstrumentKind;
+    ///
+    /// assert_eq!(InstrumentKind::from_api("futures"), Some(InstrumentKind::Future));
+    /// assert_eq!(InstrumentKind::from_api("option"), None);
+    /// ```
+    #[must_use]
+    pub fn from_api(instrument_type: &str) -> Option<Self> {
+        match instrument_type {
+            "share" => Some(Self::Share),
+            "bond" => Some(Self::Bond),
+            "etf" => Some(Self::Etf),
+            "currency" => Some(Self::Currency),
+            "futures" => Some(Self::Future),
+            _ => None,
+        }
+    }
+
+    /// Whether the API gives dividends of the instrument: shares and ETFs only.
+    #[must_use]
+    pub fn pays_dividends(self) -> bool {
+        matches!(self, Self::Share | Self::Etf)
+    }
+}
+
 #[derive(Clone)]
 pub struct Instrument {
     pub name: String,
@@ -335,6 +375,40 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+
+    #[rstest]
+    #[case::share("share", Some(InstrumentKind::Share))]
+    #[case::bond("bond", Some(InstrumentKind::Bond))]
+    #[case::etf("etf", Some(InstrumentKind::Etf))]
+    #[case::currency("currency", Some(InstrumentKind::Currency))]
+    #[case::futures("futures", Some(InstrumentKind::Future))]
+    #[case::option("option", None)]
+    #[case::structured_product("sp", None)]
+    #[case::empty("", None)]
+    fn instrument_kind_from_api(
+        #[case] instrument_type: &str,
+        #[case] expected: Option<InstrumentKind>,
+    ) {
+        // Act
+        let kind = InstrumentKind::from_api(instrument_type);
+
+        // Assert
+        assert_eq!(kind, expected);
+    }
+
+    #[rstest]
+    #[case::share(InstrumentKind::Share, true)]
+    #[case::etf(InstrumentKind::Etf, true)]
+    #[case::bond(InstrumentKind::Bond, false)]
+    #[case::currency(InstrumentKind::Currency, false)]
+    #[case::future(InstrumentKind::Future, false)]
+    fn instrument_kind_pays_dividends(#[case] kind: InstrumentKind, #[case] expected: bool) {
+        // Act
+        let pays = kind.pays_dividends();
+
+        // Assert
+        assert_eq!(pays, expected);
+    }
 
     fn bond(accrued_interest: Decimal) -> Paper<CouponProfit> {
         let currency = Currency::RUB;
