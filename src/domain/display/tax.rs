@@ -7,11 +7,12 @@ use comfy_table::{Attribute, Cell};
 use super::super::tax::{TaxReport, YearTaxes};
 use crate::ux;
 
-fn year_cells(label: String, year: &YearTaxes) -> [Cell; 7] {
+fn year_cells(label: String, year: &YearTaxes) -> [Cell; 8] {
     [
         Cell::new(label),
         Cell::new(year.dividends),
         Cell::new(year.coupons),
+        Cell::new(year.total_income()),
         Cell::new(year.dividend_tax),
         Cell::new(year.coupon_tax),
         Cell::new(year.other_tax),
@@ -33,6 +34,7 @@ impl Display for TaxReport {
                 "Year",
                 "Dividends",
                 "Coupons",
+                "Total income",
                 "Dividend tax",
                 "Coupon tax",
                 "Other tax",

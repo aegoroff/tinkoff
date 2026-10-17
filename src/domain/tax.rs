@@ -90,6 +90,12 @@ impl YearTaxes {
         self.other_tax += other.other_tax;
     }
 
+    /// Dividends and coupons received
+    #[must_use]
+    pub fn total_income(&self) -> Money {
+        self.dividends + self.coupons
+    }
+
     /// All taxes withheld
     #[must_use]
     pub fn total_tax(&self) -> Money {
@@ -275,6 +281,22 @@ mod tests {
     }
 
     #[test]
+    fn year_total_income() {
+        // Arrange
+        let operations = [
+            operation(2025, TaxOperationKind::Dividend, dec!(870)),
+            operation(2025, TaxOperationKind::Coupon, dec!(1000)),
+            operation(2025, TaxOperationKind::CouponTax, dec!(-130)),
+        ];
+
+        // Act
+        let year = TaxReport::new(&operations).years[0];
+
+        // Assert
+        assert_eq!(year.total_income(), rub(dec!(1870)));
+    }
+
+    #[test]
     fn total_sums_all_years() {
         // Arrange
         let operations = [
@@ -300,5 +322,6 @@ mod tests {
         // Assert
         assert_eq!(report.years, []);
         assert_eq!(report.total().total_tax(), rub(dec!(0)));
+        assert_eq!(report.total().total_income(), rub(dec!(0)));
     }
 }
