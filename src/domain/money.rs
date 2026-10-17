@@ -82,13 +82,17 @@ impl Income {
         }
     }
 
+    /// Profit relative to the absolute purchase amount.
+    ///
+    /// A short position stores a negative purchase amount, and dividing by that
+    /// amount would flip the sign of a gain into a loss.
     #[must_use]
     pub fn percent(&self) -> Decimal {
         let income = self.income();
         if self.balance.is_zero() {
             Decimal::default()
         } else {
-            (income / self.balance) * HUNDRED
+            (income / self.balance.abs()) * HUNDRED
         }
     }
 
@@ -308,6 +312,8 @@ impl NumberRange for Income {
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
+    use rstest::rstest;
+    use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
     use super::*;
@@ -344,5 +350,27 @@ mod tests {
             Money::from_value(dec!(0), Currency::RUB),
         );
         assert!(income.percent().is_zero());
+    }
+
+    #[rstest]
+    #[case::long_gain(dec!(1100), dec!(1000), dec!(10))]
+    #[case::short_loss(dec!(-1100), dec!(-1000), dec!(-10))]
+    #[case::short_gain(dec!(-900), dec!(-1000), dec!(10))]
+    fn income_percent_keeps_the_sign_of_a_short(
+        #[case] current: Decimal,
+        #[case] balance: Decimal,
+        #[case] percent: Decimal,
+    ) {
+        // Arrange: a short stores the purchase amount with a minus
+        let income = Income::new(
+            Money::from_value(current, Currency::RUB),
+            Money::from_value(balance, Currency::RUB),
+        );
+
+        // Act
+        let actual = income.percent();
+
+        // Assert
+        assert_eq!(actual, percent);
     }
 }
