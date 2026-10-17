@@ -9,13 +9,13 @@ use tinkoff::{
     account_status_name, account_type_name,
     client::TinkoffInvestment,
     domain::{
-        InstrumentKind,
+        InstrumentKind, Portfolio,
         calendar::CalendarKind,
         risk::{TARGET_ASSET_TYPES, TargetAllocation},
     },
     parse_account_type,
     progress::Progresser,
-    reports::{AccountPortfolio, AccountSelector, Reports},
+    reports::{AccountSelector, Reports},
     ux,
 };
 
@@ -98,12 +98,12 @@ fn run_subcommand<'a>(
     (name, matches): (&'a str, &'a ArgMatches),
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     match name {
-        ALL_CMD => Box::pin(all(config, !matches.get_flag("aggregate"))),
-        SHARES_CMD => Box::pin(asset(config, InstrumentKind::Share)),
-        BONDS_CMD => Box::pin(asset(config, InstrumentKind::Bond)),
-        ETFS_CMD => Box::pin(asset(config, InstrumentKind::Etf)),
-        CURR_CMD => Box::pin(asset(config, InstrumentKind::Currency)),
-        FUTURES_CMD => Box::pin(asset(config, InstrumentKind::Future)),
+        ALL_CMD => Box::pin(positions(config, None, !matches.get_flag("aggregate"))),
+        SHARES_CMD => Box::pin(positions(config, Some(InstrumentKind::Share), true)),
+        BONDS_CMD => Box::pin(positions(config, Some(InstrumentKind::Bond), true)),
+        ETFS_CMD => Box::pin(positions(config, Some(InstrumentKind::Etf), true)),
+        CURR_CMD => Box::pin(positions(config, Some(InstrumentKind::Currency), true)),
+        FUTURES_CMD => Box::pin(positions(config, Some(InstrumentKind::Future), true)),
         HISTORY_CMD => Box::pin(history(config, matches)),
         DIVIDENDS_CMD => Box::pin(calendar(config, matches, CalendarKind::Dividends)),
         COUPONS_CMD => Box::pin(calendar(config, matches, CalendarKind::Coupons)),
@@ -118,18 +118,16 @@ fn run_subcommand<'a>(
     }
 }
 
-/// Prints portfolio positions of the given kind.
-async fn asset(config: &AppConfig, kind: InstrumentKind) -> Result<()> {
-    let reports = config.reports();
-    let portfolio = reports.load_portfolio(&config.account, Some(kind)).await?;
-    print_positions(&reports, &portfolio, true).await;
-    Ok(())
-}
-
-async fn all(config: &AppConfig, output_papers: bool) -> Result<()> {
-    let reports = config.reports();
-    let portfolio = reports.load_portfolio(&config.account, None).await?;
-    print_positions(&reports, &portfolio, output_papers).await;
+/// Prints portfolio positions of the given kind or all of them,
+/// with paper cards when `output_papers` is set.
+async fn positions(
+    config: &AppConfig,
+    kind: Option<InstrumentKind>,
+    output_papers: bool,
+) -> Result<()> {
+    let (container, failures) = load_papers(config, &config.reports(), kind, output_papers).await?;
+    print!("{container}");
+    report_failures(&failures);
     Ok(())
 }
 
@@ -174,11 +172,7 @@ async fn benchmark(config: &AppConfig) -> Result<()> {
     use tinkoff::domain::benchmark::BenchmarkComparison;
 
     let reports = config.reports();
-    let portfolio = reports.load_portfolio(&config.account, None).await?;
-    let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
-    let (container, mut failures) = reports
-        .build_portfolio(&portfolio, false, Some(progress))
-        .await;
+    let (container, mut failures) = load_papers(config, &reports, None, false).await?;
 
     let now = Utc::now();
     let since_year = container
@@ -264,11 +258,7 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis};
 
     let reports = config.reports();
-    let portfolio = reports.load_portfolio(&config.account, None).await?;
-    let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
-    let (container, failures) = reports
-        .build_portfolio(&portfolio, false, Some(progress))
-        .await;
+    let (container, failures) = load_papers(config, &reports, None, false).await?;
 
     let risk_analysis = RiskAnalysis::analyze(&container);
     println!("{risk_analysis}");
@@ -282,17 +272,19 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     Ok(())
 }
 
-async fn print_positions(
+/// Loads papers of the account portfolio, of the given kind or all, showing the progress;
+/// positions that failed to load are returned alongside.
+async fn load_papers(
+    config: &AppConfig,
     reports: &Reports<TinkoffInvestment>,
-    portfolio: &AccountPortfolio,
+    kind: Option<InstrumentKind>,
     output_papers: bool,
-) {
+) -> Result<(Portfolio, Vec<eyre::Report>)> {
+    let portfolio = reports.load_portfolio(&config.account, kind).await?;
     let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
-    let (container, failures) = reports
-        .build_portfolio(portfolio, output_papers, Some(progress))
-        .await;
-    print!("{container}");
-    report_failures(&failures);
+    Ok(reports
+        .build_portfolio(&portfolio, output_papers, Some(progress))
+        .await)
 }
 
 /// Warns that the output is incomplete because some positions failed to load.
