@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use color_eyre::eyre;
-use domain::{Money, Position};
+use domain::{AccountPosition, Money, Position};
 use iso_currency::Currency;
 use prost_types::Timestamp;
 use rust_decimal::Decimal;
@@ -191,6 +191,44 @@ impl TryFrom<&PortfolioPosition> for Position {
     }
 }
 
+/// Position as the portfolio API reports it. The portfolio is requested in RUB, so prices
+/// that are missing or in another currency make [`AccountPosition::position`] an error
+/// instead of mixing currencies in totals.
+impl From<PortfolioPosition> for AccountPosition {
+    fn from(value: PortfolioPosition) -> Self {
+        let position = Position::try_from(&value)
+            .and_then(|p| {
+                ensure_rub(&p)?;
+                Ok(p)
+            })
+            .map_err(|e| format!("{e:#}"));
+        Self {
+            figi: value.figi,
+            instrument_uid: value.instrument_uid,
+            instrument_type: value.instrument_type,
+            position,
+        }
+    }
+}
+
+/// Checks that position money values are in RUB.
+fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
+    for money in [
+        position.average_buy_price,
+        position.current_instrument_price,
+        position.accrued_interest,
+        position.daily_yield,
+    ] {
+        if money.currency != Currency::RUB {
+            return Err(eyre::eyre!(
+                "Expected position prices in RUB, got {}",
+                money.currency.code()
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use iso_currency::Currency;
@@ -204,6 +242,72 @@ mod tests {
             units,
             nano: 0,
         }
+    }
+
+    fn api_position(price: MoneyValue) -> PortfolioPosition {
+        PortfolioPosition {
+            figi: "FIGI1".to_string(),
+            instrument_uid: "UID1".to_string(),
+            instrument_type: "share".to_string(),
+            quantity: Some(Quotation { units: 2, nano: 0 }),
+            average_position_price: Some(price.clone()),
+            current_price: Some(price),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn account_position_keeps_rub_prices() {
+        // Arrange
+        let position = api_position(rub(990));
+
+        // Act
+        let position = AccountPosition::from(position);
+
+        // Assert
+        assert_eq!(position.figi, "FIGI1");
+        assert_eq!(position.instrument_uid, "UID1");
+        assert_eq!(position.instrument_type, "share");
+        let prices = position.position.unwrap();
+        assert_eq!(prices.current_instrument_price.value, dec!(990));
+        assert_eq!(prices.quantity, dec!(2));
+    }
+
+    #[test]
+    fn account_position_rejects_foreign_prices() {
+        // Arrange
+        let position = api_position(MoneyValue {
+            currency: "usd".to_string(),
+            units: 11,
+            nano: 0,
+        });
+
+        // Act
+        let position = AccountPosition::from(position);
+
+        // Assert
+        assert_eq!(
+            position.position.err().as_deref(),
+            Some("Expected position prices in RUB, got USD")
+        );
+    }
+
+    #[test]
+    fn account_position_rejects_missing_price() {
+        // Arrange
+        let position = PortfolioPosition {
+            current_price: None,
+            ..api_position(rub(990))
+        };
+
+        // Act
+        let position = AccountPosition::from(position);
+
+        // Assert
+        assert_eq!(
+            position.position.err().as_deref(),
+            Some("Failed to get currency")
+        );
     }
 
     #[test]

@@ -38,7 +38,7 @@ const RUSSIAN_TRUSTED_CAS: &[u8] = include_bytes!("../certs/russian_trusted_cas.
 use crate::{
     api::{InvestApi, OperationsFilter},
     domain::{
-        Instrument, InstrumentKind, Money, Ticker,
+        AccountPosition, Instrument, InstrumentKind, Money, Ticker,
         analytics::{Forecast, Fundamentals, HouseForecast, Recommendation},
         bond::{BondEvent, BondEventKind, mark_amortizations},
         fx::{DailyCloses, DailyPrices, FxCandidate},
@@ -534,8 +534,9 @@ impl InvestApi for TinkoffInvestment {
     async fn portfolio_positions(
         &self,
         account_id: &str,
-    ) -> color_eyre::Result<Vec<PortfolioPosition>> {
-        with_retry(|| self.get_portfolio_positions(account_id)).await
+    ) -> color_eyre::Result<Vec<AccountPosition>> {
+        let positions = with_retry(|| self.get_portfolio_positions(account_id)).await?;
+        Ok(positions.into_iter().map(AccountPosition::from).collect())
     }
 
     async fn instrument(

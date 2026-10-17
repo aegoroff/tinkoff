@@ -157,6 +157,17 @@ pub struct Position {
     pub blocked_lots: Decimal,
 }
 
+/// Position of the account portfolio as the API reports it, prices in RUB.
+#[derive(Clone)]
+pub struct AccountPosition {
+    pub figi: String,
+    pub instrument_uid: String,
+    /// API instrument type, e.g. `share`; see [`InstrumentKind::from_api`]
+    pub instrument_type: String,
+    /// `Err` with the reason when the API gave incomplete or non-RUB prices
+    pub position: Result<Position, String>,
+}
+
 impl Position {
     /// Current price plus accrued interest multiplied to quantity
     #[must_use]

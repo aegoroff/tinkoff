@@ -5,11 +5,10 @@ use color_eyre::eyre::Result;
 use iso_currency::Currency;
 use t_invest_sdk::api::{
     Account, Dividend, IndicativeResponse, InstrumentShort, OperationItem, OperationType,
-    PortfolioPosition,
 };
 
 use crate::domain::{
-    Instrument, InstrumentKind,
+    AccountPosition, Instrument, InstrumentKind,
     analytics::{Forecast, Fundamentals},
     bond::BondEvent,
     fx::{DailyCloses, FxCandidate},
@@ -31,11 +30,11 @@ pub trait InvestApi: DailyCloses + Clone + Send + Sync + 'static {
     /// All accounts of the user, whatever their status.
     fn accounts(&self) -> impl Future<Output = Result<Vec<Account>>> + Send;
 
-    /// Positions of the account with money values in RUB.
+    /// Positions of the account with prices in RUB.
     fn portfolio_positions(
         &self,
         account_id: &str,
-    ) -> impl Future<Output = Result<Vec<PortfolioPosition>>> + Send;
+    ) -> impl Future<Output = Result<Vec<AccountPosition>>> + Send;
 
     /// Instrument by FIGI; `kind` selects the request that gives the most details of it.
     fn instrument(

@@ -8,7 +8,6 @@ use std::future::Future;
 use std::sync::Arc;
 use t_invest_sdk::api::{
     Account, AccountStatus, AccountType, Dividend, InstrumentShort, OperationItem, OperationType,
-    PortfolioPosition,
 };
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -17,9 +16,9 @@ use crate::{
     account_type_name,
     api::{InvestApi, OperationsFilter},
     domain::{
-        BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar, DividendPayment,
-        DividendProfit, Figi, Instrument, InstrumentKind, LoadedPaper, Money, NoneProfit, Paper,
-        Portfolio, Position, Ticker, Totals,
+        AccountPosition, BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar,
+        DividendPayment, DividendProfit, Figi, Instrument, InstrumentKind, LoadedPaper, Money,
+        NoneProfit, Paper, Portfolio, Position, Ticker, Totals,
         analytics::{Analytics, ShareAnalytics},
         benchmark::{BENCHMARKS, IndexHistory, IndexPrices},
         bond::{BondEventKind, bond_info},
@@ -31,7 +30,7 @@ use crate::{
         xirr::CashFlow,
     },
     progress::Progress,
-    to_datetime_utc, to_decimal, to_money, to_optional_datetime_utc,
+    to_datetime_utc, to_money, to_optional_datetime_utc,
 };
 
 /// Passive income forecast horizon in days.
@@ -95,80 +94,98 @@ fn describe_accounts<'a>(accounts: impl Iterator<Item = &'a Account>) -> String 
     }
 }
 
-/// Portfolio position of a supported kind with its instrument.
+/// Portfolio position of a supported kind with valid prices and its instrument.
 #[derive(Clone)]
 pub struct Holding {
     pub kind: InstrumentKind,
     /// Loaded instrument or, when it failed to load, one named after the FIGI
     pub instrument: Instrument,
-    pub position: PortfolioPosition,
+    pub figi: String,
+    pub instrument_uid: String,
+    pub position: Position,
 }
 
 impl Holding {
     /// Adds to `e` that this position was skipped because of it.
     fn skipped(&self, e: eyre::Report) -> eyre::Report {
-        skipped(e, &self.instrument, &self.position.figi)
+        skipped(e, &self.instrument, &self.figi)
     }
 }
 
-/// Position of an instrument type the reports do not support, e.g. an option.
-struct UnsupportedPosition {
+/// Position the reports leave out: of an unsupported type, e.g. an option,
+/// or of a supported `kind` without valid prices.
+struct SkippedPosition {
+    kind: Option<InstrumentKind>,
     instrument: Instrument,
     figi: String,
-    instrument_type: String,
+    reason: String,
 }
 
 /// Account portfolio with instruments of its positions.
 pub struct AccountPortfolio {
     pub account_id: String,
     pub holdings: Vec<Holding>,
-    unsupported_positions: Vec<UnsupportedPosition>,
+    skipped_positions: Vec<SkippedPosition>,
 }
 
 impl AccountPortfolio {
     /// Pairs positions with their instruments, falling back to FIGI for the ones not loaded;
-    /// positions of unsupported types are set aside.
+    /// positions of unsupported types or without valid prices are set aside.
     fn new(
         account_id: String,
-        positions: Vec<PortfolioPosition>,
+        positions: Vec<AccountPosition>,
         instruments: &HashMap<String, Instrument>,
     ) -> Self {
         let mut holdings = Vec::new();
-        let mut unsupported_positions = Vec::new();
-        for position in positions {
-            let instrument = instrument_or_figi(instruments, &position.figi);
-            match InstrumentKind::from_api(&position.instrument_type) {
-                Some(kind) => holdings.push(Holding {
+        let mut skipped_positions = Vec::new();
+        for p in positions {
+            let instrument = instrument_or_figi(instruments, &p.figi);
+            let kind = InstrumentKind::from_api(&p.instrument_type);
+            match (kind, p.position) {
+                (Some(kind), Ok(position)) => holdings.push(Holding {
                     kind,
                     instrument,
+                    figi: p.figi,
+                    instrument_uid: p.instrument_uid,
                     position,
                 }),
-                None => unsupported_positions.push(UnsupportedPosition {
+                (Some(_), Err(reason)) => skipped_positions.push(SkippedPosition {
+                    kind,
                     instrument,
-                    figi: position.figi,
-                    instrument_type: position.instrument_type,
+                    figi: p.figi,
+                    reason,
+                }),
+                (None, _) => skipped_positions.push(SkippedPosition {
+                    kind,
+                    instrument,
+                    figi: p.figi,
+                    reason: format!("Unsupported instrument type '{}'", p.instrument_type),
                 }),
             }
         }
         Self {
             account_id,
             holdings,
-            unsupported_positions,
+            skipped_positions,
         }
     }
 
-    /// Errors telling which positions of unsupported types the reports leave out.
+    /// Errors telling which positions the reports leave out and why.
     #[must_use]
-    pub fn unsupported(&self) -> Vec<eyre::Report> {
-        self.unsupported_positions
+    pub fn skipped(&self) -> Vec<eyre::Report> {
+        self.skipped_where(|_| true)
+    }
+
+    /// Errors about the positions of the kinds a report `covers` that it leaves out.
+    fn skipped_of(&self, covers: impl Fn(InstrumentKind) -> bool) -> Vec<eyre::Report> {
+        self.skipped_where(|kind| kind.is_some_and(&covers))
+    }
+
+    fn skipped_where(&self, include: impl Fn(Option<InstrumentKind>) -> bool) -> Vec<eyre::Report> {
+        self.skipped_positions
             .iter()
-            .map(|p| {
-                skipped(
-                    eyre::eyre!("Unsupported instrument type '{}'", p.instrument_type),
-                    &p.instrument,
-                    &p.figi,
-                )
-            })
+            .filter(|p| include(p.kind))
+            .map(|p| skipped(eyre::eyre!("{}", p.reason), &p.instrument, &p.figi))
             .collect()
     }
 }
@@ -206,8 +223,9 @@ impl<A: InvestApi> Reports<A> {
 
     /// Loads the portfolio of the account with instruments of its positions.
     ///
-    /// With `kind`, only positions of this kind are loaded; otherwise all of them,
-    /// and positions of unsupported types are kept for [`AccountPortfolio::unsupported`].
+    /// With `kind`, only positions of this kind are loaded; otherwise all of them.
+    /// Positions of unsupported types or without valid prices are kept for
+    /// [`AccountPortfolio::skipped`].
     /// Instruments that fail to load are named after the FIGI.
     ///
     /// # Errors
@@ -231,12 +249,12 @@ impl<A: InvestApi> Reports<A> {
     /// instruments that could not be loaded are absent from the result.
     async fn get_instruments_for_positions(
         &self,
-        positions: &[PortfolioPosition],
+        positions: &[AccountPosition],
     ) -> HashMap<String, Instrument> {
         self.parallel_for(
             positions,
             None,
-            |reports, position: PortfolioPosition| async move {
+            |reports, position: AccountPosition| async move {
                 let kind = InstrumentKind::from_api(&position.instrument_type);
                 let instrument = reports.api.instrument(&position.figi, kind).await;
                 (position.figi, instrument)
@@ -266,17 +284,14 @@ impl<A: InvestApi> Reports<A> {
             self.parallel_for(holdings, None, |reports, holding: Holding| async move {
                 let forecast = reports
                     .api
-                    .forecast(
-                        &holding.position.instrument_uid,
-                        holding.instrument.currency,
-                    )
+                    .forecast(&holding.instrument_uid, holding.instrument.currency)
                     .await;
                 (holding, forecast)
             }),
             self.api.fundamentals(&asset_uids),
         );
 
-        let mut failures = Vec::new();
+        let mut failures = portfolio.skipped_of(|k| k == InstrumentKind::Share);
         let fundamentals = fundamentals.unwrap_or_else(|e| {
             failures.push(e);
             HashMap::new()
@@ -285,7 +300,7 @@ impl<A: InvestApi> Reports<A> {
         for (holding, forecast) in forecasts {
             match forecast {
                 Ok(forecast) => {
-                    forecasts_by_figi.insert(holding.position.figi, forecast);
+                    forecasts_by_figi.insert(holding.figi, forecast);
                 }
                 Err(e) => {
                     let ticker = &holding.instrument.ticker;
@@ -297,7 +312,7 @@ impl<A: InvestApi> Reports<A> {
         let shares = holdings
             .iter()
             .map(|h| ShareAnalytics {
-                forecast: forecasts_by_figi.get(&h.position.figi).cloned().flatten(),
+                forecast: forecasts_by_figi.get(&h.figi).cloned().flatten(),
                 fundamentals: h
                     .instrument
                     .asset_uid
@@ -330,7 +345,7 @@ impl<A: InvestApi> Reports<A> {
             move |reports, holding: Holding| {
                 let fetch = Arc::clone(&fetch);
                 async move {
-                    let items = fetch(reports, holding.position.figi.clone()).await;
+                    let items = fetch(reports, holding.figi.clone()).await;
                     (holding, items)
                 }
             }
@@ -394,7 +409,7 @@ impl<A: InvestApi> Reports<A> {
     /// Builds a [`Portfolio`] by loading papers for each holding in parallel.
     ///
     /// Position money fields and operation totals are converted to RUB via FX rates.
-    /// Positions that failed to load or are unsupported are not included into the portfolio;
+    /// Positions that failed to load or were skipped are not included into the portfolio;
     /// their errors are returned alongside so the caller can tell the user that totals are
     /// incomplete. Bond details are loaded only with `output_papers`, since only paper cards
     /// show them.
@@ -432,7 +447,7 @@ impl<A: InvestApi> Reports<A> {
         }
 
         let mut loaded = Portfolio::new(output_papers);
-        let mut failures = portfolio.unsupported();
+        let mut failures = portfolio.skipped();
         for paper in papers {
             match paper {
                 Ok(paper) => loaded.add_loaded_paper(paper),
@@ -458,7 +473,7 @@ impl<A: InvestApi> Reports<A> {
         if with_bond_details && holding.kind == InstrumentKind::Bond {
             // Bond details are informational: the position stays in totals without them.
             paper.bond = self
-                .load_bond_info(&holding.position.figi, &paper.position, fx)
+                .load_bond_info(&holding.figi, &paper.position, fx)
                 .await
                 .ok();
         }
@@ -517,10 +532,8 @@ impl<A: InvestApi> Reports<A> {
         holding: &Holding,
         fx: &RubConverter<A>,
     ) -> color_eyre::Result<Paper<NoneProfit>> {
-        let portfolio_position = &holding.position;
-        // Portfolio is requested in RUB; the position keeps the currency it is exposed to.
-        let mut position = Position::try_from(portfolio_position)?;
-        ensure_rub(&position)?;
+        // Prices are in RUB; the position keeps the currency it is exposed to.
+        let mut position = holding.position;
 
         let instrument = holding.instrument.clone();
         if let Some(currency) = instrument.currency {
@@ -529,10 +542,7 @@ impl<A: InvestApi> Reports<A> {
 
         let executed_ops = self
             .api
-            .operations(
-                account_id,
-                OperationsFilter::Instrument(&portfolio_position.figi),
-            )
+            .operations(account_id, OperationsFilter::Instrument(&holding.figi))
             .await?;
 
         let totals = reduce(fx, &executed_ops).await?;
@@ -540,7 +550,7 @@ impl<A: InvestApi> Reports<A> {
         Ok(Paper {
             name: instrument.name,
             ticker: instrument.ticker,
-            figi: Figi::new(portfolio_position.figi.clone()),
+            figi: Figi::new(holding.figi.clone()),
             position,
             totals,
             profit: NoneProfit,
@@ -565,16 +575,16 @@ impl<A: InvestApi> Reports<A> {
     ) -> color_eyre::Result<(Calendar, Vec<eyre::Report>)> {
         let period = CalendarPeriod::days_ahead(Utc::now(), days);
         let fx = self.load_fx_rates().await?;
-        match kind {
+        let (calendar, mut failures) = match kind {
             CalendarKind::Dividends => {
                 let (calendar, failures) =
                     self.get_dividend_calendar(portfolio, &period, &fx).await?;
-                Ok((Calendar::Dividends(calendar), failures))
+                (Calendar::Dividends(calendar), failures)
             }
             CalendarKind::Coupons => {
                 let (calendar, failures) =
                     self.get_coupon_calendar(portfolio, &period, &fx).await?;
-                Ok((Calendar::Coupons(calendar), failures))
+                (Calendar::Coupons(calendar), failures)
             }
             CalendarKind::Combined => {
                 let (dividends, mut failures) =
@@ -582,12 +592,18 @@ impl<A: InvestApi> Reports<A> {
                 let (coupons, coupon_failures) =
                     self.get_coupon_calendar(portfolio, &period, &fx).await?;
                 failures.extend(coupon_failures);
-                Ok((
+                (
                     Calendar::Combined(CombinedCalendar::merge(dividends, coupons)),
                     failures,
-                ))
+                )
             }
-        }
+        };
+        failures.extend(portfolio.skipped_of(|k| match kind {
+            CalendarKind::Dividends => k.pays_dividends(),
+            CalendarKind::Coupons => k == InstrumentKind::Bond,
+            CalendarKind::Combined => k.pays_dividends() || k == InstrumentKind::Bond,
+        }));
+        Ok((calendar, failures))
     }
 
     /// History of operations with the instrument of `ticker` on the account, in RUB.
@@ -777,9 +793,9 @@ impl<A: InvestApi> Reports<A> {
                 // Future payments are converted at today's rate.
                 let dividend_per_share = fx.to_rub(dividend_per_share, period.from).await?;
 
-                let quantity = to_decimal(position.quantity.as_ref());
+                let quantity = position.quantity;
                 upcoming.push(DividendPayment {
-                    figi: Figi::new(position.figi.clone()),
+                    figi: Figi::new(holding.figi.clone()),
                     ticker: Ticker::new(instrument.ticker.as_str().to_string()),
                     name: instrument.name.clone(),
                     currency: Currency::RUB,
@@ -861,7 +877,7 @@ impl<A: InvestApi> Reports<A> {
                 let per_share = fx.to_rub(dividend_per_share(dividend), period.from).await?;
                 records.push(DividendRecord { date, per_share });
             }
-            let quantity = to_decimal(holding.position.quantity.as_ref());
+            let quantity = holding.position.quantity;
             items.extend(expected_dividends(
                 &records,
                 quantity,
@@ -870,18 +886,11 @@ impl<A: InvestApi> Reports<A> {
             ));
         }
 
-        // Unsupported positions are left out of the portfolio value, as out of the other reports.
-        failures.extend(portfolio.unsupported());
+        // Skipped positions are left out of the portfolio value, as out of the other reports.
+        failures.extend(portfolio.skipped());
         let mut portfolio_value = Money::zero(Currency::RUB);
         for holding in &portfolio.holdings {
-            let value = Position::try_from(&holding.position).and_then(|p| {
-                ensure_rub(&p)?;
-                Ok(p.current())
-            });
-            match value {
-                Ok(value) => portfolio_value += value,
-                Err(e) => failures.push(holding.skipped(e)),
-            }
+            portfolio_value += holding.position.current();
         }
 
         let forecast = IncomeForecast::new(period.from, period.until, &items, portfolio_value);
@@ -929,9 +938,9 @@ impl<A: InvestApi> Reports<A> {
 
                 let coupon_value = fx.to_rub(coupon_value, period.from).await?;
 
-                let quantity = to_decimal(position.quantity.as_ref());
+                let quantity = position.quantity;
                 upcoming.push(CouponPayment {
-                    figi: Figi::new(position.figi.clone()),
+                    figi: Figi::new(holding.figi.clone()),
                     ticker: Ticker::new(instrument.ticker.as_str().to_string()),
                     name: instrument.name.clone(),
                     currency: Currency::RUB,
@@ -1042,25 +1051,6 @@ fn tax_operation_kind(op: OperationType) -> Option<TaxOperationKind> {
         | OperationType::TaxRepoRefundProgressive => Some(TaxOperationKind::OtherTax),
         _ => None,
     }
-}
-
-/// Checks that position money values are in RUB as requested from the portfolio API,
-/// so a mismatch is reported instead of mixing currencies in totals.
-fn ensure_rub(position: &Position) -> color_eyre::Result<()> {
-    for money in [
-        position.average_buy_price,
-        position.current_instrument_price,
-        position.accrued_interest,
-        position.daily_yield,
-    ] {
-        if money.currency != Currency::RUB {
-            return Err(eyre::eyre!(
-                "Expected position prices in RUB, got {}",
-                money.currency.code()
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Totals of a paper's operations in RUB: income net of taxes, fees and cash flows.
@@ -1238,7 +1228,7 @@ mod tests {
     use rstest::rstest;
     use rust_decimal_macros::dec;
     use std::future::ready;
-    use t_invest_sdk::api::{IndicativeResponse, MoneyValue, Quotation};
+    use t_invest_sdk::api::{IndicativeResponse, MoneyValue};
 
     use crate::domain::{
         analytics::{Forecast, Fundamentals},
@@ -1250,7 +1240,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct FakeApi {
         accounts: Vec<Account>,
-        positions: Vec<PortfolioPosition>,
+        positions: Vec<AccountPosition>,
         instruments: HashMap<String, Instrument>,
         found: Vec<InstrumentShort>,
         /// Operations by FIGI.
@@ -1302,7 +1292,7 @@ mod tests {
         fn portfolio_positions(
             &self,
             _: &str,
-        ) -> impl Future<Output = color_eyre::Result<Vec<PortfolioPosition>>> + Send {
+        ) -> impl Future<Output = color_eyre::Result<Vec<AccountPosition>>> + Send {
             ready(Ok(self.positions.clone()))
         }
 
@@ -1415,14 +1405,23 @@ mod tests {
     }
 
     /// Position of `quantity` units bought and priced at `price` RUB.
-    fn priced(figi: &str, instrument_type: &str, quantity: i64, price: i64) -> PortfolioPosition {
-        PortfolioPosition {
-            quantity: Some(Quotation {
-                units: quantity,
-                nano: 0,
+    fn priced(figi: &str, instrument_type: &str, quantity: i64, price: i64) -> AccountPosition {
+        let price = Money::from_value(Decimal::from(price), Currency::RUB);
+        AccountPosition {
+            position: Ok(Position {
+                average_buy_price: price,
+                current_instrument_price: price,
+                quantity: Decimal::from(quantity),
+                ..position_in(Currency::RUB)
             }),
-            average_position_price: Some(rub(price)),
-            current_price: Some(rub(price)),
+            ..portfolio_position(figi, instrument_type)
+        }
+    }
+
+    /// Position the API gave no valid prices of.
+    fn unpriced(figi: &str, instrument_type: &str) -> AccountPosition {
+        AccountPosition {
+            position: Err("Failed to get current price".to_string()),
             ..portfolio_position(figi, instrument_type)
         }
     }
@@ -1460,11 +1459,12 @@ mod tests {
         assert_eq!(totals.additional_profit.currency, Currency::RUB);
     }
 
-    fn portfolio_position(figi: &str, instrument_type: &str) -> PortfolioPosition {
-        PortfolioPosition {
+    fn portfolio_position(figi: &str, instrument_type: &str) -> AccountPosition {
+        AccountPosition {
             figi: figi.to_string(),
+            instrument_uid: String::new(),
             instrument_type: instrument_type.to_string(),
-            ..Default::default()
+            position: Ok(position_in(Currency::RUB)),
         }
     }
 
@@ -1494,13 +1494,7 @@ mod tests {
         let holdings: Vec<_> = portfolio
             .holdings
             .iter()
-            .map(|h| {
-                (
-                    h.kind,
-                    h.instrument.ticker.as_str(),
-                    h.position.figi.as_str(),
-                )
-            })
+            .map(|h| (h.kind, h.instrument.ticker.as_str(), h.figi.as_str()))
             .collect();
         assert_eq!(
             holdings,
@@ -1509,7 +1503,7 @@ mod tests {
                 (InstrumentKind::Bond, "FIGI2", "FIGI2"),
             ]
         );
-        assert!(portfolio.unsupported().is_empty());
+        assert!(portfolio.skipped().is_empty());
     }
 
     #[test]
@@ -1528,7 +1522,7 @@ mod tests {
         assert_eq!(portfolio.holdings.len(), 1);
         assert_eq!(portfolio.holdings[0].kind, InstrumentKind::Etf);
         let messages: Vec<_> = portfolio
-            .unsupported()
+            .skipped()
             .iter()
             .map(|e| format!("{e:#}"))
             .collect();
@@ -1539,14 +1533,14 @@ mod tests {
     }
 
     #[test]
-    fn account_portfolio_reports_unsupported_positions_on_every_call() {
+    fn account_portfolio_reports_skipped_positions_on_every_call() {
         // Arrange
         let positions = vec![portfolio_position("OPT1", "option")];
         let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
 
         // Act
-        let first = portfolio.unsupported();
-        let second = portfolio.unsupported();
+        let first = portfolio.skipped();
+        let second = portfolio.skipped();
 
         // Assert
         assert_eq!(first.len(), 1);
@@ -1594,7 +1588,9 @@ mod tests {
             .map(|figi| Holding {
                 kind: InstrumentKind::Share,
                 instrument: instrument_or_figi(&HashMap::new(), figi),
-                position: portfolio_position(figi, "share"),
+                figi: (*figi).to_string(),
+                instrument_uid: String::new(),
+                position: position_in(Currency::RUB),
             })
             .collect()
     }
@@ -1619,7 +1615,7 @@ mod tests {
         // Assert
         let results: HashMap<_, _> = results
             .into_iter()
-            .map(|(holding, items)| (holding.position.figi, items))
+            .map(|(holding, items)| (holding.figi, items))
             .collect();
         assert_eq!(results.len(), 2);
         assert_eq!(results["OK"].as_ref().ok(), Some(&vec!["OK".to_string()]));
@@ -1658,28 +1654,56 @@ mod tests {
     }
 
     #[test]
-    fn ensure_rub_accepts_rub_prices() {
+    fn account_portfolio_sets_positions_without_valid_prices_aside() {
         // Arrange
-        let position = position_in(Currency::RUB);
+        let positions = vec![
+            unpriced("FIGI1", "share"),
+            portfolio_position("FIGI2", "bond"),
+        ];
 
         // Act
-        let result = ensure_rub(&position);
+        let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
 
         // Assert
-        assert!(result.is_ok());
+        let figis: Vec<_> = portfolio.holdings.iter().map(|h| h.figi.as_str()).collect();
+        assert_eq!(figis, ["FIGI2"]);
+        let messages: Vec<_> = portfolio
+            .skipped()
+            .iter()
+            .map(|e| format!("{e:#}"))
+            .collect();
+        assert_eq!(
+            messages,
+            ["Position FIGI1 (FIGI1) skipped: Failed to get current price"]
+        );
     }
 
-    #[test]
-    fn ensure_rub_rejects_foreign_prices() {
+    #[rstest]
+    #[case::shares(InstrumentKind::Share, &["S1"])]
+    #[case::bonds(InstrumentKind::Bond, &["B1"])]
+    #[case::futures(InstrumentKind::Future, &[])]
+    fn account_portfolio_reports_skipped_positions_of_covered_kinds(
+        #[case] covered: InstrumentKind,
+        #[case] expected: &[&str],
+    ) {
         // Arrange
-        let position = position_in(Currency::USD);
+        let positions = vec![
+            unpriced("S1", "share"),
+            unpriced("B1", "bond"),
+            portfolio_position("OPT1", "option"),
+        ];
+        let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
 
         // Act
-        let result = ensure_rub(&position);
+        let skipped = portfolio.skipped_of(|k| k == covered);
 
         // Assert
-        let message = format!("{:#}", result.err().unwrap());
-        assert_eq!(message, "Expected position prices in RUB, got USD");
+        let messages: Vec<_> = skipped.iter().map(ToString::to_string).collect();
+        let expected: Vec<_> = expected
+            .iter()
+            .map(|figi| format!("Position {figi} ({figi}) skipped"))
+            .collect();
+        assert_eq!(messages, expected);
     }
 
     #[test]
@@ -2202,6 +2226,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn dividend_calendar_reports_skipped_shares_only() {
+        // Arrange
+        let api = FakeApi {
+            positions: vec![
+                unpriced("S1", "share"),
+                unpriced("B1", "bond"),
+                portfolio_position("OPT1", "option"),
+            ],
+            ..api()
+        };
+        let reports = Reports::new(api);
+        let portfolio = reports.load_portfolio(&broker(), None).await.unwrap();
+
+        // Act
+        let (_, failures) = reports
+            .get_calendar(&portfolio, CalendarKind::Dividends, 365)
+            .await
+            .unwrap();
+
+        // Assert
+        let messages: Vec<_> = failures.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, ["Position S1 (S1) skipped"]);
+    }
+
     fn coupon(date: DateTime<Utc>, per_bond: i64) -> BondEvent {
         BondEvent {
             kind: BondEventKind::Coupon,
@@ -2368,7 +2417,7 @@ mod tests {
     #[tokio::test]
     async fn share_analytics_reports_forecasts_failed_to_load() {
         // Arrange
-        let share = |figi: &str, uid: &str| PortfolioPosition {
+        let share = |figi: &str, uid: &str| AccountPosition {
             instrument_uid: uid.to_string(),
             ..priced(figi, "share", 1, 100)
         };
