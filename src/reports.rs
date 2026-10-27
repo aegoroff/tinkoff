@@ -23,10 +23,10 @@ use crate::{
         fx::{DailyCloses, RubConverter},
         history::{History, HistoryItem, HistoryPrice},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
-        lots::{LotBook, PositionSale, SaleTaxReport, Trade, TradeKind, YearIncome},
+        lots::{LotBook, PositionSale, SaleTaxReport, SecuritySales, Trade, TradeKind, YearIncome},
         moscow_date,
         operation::{Operation, OperationKind},
-        tax::{TaxOperation, TaxReport},
+        tax::{TaxOperation, TaxOperationKind, TaxReport},
         xirr::CashFlow,
     },
     progress::Progress,
@@ -548,27 +548,43 @@ impl<A: InvestApi> Reports<A> {
 
         let year = moscow_date(now).year();
         let mut trades: HashMap<&str, Vec<Trade>> = HashMap::new();
+        let mut tickers: HashMap<&str, &str> = HashMap::new();
         let mut year_income = YearIncome::zero();
         for op in operations.iter().unique_by(|op| &op.id) {
-            if matches!(op.kind, OperationKind::Dividend | OperationKind::Coupon) {
-                if let Some(payment) = op.payment.filter(|_| moscow_date(op.date).year() == year) {
+            let Some(payment) = op.payment else {
+                continue;
+            };
+            match op.kind {
+                OperationKind::Dividend | OperationKind::Coupon
+                    if moscow_date(op.date).year() == year =>
+                {
                     year_income.payments += fx.to_rub(payment, op.date).await?;
                 }
-            } else if op.instrument_kind.is_some_and(is_lot_kind)
-                && let Some(trade) = lot_trade(&fx, op).await?
-            {
-                trades.entry(op.figi.as_str()).or_default().push(trade);
+                OperationKind::OtherTax => {
+                    let amount = fx.to_rub(payment, op.date).await?;
+                    let tax = TaxOperation {
+                        date: op.date,
+                        kind: TaxOperationKind::OtherTax,
+                        amount,
+                    };
+                    if tax.tax_year() == year {
+                        year_income.withheld -= amount;
+                    }
+                }
+                _ if op.instrument_kind.is_some_and(is_lot_kind) => {
+                    if let Some(trade) = lot_trade(&fx, op).await? {
+                        trades.entry(op.figi.as_str()).or_default().push(trade);
+                        tickers.insert(op.figi.as_str(), op.ticker.as_str());
+                    }
+                }
+                _ => {}
             }
         }
         let books: HashMap<&str, LotBook> = trades
             .into_iter()
             .map(|(figi, trades)| (figi, LotBook::new(trades)))
             .collect();
-        year_income.securities = books
-            .values()
-            .flat_map(|b| &b.realized)
-            .filter(|r| moscow_date(r.date).year() == year)
-            .fold(Money::zero(Currency::RUB), |acc, r| acc + r.result);
+        year_income.sales = year_sales(&books, &tickers, year);
 
         let holdings = portfolio
             .holdings
@@ -1116,14 +1132,40 @@ fn trade_commission(op: &Operation) -> Option<Money> {
     (!commission.value.is_zero()).then_some(commission)
 }
 
-/// Operations the sale tax report needs: trades and income of the year.
-const SALE_TAX_OPERATIONS: [OperationKind; 5] = [
+/// Operations the sale tax report needs: trades, income and taxes of the year.
+const SALE_TAX_OPERATIONS: [OperationKind; 6] = [
     OperationKind::Buy,
     OperationKind::Sell,
     OperationKind::Repayment,
     OperationKind::Dividend,
     OperationKind::Coupon,
+    OperationKind::OtherTax,
 ];
+
+/// Sales of `year` by security, named by `tickers` or FIGI.
+fn year_sales(
+    books: &HashMap<&str, LotBook>,
+    tickers: &HashMap<&str, &str>,
+    year: i32,
+) -> Vec<SecuritySales> {
+    books
+        .iter()
+        .filter_map(|(figi, book)| {
+            let lots = book
+                .realized
+                .iter()
+                .filter(|r| moscow_date(r.date).year() == year)
+                .flat_map(|r| r.lots.iter().copied())
+                .collect_vec();
+            (!lots.is_empty()).then(|| SecuritySales {
+                ticker: tickers.get(figi).copied().unwrap_or(figi).to_string(),
+                lots,
+                complete: book.complete,
+            })
+        })
+        .sorted_by(|a, b| a.ticker.cmp(&b.ticker))
+        .collect()
+}
 
 /// Kinds of instruments that are sold by lots and taxed on sale.
 fn is_lot_kind(kind: InstrumentKind) -> bool {
@@ -2022,6 +2064,7 @@ mod tests {
             state: OperationState::Executed,
             date: "2026-09-25T09:00:00Z".parse().unwrap(),
             figi: String::new(),
+            ticker: String::new(),
             instrument_kind,
             payment: Some(payment),
             commission: None,
@@ -2666,6 +2709,7 @@ mod tests {
         Operation {
             id: format!("{figi}-{date}-{kind:?}"),
             figi: figi.to_string(),
+            ticker: figi.to_string(),
             date: format!("{date}T09:00:00Z").parse().unwrap(),
             quantity,
             ..operation(kind, Some(InstrumentKind::Share), rub(payment))
@@ -2712,6 +2756,13 @@ mod tests {
                     ],
                 ),
                 ("USD".to_string(), vec![currency_buy]),
+                (
+                    String::new(),
+                    vec![
+                        lot_operation("", OperationKind::OtherTax, "2026-05-01", 0, -50),
+                        lot_operation("", OperationKind::OtherTax, "2026-01-01", 0, -77),
+                    ],
+                ),
             ]),
             ..api()
         }
@@ -2737,7 +2788,15 @@ mod tests {
         let tickers: Vec<&str> = report.positions.iter().map(|p| p.ticker.as_str()).collect();
         assert_eq!(tickers, ["SBER", "SU26238"]);
         assert_eq!(report.unknown().count(), 1);
-        assert_eq!(report.year_income.securities.value, dec!(990));
+        assert_eq!(report.year_income.securities().value, dec!(990));
+        let sold: Vec<&str> = report
+            .year_income
+            .sales
+            .iter()
+            .map(|s| s.ticker.as_str())
+            .collect();
+        assert_eq!(sold, ["F1"]);
+        assert_eq!(report.year_income.withheld.value, dec!(50));
         assert_eq!(report.year_income.payments.value, dec!(90));
         assert_eq!(report.cost().value, dec!(2505));
         assert_eq!(report.result().value, dec!(1995));

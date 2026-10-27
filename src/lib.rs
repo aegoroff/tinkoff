@@ -308,6 +308,7 @@ impl From<OperationItem> for Operation {
             state,
             date: to_datetime_utc(op.date.as_ref()),
             figi: op.figi,
+            ticker: op.ticker,
             instrument_kind: InstrumentKind::from_api(&op.instrument_type),
             payment: to_money(op.payment.as_ref()),
             commission: to_money(op.commission.as_ref()),

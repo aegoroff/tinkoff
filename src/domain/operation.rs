@@ -94,6 +94,8 @@ pub struct Operation {
     pub date: DateTime<Utc>,
     /// FIGI of the instrument; empty for operations without one
     pub figi: String,
+    /// Ticker of the instrument; empty for operations without one
+    pub ticker: String,
     /// Kind of the instrument; `None` for operations without one or of an unsupported one
     pub instrument_kind: Option<InstrumentKind>,
     /// `None` when the API gave no amount or one of an unknown currency.

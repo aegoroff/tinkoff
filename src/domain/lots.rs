@@ -53,11 +53,11 @@ pub struct Lot {
     pub cost: Money,
 }
 
-/// Result of a sale: proceeds minus the cost of the lots it closed, in RUB.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Sale with the parts of lots it closed, priced at its proceeds.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RealizedSale {
     pub date: DateTime<Utc>,
-    pub result: Money,
+    pub lots: Vec<LotSale>,
 }
 
 /// Lots of a security left after its trades are matched by FIFO.
@@ -103,7 +103,7 @@ impl LotBook {
 
     fn sell(&mut self, trade: &Trade) {
         let mut left = trade.quantity;
-        let mut cost = Money::zero(trade.amount.currency);
+        let mut closed = Vec::new();
         while left > Decimal::ZERO {
             let Some(lot) = self.lots.first_mut() else {
                 self.complete = false;
@@ -111,7 +111,11 @@ impl LotBook {
             };
             let taken = left.min(lot.quantity);
             let taken_cost = lot.cost * (taken / lot.quantity);
-            cost += taken_cost;
+            closed.push(Lot {
+                bought: lot.bought,
+                quantity: taken,
+                cost: taken_cost,
+            });
             lot.cost -= taken_cost;
             lot.quantity -= taken;
             left -= taken;
@@ -119,14 +123,17 @@ impl LotBook {
                 self.lots.remove(0);
             }
         }
-        let sold = trade.quantity - left;
-        if sold.is_zero() {
+        if closed.is_empty() {
             return;
         }
-        let proceeds = trade.amount * (sold / trade.quantity);
+        let price = trade.amount / trade.quantity;
+        let sold = moscow_date(trade.date);
         self.realized.push(RealizedSale {
             date: trade.date,
-            result: proceeds - cost,
+            lots: closed
+                .iter()
+                .map(|l| LotSale::new(l, price, sold))
+                .collect(),
         });
     }
 
@@ -221,32 +228,112 @@ pub fn ldv_exemption<'a>(lots: impl IntoIterator<Item = &'a LotSale>) -> Money {
     rub(gain.min(limit))
 }
 
-/// Investment income of the year before the sale, in RUB.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+fn sum_lots<'a>(
+    lots: impl IntoIterator<Item = &'a LotSale>,
+    amount: impl Fn(&LotSale) -> Money,
+) -> Money {
+    lots.into_iter()
+        .fold(rub(Decimal::ZERO), |acc, l| acc + amount(l))
+}
+
+/// Sales of a security this year.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecuritySales {
+    pub ticker: String,
+    /// Parts of lots the sales closed
+    pub lots: Vec<LotSale>,
+    /// `false` when some sales had no lots to close, so the cost of the others may be wrong
+    pub complete: bool,
+}
+
+impl SecuritySales {
+    #[must_use]
+    pub fn quantity(&self) -> Decimal {
+        self.lots.iter().map(|l| l.quantity).sum()
+    }
+
+    #[must_use]
+    pub fn proceeds(&self) -> Money {
+        sum_lots(&self.lots, |l| l.value)
+    }
+
+    #[must_use]
+    pub fn cost(&self) -> Money {
+        sum_lots(&self.lots, |l| l.cost)
+    }
+
+    #[must_use]
+    pub fn result(&self) -> Money {
+        sum_lots(&self.lots, LotSale::result)
+    }
+
+    /// Units sold from exempt lots.
+    #[must_use]
+    pub fn ldv_quantity(&self) -> Decimal {
+        self.lots.iter().filter(|l| l.ldv).map(|l| l.quantity).sum()
+    }
+}
+
+/// Investment income of the current year, in RUB.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YearIncome {
-    /// Result of sales of securities; a loss offsets only gains on securities
-    pub securities: Money,
+    pub sales: Vec<SecuritySales>,
     /// Dividends and coupons
     pub payments: Money,
+    /// Tax withheld other than from dividends and coupons, mostly from sales
+    pub withheld: Money,
 }
 
 impl YearIncome {
     #[must_use]
     pub fn zero() -> Self {
         Self {
-            securities: rub(Decimal::ZERO),
+            sales: Vec::new(),
             payments: rub(Decimal::ZERO),
+            withheld: rub(Decimal::ZERO),
         }
     }
 
-    /// Tax the year income grows by when securities with `taxable` result are sold;
-    /// negative when a loss offsets gains of earlier sales.
+    fn sold(&self) -> impl Iterator<Item = &LotSale> {
+        self.sales.iter().flat_map(|s| &s.lots)
+    }
+
+    /// Result of sales; a loss offsets only gains of securities.
     #[must_use]
-    pub fn sale_tax(&self, taxable: Money) -> Money {
-        let base = |securities: Money| self.payments.value + securities.value.max(Decimal::ZERO);
-        let before = income_tax(base(self.securities));
-        let after = income_tax(base(self.securities + taxable));
-        rub(after - before)
+    pub fn securities(&self) -> Money {
+        sum_lots(self.sold(), LotSale::result)
+    }
+
+    /// Result of sales exempt by the long-term holding benefit.
+    #[must_use]
+    pub fn ldv_exemption(&self) -> Money {
+        ldv_exemption(self.sold())
+    }
+
+    /// Tax on the result of sales.
+    #[must_use]
+    pub fn securities_tax(&self) -> Money {
+        rub(self.tax_with(&[]) - income_tax(self.payments.value))
+    }
+
+    /// Tax the year grows by when `lots` are sold too; negative when their loss
+    /// offsets gains of the sales.
+    #[must_use]
+    pub fn sale_tax(&self, lots: &[LotSale]) -> Money {
+        rub(self.tax_with(lots) - self.tax_with(&[]))
+    }
+
+    /// Exemption the year grows by when `lots` are sold too.
+    #[must_use]
+    pub fn sale_ldv_exemption(&self, lots: &[LotSale]) -> Money {
+        ldv_exemption(self.sold().chain(lots)) - self.ldv_exemption()
+    }
+
+    /// Tax on investment income of the year with `lots` sold too.
+    fn tax_with(&self, lots: &[LotSale]) -> Decimal {
+        let sold = || self.sold().chain(lots);
+        let taxable = sum_lots(sold(), LotSale::result) - ldv_exemption(sold());
+        income_tax(self.payments.value + taxable.value.max(Decimal::ZERO))
     }
 }
 
@@ -347,12 +434,6 @@ impl PositionSale {
             .sum()
     }
 
-    /// Result exempt when this position alone is sold.
-    #[must_use]
-    pub fn ldv_exemption(&self) -> Money {
-        ldv_exemption(self.lots())
-    }
-
     /// Earliest date a lot that is not exempt yet becomes exempt and the units it adds.
     #[must_use]
     pub fn next_ldv(&self) -> Option<(NaiveDate, Decimal)> {
@@ -372,10 +453,18 @@ impl PositionSale {
     }
 
     fn sum(&self, amount: impl Fn(&LotSale) -> Money) -> Money {
-        self.lots()
-            .iter()
-            .fold(rub(Decimal::ZERO), |acc, l| acc + amount(l))
+        sum_lots(self.lots(), amount)
     }
+}
+
+/// Sale of the earliest lots of a position that saves the most tax by offsetting
+/// gains of this year's sales.
+pub struct Harvest<'a> {
+    pub position: &'a PositionSale,
+    pub quantity: Decimal,
+    pub result: Money,
+    /// Tax saved, positive
+    pub saving: Money,
 }
 
 /// Tax due if portfolio securities were sold now.
@@ -417,27 +506,69 @@ impl SaleTaxReport {
         self.sum(PositionSale::result)
     }
 
-    /// Result exempt when all positions are sold together.
+    /// Lots of all positions with known cost.
+    fn known_lots(&self) -> Vec<LotSale> {
+        self.known().flat_map(PositionSale::lots).copied().collect()
+    }
+
+    /// Result exempt in addition to this year's sales when all positions are sold.
     #[must_use]
     pub fn ldv_exemption(&self) -> Money {
-        ldv_exemption(self.known().flat_map(PositionSale::lots))
+        self.year_income.sale_ldv_exemption(&self.known_lots())
     }
 
     /// Tax due when all positions with known cost are sold together.
     #[must_use]
     pub fn tax(&self) -> Money {
-        self.tax_of(self.result() - self.ldv_exemption())
+        self.tax_of(&self.known_lots())
     }
 
     /// Tax due when only `position` is sold.
     #[must_use]
     pub fn position_tax(&self, position: &PositionSale) -> Money {
-        self.tax_of(position.result() - position.ldv_exemption())
+        self.tax_of(position.lots())
     }
 
-    fn tax_of(&self, taxable: Money) -> Money {
+    /// Tax on this year's sales; zero when sales are not taxed.
+    #[must_use]
+    pub fn year_tax(&self) -> Money {
         if self.taxed {
-            self.year_income.sale_tax(taxable)
+            self.year_income.securities_tax()
+        } else {
+            rub(Decimal::ZERO)
+        }
+    }
+
+    /// Sales of positions that save tax by offsetting gains of this year's sales,
+    /// the biggest saving first. Savings do not add up, since they offset the same gains.
+    ///
+    /// The broker sells the earliest lots first, so of every position the number of
+    /// its earliest lots is picked whose sale saves the most.
+    #[must_use]
+    pub fn harvest(&self) -> Vec<Harvest<'_>> {
+        let mut harvest: Vec<Harvest> = self
+            .known()
+            .filter_map(|position| {
+                let lots = position.lots();
+                let (count, tax) = (1..=lots.len())
+                    .map(|count| (count, self.tax_of(&lots[..count])))
+                    .min_by_key(|(_, tax)| tax.value)?;
+                let sold = &lots[..count];
+                (tax.value < Decimal::ZERO).then(|| Harvest {
+                    position,
+                    quantity: sold.iter().map(|l| l.quantity).sum(),
+                    result: sum_lots(sold, LotSale::result),
+                    saving: rub(-tax.value),
+                })
+            })
+            .collect();
+        harvest.sort_by_key(|h| std::cmp::Reverse(h.saving.value));
+        harvest
+    }
+
+    fn tax_of(&self, lots: &[LotSale]) -> Money {
+        if self.taxed {
+            self.year_income.sale_tax(lots)
         } else {
             rub(Decimal::ZERO)
         }
@@ -481,6 +612,10 @@ mod tests {
         LotSale::new(&lot, rub(Decimal::from(value)), day(sold))
     }
 
+    fn realized_result(sale: &RealizedSale) -> Decimal {
+        sum_lots(&sale.lots, LotSale::result).value
+    }
+
     #[test]
     fn lot_book_sale_closes_earliest_lots_first() {
         // Arrange
@@ -499,7 +634,7 @@ mod tests {
         assert_eq!(book.lots[0].bought, at("2024-03-01"));
         assert_eq!(book.lots[0].quantity, dec!(5));
         assert_eq!(book.lots[0].cost.value, dec!(1000));
-        assert_eq!(book.realized[0].result.value, dec!(2500));
+        assert_eq!(realized_result(&book.realized[0]), dec!(2500));
     }
 
     #[test]
@@ -516,7 +651,7 @@ mod tests {
         // Assert
         assert!(!book.complete);
         assert_eq!(book.quantity(), Decimal::ZERO);
-        assert_eq!(book.realized[0].result.value, dec!(500));
+        assert_eq!(realized_result(&book.realized[0]), dec!(500));
     }
 
     #[test]
@@ -634,6 +769,26 @@ mod tests {
         assert_eq!(tax, expected);
     }
 
+    /// Lot bought this year, not exempt, sold with `result`.
+    fn recent(result: Decimal) -> LotSale {
+        LotSale {
+            value: rub(dec!(10_000) + result),
+            ..lot_sale("2025-01-10", 10_000, 0, "2025-10-01")
+        }
+    }
+
+    fn year(sold: &[LotSale], payments: Decimal) -> YearIncome {
+        YearIncome {
+            sales: vec![SecuritySales {
+                ticker: "SBER".to_string(),
+                lots: sold.to_vec(),
+                complete: true,
+            }],
+            payments: rub(payments),
+            withheld: rub(Decimal::ZERO),
+        }
+    }
+
     #[rstest]
     #[case::no_income(dec!(0), dec!(0), dec!(1000), dec!(130))]
     #[case::crosses_threshold(dec!(0), dec!(2_399_000), dec!(2000), dec!(280))]
@@ -647,16 +802,53 @@ mod tests {
         #[case] expected: Decimal,
     ) {
         // Arrange
-        let income = YearIncome {
-            securities: rub(securities),
-            payments: rub(payments),
-        };
+        let income = year(&[recent(securities)], payments);
 
         // Act
-        let tax = income.sale_tax(rub(taxable));
+        let tax = income.sale_tax(&[recent(taxable)]);
 
         // Assert
         assert_eq!(tax.value, expected);
+    }
+
+    #[test]
+    fn year_income_loss_does_not_offset_exempt_gain() {
+        // Arrange
+        let exempt = lot_sale("2020-01-10", 100, 1100, "2025-10-01");
+        let income = year(&[exempt], dec!(0));
+
+        // Act
+        let tax = income.sale_tax(&[recent(dec!(-400))]);
+
+        // Assert
+        assert_eq!(income.ldv_exemption().value, dec!(1000));
+        assert_eq!(tax.value, Decimal::ZERO);
+    }
+
+    #[test]
+    fn year_income_shares_ldv_exemption_with_sale() {
+        // Arrange
+        let income = year(&[lot_sale("2020-01-10", 100, 1100, "2025-10-01")], dec!(0));
+        let sale = [lot_sale("2021-01-10", 100, 600, "2025-10-01")];
+
+        // Act
+        let exemption = income.sale_ldv_exemption(&sale);
+
+        // Assert
+        assert_eq!(exemption.value, dec!(500));
+    }
+
+    #[test]
+    fn year_income_securities_tax_is_over_payments() {
+        // Arrange
+        let income = year(&[recent(dec!(1000))], dec!(2_400_000));
+
+        // Act
+        let tax = income.securities_tax();
+
+        // Assert
+        assert_eq!(income.securities().value, dec!(1000));
+        assert_eq!(tax.value, dec!(150));
     }
 
     fn position(trades: &[Trade], quantity: i64, price: i64) -> PositionSale {
@@ -686,7 +878,6 @@ mod tests {
         assert_eq!(sale.value().value, dec!(4000));
         assert_eq!(sale.result().value, dec!(0));
         assert_eq!(sale.ldv_quantity(), dec!(10));
-        assert_eq!(sale.ldv_exemption().value, dec!(1000));
         assert_eq!(sale.next_ldv(), Some((day("2027-01-11"), dec!(10))));
     }
 
@@ -761,12 +952,55 @@ mod tests {
             600,
         )];
         let mut report = report(positions, true);
-        report.year_income.securities = rub(dec!(1000));
+        report.year_income = year(&[recent(dec!(1000))], dec!(0));
 
         // Act
         let tax = report.position_tax(&report.positions[0]);
 
         // Assert
         assert_eq!(tax.value, dec!(-52));
+    }
+
+    fn harvest_report(taxed: bool) -> SaleTaxReport {
+        let losing = position(
+            &[
+                trade("2025-01-10", TradeKind::Buy, 1, 1300),
+                trade("2025-02-10", TradeKind::Buy, 1, 500),
+                trade("2025-03-10", TradeKind::Buy, 1, 3000),
+            ],
+            3,
+            1000,
+        );
+        let gaining = position(&[trade("2025-01-10", TradeKind::Buy, 1, 100)], 1, 1000);
+        let mut report = report(vec![losing, gaining], taxed);
+        report.year_income = year(&[recent(dec!(1000))], dec!(0));
+        report
+    }
+
+    #[test]
+    fn harvest_picks_earliest_lots_saving_most() {
+        // Arrange
+        let report = harvest_report(true);
+
+        // Act
+        let harvest = report.harvest();
+
+        // Assert
+        assert_eq!(harvest.len(), 1);
+        assert_eq!(harvest[0].quantity, dec!(3));
+        assert_eq!(harvest[0].result.value, dec!(-1800));
+        assert_eq!(harvest[0].saving.value, dec!(130));
+    }
+
+    #[test]
+    fn harvest_of_untaxed_account_is_empty() {
+        // Arrange
+        let report = harvest_report(false);
+
+        // Act
+        let harvest = report.harvest();
+
+        // Assert
+        assert!(harvest.is_empty());
     }
 }

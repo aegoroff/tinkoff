@@ -15,7 +15,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 📐 **Returns**: Annual return (XIRR) per position, asset type and portfolio; yield to maturity and to offer, duration and rate sensitivity for bonds
 - 📋 **Trading History**: Detailed history of all trading operations
 - 🧾 **Taxes**: Dividends, coupons and taxes withheld by the broker by year
-- 🧮 **Tax on Sale**: FIFO lots with the tax due if positions were sold now, the long-term holding exemption (LDV) and when lots become exempt
+- 🧮 **Tax on Sale**: FIFO lots with the tax due if positions were sold now, the long-term holding exemption (LDV) and when lots become exempt, this year's sales and tax left to withhold, loss harvesting candidates
 - 🏁 **Benchmarks**: Returns compared with the same payments invested into IMOEX, MCFTR, RGBI and RGBITR indices
 - 🔭 **Share Analytics**: Analyst consensus forecasts and fundamentals (P/E, P/B, EV/EBITDA, ROE, dividend yield) of portfolio shares
 - 🎯 **Risk Analysis**: Portfolio risk metrics, currency and sector allocation, rebalancing recommendations

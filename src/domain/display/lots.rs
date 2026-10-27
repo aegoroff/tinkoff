@@ -5,7 +5,7 @@ use std::fmt::Display;
 use comfy_table::{Attribute, Cell, Table};
 use rust_decimal::Decimal;
 
-use super::super::lots::{Basis, PositionSale, SaleTaxReport};
+use super::super::lots::{Basis, Harvest, PositionSale, SaleTaxReport};
 use crate::ux;
 
 fn title(text: String) -> Cell {
@@ -69,23 +69,72 @@ fn create_positions_table(report: &SaleTaxReport) -> Table {
     table
 }
 
+fn create_sales_table(report: &SaleTaxReport) -> Table {
+    let sales = &report.year_income.sales;
+    let mut table = ux::new_table();
+    table.set_header([title("Sales This Year".to_string())]);
+    header(
+        &mut table,
+        ["Ticker", "Qty", "Proceeds", "Cost", "Result", "LDV qty"],
+    );
+    for sale in sales {
+        let ticker = if sale.complete {
+            sale.ticker.clone()
+        } else {
+            format!("{} *", sale.ticker)
+        };
+        table.add_row([
+            Cell::new(ticker),
+            Cell::new(quantity(sale.quantity())),
+            Cell::new(sale.proceeds()),
+            Cell::new(sale.cost()),
+            ux::colored_cell(sale.result()),
+            Cell::new(quantity(sale.ldv_quantity())),
+        ]);
+    }
+    table
+}
+
+fn create_harvest_table(harvest: &[Harvest]) -> Table {
+    let mut table = ux::new_table();
+    table.set_header([title("Loss Harvesting".to_string())]);
+    header(
+        &mut table,
+        ["Ticker", "Name", "Sell qty", "Result", "Tax saving"],
+    );
+    for h in harvest {
+        table.add_row([
+            Cell::new(&h.position.ticker),
+            Cell::new(&h.position.name),
+            Cell::new(quantity(h.quantity)),
+            ux::colored_cell(h.result),
+            Cell::new(h.saving),
+        ]);
+    }
+    table
+}
+
 fn create_summary_table(report: &SaleTaxReport) -> Table {
+    let year = &report.year_income;
     let mut table = ux::new_table();
     table.set_header([title("Summary".to_string()), Cell::new("")]);
-    ux::add_row_colorized(
-        &mut table,
-        "Sales result this year",
-        report.year_income.securities,
-    );
-    ux::add_row(
-        &mut table,
-        "Dividends and coupons this year",
-        report.year_income.payments,
-    );
+    ux::add_row(&mut table, "Dividends and coupons this year", year.payments);
+    ux::add_row_colorized(&mut table, "Sales result this year", year.securities());
+    ux::add_row(&mut table, "Exempt by LDV this year", year.ldv_exemption());
+    if report.taxed {
+        let tax = report.year_tax();
+        ux::add_row(&mut table, "Tax on sales this year", tax);
+        ux::add_row(&mut table, "Withheld this year", year.withheld);
+        ux::add_row(&mut table, "Left to withhold", tax - year.withheld);
+    }
     ux::add_row(&mut table, "Cost of positions", report.cost());
     ux::add_row(&mut table, "Value of positions", report.value());
     ux::add_row_colorized(&mut table, "Result if sold now", report.result());
-    ux::add_row(&mut table, "Exempt by LDV", report.ldv_exemption());
+    ux::add_row(
+        &mut table,
+        "Exempt by LDV if sold now",
+        report.ldv_exemption(),
+    );
     if report.taxed {
         ux::add_row(&mut table, "Tax if sold now", report.tax());
     } else {
@@ -100,6 +149,13 @@ impl Display for SaleTaxReport {
             return writeln!(f, "No shares, bonds or ETFs");
         }
         writeln!(f, "\n{}", create_positions_table(self))?;
+        if !self.year_income.sales.is_empty() {
+            writeln!(f, "\n{}", create_sales_table(self))?;
+        }
+        let harvest = self.harvest();
+        if !harvest.is_empty() {
+            writeln!(f, "\n{}", create_harvest_table(&harvest))?;
+        }
         writeln!(f, "\n{}", create_summary_table(self))?;
         writeln!(
             f,
@@ -109,7 +165,21 @@ impl Display for SaleTaxReport {
              and with 13% up to 2.4 million RUB of investment income and 15% over it; \
              a negative tax is a saving from offsetting this year's gains.\n\
              LDV exempts lots bought since 2014 and held over 3 years, up to 3 million RUB \
-             per full year of holding.{}",
+             per full year of holding.\n\
+             Withheld this year is the tax other than on dividends and coupons, mostly on \
+             sales and withdrawals.{}{}{}",
+            if harvest.is_empty() {
+                ""
+            } else {
+                "\nLoss harvesting sells the earliest lots, as the broker does; savings offset \
+                 the same gains and do not add up. Buying back restarts the 3 years of LDV."
+            },
+            if self.year_income.sales.iter().any(|s| !s.complete) {
+                "\n* More units sold than bought on the account, so the cost of the sales \
+                 may be wrong."
+            } else {
+                ""
+            },
             if self.unknown().next().is_some() {
                 "\nUnknown cost: units were transferred from another broker or split, \
                  so they are left out of the totals."
