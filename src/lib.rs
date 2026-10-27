@@ -73,9 +73,10 @@ pub fn to_money(val: Option<&MoneyValue>) -> Option<Money> {
     Money::new(value, &val.currency)
 }
 
+/// Currency of an API money value; `None` when the value is absent or its code is unknown.
 #[must_use]
-pub fn to_currency(mv: &Option<MoneyValue>) -> Option<Currency> {
-    iso_currency::Currency::from_code(&mv.as_ref()?.currency.to_ascii_uppercase())
+pub fn to_currency(money: Option<&MoneyValue>) -> Option<Currency> {
+    Currency::from_code(&money?.currency.to_ascii_uppercase())
 }
 
 /// Converts an API metric to a decimal rounded to 2 places; `None` for zero,
@@ -97,8 +98,8 @@ pub fn to_optional_datetime_utc(timestamp: Option<&Timestamp>) -> Option<DateTim
 }
 
 #[must_use]
-pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
-    if let Some(dt) = opt_timespamp {
+pub fn to_datetime_utc(timestamp: Option<&Timestamp>) -> DateTime<Utc> {
+    if let Some(dt) = timestamp {
         DateTime::<Utc>::from_timestamp(dt.seconds, 0).unwrap_or_default()
     } else {
         DateTime::<Utc>::default()
@@ -213,8 +214,8 @@ impl TryFrom<&PortfolioPosition> for Position {
     type Error = color_eyre::eyre::Error;
 
     fn try_from(value: &PortfolioPosition) -> Result<Self, Self::Error> {
-        let currency =
-            to_currency(&value.current_price).ok_or(eyre::eyre!("Failed to get currency"))?;
+        let currency = to_currency(value.current_price.as_ref())
+            .ok_or(eyre::eyre!("Failed to get currency"))?;
 
         let average_buy_price = to_money(value.average_position_price.as_ref())
             .ok_or(eyre::eyre!("Failed to get average position price"))?;
@@ -402,6 +403,26 @@ mod tests {
             units,
             nano: 0,
         }
+    }
+
+    #[rstest]
+    #[case::lowercase_code(Some("rub"), Some(Currency::RUB))]
+    #[case::uppercase_code(Some("USD"), Some(Currency::USD))]
+    #[case::unknown_code(Some("zzz"), None)]
+    #[case::absent_value(None, None)]
+    fn currency_of_money_value(#[case] code: Option<&str>, #[case] expected: Option<Currency>) {
+        // Arrange
+        let money = code.map(|c| MoneyValue {
+            currency: c.to_string(),
+            units: 1,
+            nano: 0,
+        });
+
+        // Act
+        let currency = to_currency(money.as_ref());
+
+        // Assert
+        assert_eq!(currency, expected);
     }
 
     #[rstest]

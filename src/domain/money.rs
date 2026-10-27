@@ -173,18 +173,6 @@ impl SubAssign<Decimal> for Money {
     }
 }
 
-impl ops::Mul<Money> for Money {
-    type Output = Money;
-
-    fn mul(self, rhs: Money) -> Money {
-        assert_same_currency(self.currency, rhs.currency);
-        Money {
-            value: self.value * rhs.value,
-            currency: self.currency,
-        }
-    }
-}
-
 impl ops::Mul<Decimal> for Money {
     type Output = Money;
 
@@ -196,28 +184,9 @@ impl ops::Mul<Decimal> for Money {
     }
 }
 
-impl MulAssign for Money {
-    fn mul_assign(&mut self, other: Self) {
-        assert_same_currency(self.currency, other.currency);
-        self.value *= other.value;
-    }
-}
-
 impl MulAssign<Decimal> for Money {
     fn mul_assign(&mut self, other: Decimal) {
         self.value *= other;
-    }
-}
-
-impl ops::Div<Money> for Money {
-    type Output = Money;
-
-    fn div(self, rhs: Money) -> Money {
-        assert_same_currency(self.currency, rhs.currency);
-        Money {
-            value: self.value / rhs.value,
-            currency: self.currency,
-        }
     }
 }
 
@@ -229,13 +198,6 @@ impl ops::Div<Decimal> for Money {
             value: self.value / rhs,
             currency: self.currency,
         }
-    }
-}
-
-impl DivAssign for Money {
-    fn div_assign(&mut self, other: Self) {
-        assert_same_currency(self.currency, other.currency);
-        self.value /= other.value;
     }
 }
 

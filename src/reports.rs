@@ -14,13 +14,13 @@ use crate::{
     domain::{
         AccountPosition, BondInfo, CouponCalendar, CouponPayment, CouponProfit, DividendCalendar,
         DividendPayment, DividendProfit, Figi, FoundInstrument, Instrument, InstrumentKind,
-        LoadedPaper, Money, NoneProfit, Paper, Portfolio, Position, Ticker, Totals,
+        LoadedPaper, Money, NoneProfit, Paper, PaperCards, Portfolio, Position, Ticker, Totals,
         account::{Account, AccountStatus, AccountType},
         analytics::{Analytics, ShareAnalytics},
-        benchmark::{BENCHMARKS, IndexHistory, IndexPrices},
+        benchmark::{BENCHMARKS, IndexHistory},
         bond::{BondEventKind, bond_info},
         calendar::{Calendar, CalendarKind, CombinedCalendar, Dividend},
-        fx::{DailyCloses, RubConverter},
+        fx::{DailyCloses, DailyPrices, RubConverter},
         history::{History, HistoryItem, HistoryPrice},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
         lots::{
@@ -502,12 +502,12 @@ impl<A: InvestApi> Reports<A> {
     /// Position money fields and operation totals are converted to RUB via FX rates.
     /// Positions that failed to load or were skipped are not included into the portfolio;
     /// their errors are returned alongside so the caller can tell the user that totals are
-    /// incomplete. Bond details are loaded only with `output_papers`, since only paper cards
+    /// incomplete. Bond details are loaded only when paper cards are shown, since only they
     /// show them.
     pub async fn build_portfolio(
         &self,
         portfolio: &AccountPortfolio,
-        output_papers: bool,
+        cards: PaperCards,
         progress: Option<Arc<dyn Progress>>,
     ) -> (Portfolio, Vec<eyre::Report>) {
         let fx = match self.load_fx_rates().await {
@@ -522,11 +522,7 @@ impl<A: InvestApi> Reports<A> {
             .parallel_for(&portfolio.holdings, progress.clone(), {
                 move |reports, holding: Holding| {
                     let fx = fx.clone();
-                    async move {
-                        reports
-                            .paper_for_position(&holding, &fx, output_papers)
-                            .await
-                    }
+                    async move { reports.paper_for_position(&holding, &fx, cards).await }
                 }
             })
             .await;
@@ -535,7 +531,7 @@ impl<A: InvestApi> Reports<A> {
             p.finish();
         }
 
-        let mut loaded = Portfolio::new(output_papers);
+        let mut loaded = Portfolio::new(cards);
         let mut failures = portfolio.skipped();
         for paper in papers {
             match paper {
@@ -546,19 +542,19 @@ impl<A: InvestApi> Reports<A> {
         (loaded, failures)
     }
 
-    /// Loads a holding as a paper; bond details (events, YTM) only when `with_bond_details`,
-    /// as they are shown in paper cards only and cost a request per bond.
+    /// Loads a holding as a paper; bond details (events, YTM) only when paper cards are shown,
+    /// as only they show the details and these cost a request per bond.
     async fn paper_for_position(
         &self,
         holding: &Holding,
         fx: &RubConverter<A>,
-        with_bond_details: bool,
+        cards: PaperCards,
     ) -> color_eyre::Result<LoadedPaper> {
         let mut paper = self
             .create_paper_from_position(holding, fx)
             .await
             .map_err(|e| holding.skipped(e))?;
-        if with_bond_details && holding.kind == InstrumentKind::Bond {
+        if cards == PaperCards::Show && holding.kind == InstrumentKind::Bond {
             // Bond details are informational: the position stays in totals without them.
             paper.bond = self
                 .load_bond_info(&holding.figi, &paper.position, fx)
@@ -1089,7 +1085,7 @@ impl<A: InvestApi> Reports<A> {
                 .map(|i| i.uid.clone())
         });
         let mut loaded = uids.clone().map(|uid| match uid {
-            Some(_) => Ok(IndexPrices::new()),
+            Some(_) => Ok(DailyPrices::new()),
             None => Err(eyre::eyre!("Index not found")),
         });
 
@@ -1492,8 +1488,8 @@ fn trade_accrued_interest(op: &Operation) -> Option<Money> {
 
 /// Adds a year of index closes to the prices; any failed year fails the whole index.
 fn add_index_closes(
-    prices: &mut color_eyre::Result<IndexPrices>,
-    closes: color_eyre::Result<IndexPrices>,
+    prices: &mut color_eyre::Result<DailyPrices>,
+    closes: color_eyre::Result<DailyPrices>,
 ) {
     let Ok(loaded) = prices else {
         return;
@@ -1507,7 +1503,7 @@ fn add_index_closes(
 /// Pairs [`BENCHMARKS`] with their loaded prices; a failed index gets an empty history
 /// and its error is returned alongside.
 fn index_histories(
-    loaded: [color_eyre::Result<IndexPrices>; BENCHMARKS.len()],
+    loaded: [color_eyre::Result<DailyPrices>; BENCHMARKS.len()],
 ) -> (Vec<IndexHistory>, Vec<eyre::Report>) {
     let mut failures = Vec::new();
     let histories = BENCHMARKS
@@ -1516,7 +1512,7 @@ fn index_histories(
         .map(|(benchmark, prices)| {
             let prices = prices.unwrap_or_else(|e| {
                 failures.push(e.wrap_err(format!("Index {} skipped", benchmark.ticker)));
-                IndexPrices::new()
+                DailyPrices::new()
             });
             IndexHistory { benchmark, prices }
         })
@@ -2292,14 +2288,14 @@ mod tests {
     #[test]
     fn add_index_closes_merges_years_in_any_order() {
         // Arrange
-        let mut prices = Ok(IndexPrices::new());
+        let mut prices = Ok(DailyPrices::new());
 
         // Act
         add_index_closes(&mut prices, Ok([(day(2025, 1, 3), dec!(2900))].into()));
         add_index_closes(&mut prices, Ok([(day(2024, 1, 3), dec!(3100))].into()));
 
         // Assert
-        let expected: IndexPrices =
+        let expected: DailyPrices =
             [(day(2024, 1, 3), dec!(3100)), (day(2025, 1, 3), dec!(2900))].into();
         assert_eq!(prices.unwrap(), expected);
     }
@@ -2309,7 +2305,7 @@ mod tests {
     #[case::loaded_year_after_failed(false)]
     fn add_index_closes_fails_index_on_any_failed_year(#[case] loaded_first: bool) {
         // Arrange
-        let mut prices = Ok(IndexPrices::new());
+        let mut prices = Ok(DailyPrices::new());
         let loaded = || Ok([(day(2025, 1, 3), dec!(2900))].into());
         let failed = || Err(eyre::eyre!("year failed"));
 
@@ -2329,11 +2325,11 @@ mod tests {
     #[test]
     fn index_histories_keep_benchmark_order_and_report_failures() {
         // Arrange
-        let imoex: IndexPrices = [(day(2025, 1, 3), dec!(2900))].into();
+        let imoex: DailyPrices = [(day(2025, 1, 3), dec!(2900))].into();
         let loaded = [
             Ok(imoex.clone()),
             Err(eyre::eyre!("Index not found")),
-            Ok(IndexPrices::new()),
+            Ok(DailyPrices::new()),
             Err(eyre::eyre!("year failed")),
         ];
 
@@ -2610,7 +2606,9 @@ mod tests {
         let portfolio = reports.load_portfolio(&broker(), None).await.unwrap();
 
         // Act
-        let (loaded, failures) = reports.build_portfolio(&portfolio, false, None).await;
+        let (loaded, failures) = reports
+            .build_portfolio(&portfolio, PaperCards::Hide, None)
+            .await;
 
         // Assert
         assert!(failures.is_empty());
@@ -2639,7 +2637,9 @@ mod tests {
         let portfolio = reports.load_portfolio(&broker(), None).await.unwrap();
 
         // Act
-        let (loaded, failures) = reports.build_portfolio(&portfolio, false, None).await;
+        let (loaded, failures) = reports
+            .build_portfolio(&portfolio, PaperCards::Hide, None)
+            .await;
 
         // Assert
         assert_eq!(loaded.papers().count(), 0);
@@ -3244,7 +3244,9 @@ mod tests {
             .unwrap();
 
         // Act
-        let (loaded, failures) = reports.build_portfolio(&portfolio, false, None).await;
+        let (loaded, failures) = reports
+            .build_portfolio(&portfolio, PaperCards::Hide, None)
+            .await;
 
         // Assert
         assert_eq!(failures.len(), 0);

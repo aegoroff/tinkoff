@@ -29,7 +29,7 @@ pub use paper::{
     AccountPosition, BondInfo, CouponProfit, DividendProfit, Figi, FoundInstrument, Instrument,
     InstrumentKind, NoneProfit, Paper, Position, Profit, Ticker, Totals,
 };
-pub use portfolio::{Asset, LoadedPaper, Portfolio};
+pub use portfolio::{Asset, LoadedPaper, PaperCards, Portfolio};
 
 /// Moscow time offset from UTC; Russia has no daylight saving time since 2014.
 const MOSCOW_OFFSET: TimeDelta = TimeDelta::hours(3);

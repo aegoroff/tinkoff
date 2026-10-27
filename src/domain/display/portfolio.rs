@@ -8,7 +8,7 @@ use crate::ux;
 
 use super::super::paper::Paper;
 use super::super::paper::Profit;
-use super::super::portfolio::{Asset, Portfolio};
+use super::super::portfolio::{Asset, PaperCards, Portfolio};
 use super::super::xirr::AnnualRate;
 
 const TOTAL_INCOME: &str = "Total income";
@@ -50,7 +50,7 @@ impl<P: Profit> Display for Asset<P> {
             .fg(comfy_table::Color::DarkBlue)]);
         asset_table.style_mut().header_separator.fill = Some(' ');
 
-        if self.output_papers {
+        if self.cards == PaperCards::Show {
             for p in self.papers() {
                 asset_table.add_row([Cell::new(p)]);
             }
@@ -203,5 +203,61 @@ impl Display for Portfolio {
         } else {
             writeln!(f)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iso_currency::Currency;
+    use rstest::rstest;
+    use rust_decimal_macros::dec;
+
+    use super::*;
+    use crate::domain::{Figi, Money, NoneProfit, Position, Ticker, Totals};
+
+    fn paper(name: &str) -> Paper<NoneProfit> {
+        let currency = Currency::RUB;
+        Paper {
+            name: name.to_string(),
+            ticker: Ticker::new("TCKR"),
+            figi: Figi::new("FIGI"),
+            position: Position {
+                currency,
+                average_buy_price: Money::from_value(dec!(10), currency),
+                current_instrument_price: Money::from_value(dec!(11), currency),
+                accrued_interest: Money::zero(currency),
+                quantity: dec!(1),
+                daily_yield: Money::zero(currency),
+                blocked: false,
+                blocked_lots: dec!(0),
+                var_margin: None,
+            },
+            totals: Totals {
+                additional_profit: Money::zero(currency),
+                fees: Money::zero(currency),
+                cash_flows: vec![],
+            },
+            profit: NoneProfit,
+            bond: None,
+            sector: None,
+        }
+    }
+
+    #[rstest]
+    #[case::shown(PaperCards::Show, true)]
+    #[case::hidden(PaperCards::Hide, false)]
+    fn asset_output_has_paper_cards_only_when_shown(
+        #[case] cards: PaperCards,
+        #[case] expected: bool,
+    ) {
+        // Arrange
+        let mut asset = Asset::new("Currencies", NoneProfit, cards);
+        asset.add_paper(paper("Dollar"));
+
+        // Act
+        let output = asset.to_string();
+
+        // Assert
+        assert_eq!(output.contains("Dollar"), expected);
     }
 }

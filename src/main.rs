@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tinkoff::{
     client::TinkoffInvestment,
     domain::{
-        InstrumentKind, Portfolio,
+        InstrumentKind, PaperCards, Portfolio,
         calendar::CalendarKind,
         risk::{TARGET_ASSET_TYPES, TargetAllocation},
         screener::{BondRisk, ScreenerCriteria},
@@ -100,12 +100,39 @@ fn run_subcommand<'a>(
     (name, matches): (&'a str, &'a ArgMatches),
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     match name {
-        ALL_CMD => Box::pin(positions(config, None, !matches.get_flag("aggregate"))),
-        SHARES_CMD => Box::pin(positions(config, Some(InstrumentKind::Share), true)),
-        BONDS_CMD => Box::pin(positions(config, Some(InstrumentKind::Bond), true)),
-        ETFS_CMD => Box::pin(positions(config, Some(InstrumentKind::Etf), true)),
-        CURR_CMD => Box::pin(positions(config, Some(InstrumentKind::Currency), true)),
-        FUTURES_CMD => Box::pin(positions(config, Some(InstrumentKind::Future), true)),
+        ALL_CMD => {
+            let cards = if matches.get_flag("aggregate") {
+                PaperCards::Hide
+            } else {
+                PaperCards::Show
+            };
+            Box::pin(positions(config, None, cards))
+        }
+        SHARES_CMD => Box::pin(positions(
+            config,
+            Some(InstrumentKind::Share),
+            PaperCards::Show,
+        )),
+        BONDS_CMD => Box::pin(positions(
+            config,
+            Some(InstrumentKind::Bond),
+            PaperCards::Show,
+        )),
+        ETFS_CMD => Box::pin(positions(
+            config,
+            Some(InstrumentKind::Etf),
+            PaperCards::Show,
+        )),
+        CURR_CMD => Box::pin(positions(
+            config,
+            Some(InstrumentKind::Currency),
+            PaperCards::Show,
+        )),
+        FUTURES_CMD => Box::pin(positions(
+            config,
+            Some(InstrumentKind::Future),
+            PaperCards::Show,
+        )),
         HISTORY_CMD => Box::pin(history(config, matches)),
         DIVIDENDS_CMD => Box::pin(calendar(config, matches, CalendarKind::Dividends)),
         COUPONS_CMD => Box::pin(calendar(config, matches, CalendarKind::Coupons)),
@@ -123,13 +150,13 @@ fn run_subcommand<'a>(
 }
 
 /// Prints portfolio positions of the given kind or all of them,
-/// with paper cards when `output_papers` is set.
+/// with or without paper cards.
 async fn positions(
     config: &AppConfig,
     kind: Option<InstrumentKind>,
-    output_papers: bool,
+    cards: PaperCards,
 ) -> Result<()> {
-    let (container, failures) = load_papers(config, &config.reports(), kind, output_papers).await?;
+    let (container, failures) = load_papers(config, &config.reports(), kind, cards).await?;
     print!("{container}");
     report_failures(&failures);
     Ok(())
@@ -176,7 +203,7 @@ async fn benchmark(config: &AppConfig) -> Result<()> {
     use tinkoff::domain::benchmark::BenchmarkComparison;
 
     let reports = config.reports();
-    let (container, mut failures) = load_papers(config, &reports, None, false).await?;
+    let (container, mut failures) = load_papers(config, &reports, None, PaperCards::Hide).await?;
 
     let now = Utc::now();
     let since_year = container
@@ -315,7 +342,7 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     let portfolio = reports.load_portfolio(&config.account, None).await?;
     let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
     let (container, failures) = reports
-        .build_portfolio(&portfolio, false, Some(progress))
+        .build_portfolio(&portfolio, PaperCards::Hide, Some(progress))
         .await;
 
     let risk_analysis = RiskAnalysis::analyze(&container);
@@ -345,12 +372,12 @@ async fn load_papers(
     config: &AppConfig,
     reports: &Reports<TinkoffInvestment>,
     kind: Option<InstrumentKind>,
-    output_papers: bool,
+    cards: PaperCards,
 ) -> Result<(Portfolio, Vec<eyre::Report>)> {
     let portfolio = reports.load_portfolio(&config.account, kind).await?;
     let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
     Ok(reports
-        .build_portfolio(&portfolio, output_papers, Some(progress))
+        .build_portfolio(&portfolio, cards, Some(progress))
         .await)
 }
 

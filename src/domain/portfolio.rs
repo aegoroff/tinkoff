@@ -53,10 +53,15 @@ pub struct Asset<P: Profit> {
     pub(crate) name: &'static str,
     papers: Vec<Paper<P>>,
     pub profit: P,
-    /// Whether to include asset's papers into output
-    /// If true papers will be displyed
-    /// If false they only accounted during calculations (balance, income etc,)
-    pub(crate) output_papers: bool,
+    /// Whether output shows the asset's papers; hidden papers still count in totals
+    pub(crate) cards: PaperCards,
+}
+
+/// Whether portfolio output shows a card of every paper or only the asset totals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaperCards {
+    Show,
+    Hide,
 }
 
 /// Macro to generate Portfolio aggregation methods
@@ -84,13 +89,13 @@ impl Portfolio {
     }
 
     #[must_use]
-    pub fn new(output_papers: bool) -> Self {
+    pub fn new(cards: PaperCards) -> Self {
         Self {
-            bonds: Asset::new("Bonds", CouponProfit, output_papers),
-            shares: Asset::new("Shares", DividendProfit, output_papers),
-            etfs: Asset::new("Etfs", DividendProfit, output_papers),
-            currencies: Asset::new("Currencies", NoneProfit, output_papers),
-            futures: Asset::new("Futures", NoneProfit, output_papers),
+            bonds: Asset::new("Bonds", CouponProfit, cards),
+            shares: Asset::new("Shares", DividendProfit, cards),
+            etfs: Asset::new("Etfs", DividendProfit, cards),
+            currencies: Asset::new("Currencies", NoneProfit, cards),
+            futures: Asset::new("Futures", NoneProfit, cards),
         }
     }
 
@@ -225,17 +230,17 @@ impl<P: Profit> PortfolioAsset for Asset<P> {
 
 impl Default for Portfolio {
     fn default() -> Self {
-        Self::new(true)
+        Self::new(PaperCards::Show)
     }
 }
 
 impl<P: Profit> Asset<P> {
     #[must_use]
-    pub fn new(name: &'static str, profit: P, output_papers: bool) -> Self {
+    pub fn new(name: &'static str, profit: P, cards: PaperCards) -> Self {
         Self {
             papers: vec![],
             name,
-            output_papers,
+            cards,
             profit,
         }
     }
@@ -458,7 +463,7 @@ mod tests {
     #[test]
     fn empty_portfolio_has_no_papers() {
         // Arrange
-        let portfolio = Portfolio::new(true);
+        let portfolio = Portfolio::new(PaperCards::Show);
 
         // Act
         let count = portfolio.papers().count();
@@ -585,7 +590,7 @@ mod tests {
     #[fixture]
     fn test_portfolio() -> Portfolio {
         let currency = Currency::RUB;
-        let mut bonds = Asset::new("Bonds", CouponProfit, true);
+        let mut bonds = Asset::new("Bonds", CouponProfit, PaperCards::Show);
         bonds.add_paper(Paper {
             name: "1".to_string(),
             ticker: Ticker::new("1t".to_string()),
@@ -610,7 +615,7 @@ mod tests {
             bond: None,
             sector: None,
         });
-        let mut shares = Asset::new("Shares", DividendProfit, true);
+        let mut shares = Asset::new("Shares", DividendProfit, PaperCards::Show);
         shares.add_paper(Paper {
             name: "2".to_string(),
             ticker: Ticker::new("2t".to_string()),
@@ -636,9 +641,9 @@ mod tests {
             sector: None,
         });
 
-        let etfs = Asset::new("Etfs", DividendProfit, true);
-        let currencies = Asset::new("Currencies", NoneProfit, true);
-        let futures = Asset::new("Futures", NoneProfit, true);
+        let etfs = Asset::new("Etfs", DividendProfit, PaperCards::Show);
+        let currencies = Asset::new("Currencies", NoneProfit, PaperCards::Show);
+        let futures = Asset::new("Futures", NoneProfit, PaperCards::Show);
         Portfolio {
             bonds,
             shares,

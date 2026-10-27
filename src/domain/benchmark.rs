@@ -1,17 +1,13 @@
 //! Comparison of returns with market indices: the same payments invested into an index.
 
-use std::collections::BTreeMap;
-
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use rust_decimal::Decimal;
 
+use super::fx::DailyPrices;
 use super::moscow_date;
 use super::paper::Profit;
 use super::portfolio::{Asset, Portfolio};
 use super::xirr::{CashFlow, xirr};
-
-/// Index close prices by trading day
-pub type IndexPrices = BTreeMap<NaiveDate, Decimal>;
 
 /// Market index returns are compared with
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +49,7 @@ pub const BENCHMARKS: [Benchmark; 4] = [
 const LOOKBACK_DAYS: u64 = 10;
 
 /// Close of `date` or of the closest earlier trading day within [`LOOKBACK_DAYS`].
-fn price_on(prices: &IndexPrices, date: NaiveDate) -> Option<Decimal> {
+fn price_on(prices: &DailyPrices, date: NaiveDate) -> Option<Decimal> {
     let from = date.checked_sub_days(Days::new(LOOKBACK_DAYS))?;
     prices
         .range(from..=date)
@@ -70,7 +66,7 @@ fn price_on(prices: &IndexPrices, date: NaiveDate) -> Option<Decimal> {
 #[must_use]
 pub fn index_xirr(
     payments: &[CashFlow],
-    prices: &IndexPrices,
+    prices: &DailyPrices,
     at: DateTime<Utc>,
 ) -> Option<Decimal> {
     let units = payments.iter().try_fold(Decimal::ZERO, |units, flow| {
@@ -95,7 +91,7 @@ pub fn index_xirr(
 /// Benchmark with its price history; empty when the index could not be loaded
 pub struct IndexHistory {
     pub benchmark: Benchmark,
-    pub prices: IndexPrices,
+    pub prices: DailyPrices,
 }
 
 /// Return of payments and of the same payments invested into every benchmark
@@ -168,7 +164,9 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::domain::{CouponProfit, Figi, Money, NoneProfit, Paper, Position, Ticker, Totals};
+    use crate::domain::{
+        CouponProfit, Figi, Money, NoneProfit, Paper, PaperCards, Position, Ticker, Totals,
+    };
 
     fn at(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).unwrap()
@@ -182,7 +180,7 @@ mod tests {
         CashFlow { date, amount }
     }
 
-    fn prices(points: &[(NaiveDate, Decimal)]) -> IndexPrices {
+    fn prices(points: &[(NaiveDate, Decimal)]) -> DailyPrices {
         points.iter().copied().collect()
     }
 
@@ -250,7 +248,7 @@ mod tests {
     #[test]
     fn comparison_has_rows_of_not_empty_assets() {
         // Arrange
-        let mut portfolio = Portfolio::new(false);
+        let mut portfolio = Portfolio::new(PaperCards::Hide);
         let mut paper = test_paper();
         paper.totals.cash_flows = vec![flow(at(2025, 1, 1), dec!(-1000))];
         portfolio.bonds.add_paper(paper);
@@ -307,7 +305,7 @@ mod tests {
     #[test]
     fn securities_leave_currencies_out() {
         // Arrange: currency sold for 5000 with nothing invested would distort the return
-        let mut portfolio = Portfolio::new(false);
+        let mut portfolio = Portfolio::new(PaperCards::Hide);
         let mut bond = test_paper();
         bond.totals.cash_flows = vec![flow(at(2025, 1, 1), dec!(-1000))];
         portfolio.bonds.add_paper(bond);

@@ -802,14 +802,14 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        CouponProfit, DividendProfit, Figi, LoadedPaper, NoneProfit, Paper, Position, Profit,
-        Ticker, Totals,
+        CouponProfit, DividendProfit, Figi, LoadedPaper, NoneProfit, Paper, PaperCards, Position,
+        Profit, Ticker, Totals,
     };
 
     #[test]
     fn test_asset_allocation_calculation() {
         let currency = Currency::RUB;
-        let mut portfolio = Portfolio::new(false);
+        let mut portfolio = Portfolio::new(PaperCards::Hide);
 
         // Add a bond with current value 500
         let mut bonds = portfolio.bonds;
@@ -1205,7 +1205,7 @@ mod tests {
     #[test]
     fn asset_allocation_counts_short_futures_by_exposure() {
         // Arrange
-        let mut portfolio = Portfolio::new(false);
+        let mut portfolio = Portfolio::new(PaperCards::Hide);
         portfolio.shares.add_paper(rub_paper(
             "SHARE",
             Currency::RUB,
