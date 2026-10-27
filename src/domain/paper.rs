@@ -197,6 +197,33 @@ impl Position {
     pub fn notional(&self) -> Money {
         (self.current_instrument_price + self.accrued_interest) * self.quantity
     }
+
+    /// Position of the same instrument held on two accounts as one: quantities, daily
+    /// changes, margins and reserved lots add up, the average buy price is weighted
+    /// by quantity, current prices are the ones of `self`.
+    #[must_use]
+    pub fn merge(self, other: &Self) -> Self {
+        let quantity = self.quantity + other.quantity;
+        let average_buy_price = if quantity.is_zero() {
+            self.average_buy_price
+        } else {
+            (self.average_buy_price * self.quantity + other.average_buy_price * other.quantity)
+                / quantity
+        };
+        let var_margin = match (self.var_margin, other.var_margin) {
+            (Some(a), Some(b)) => Some(a + b),
+            (margin, None) | (None, margin) => margin,
+        };
+        Self {
+            average_buy_price,
+            quantity,
+            daily_yield: self.daily_yield + other.daily_yield,
+            var_margin,
+            blocked: self.blocked || other.blocked,
+            blocked_lots: self.blocked_lots + other.blocked_lots,
+            ..self
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -602,5 +629,78 @@ mod tests {
         assert_eq!(current.value - balance.value, dec!(1500));
         assert_eq!(exposure, dec!(93250));
         assert_eq!(terminal, Some(dec!(1500)));
+    }
+
+    fn held(quantity: Decimal, average: Decimal, daily: Decimal) -> Position {
+        let rub = |value| Money::from_value(value, Currency::RUB);
+        Position {
+            currency: Currency::RUB,
+            average_buy_price: rub(average),
+            current_instrument_price: rub(dec!(120)),
+            accrued_interest: rub(dec!(0)),
+            quantity,
+            daily_yield: rub(daily),
+            var_margin: None,
+            blocked: false,
+            blocked_lots: dec!(1),
+        }
+    }
+
+    #[test]
+    fn position_merge_adds_quantities_and_weights_average_price() {
+        // Arrange
+        let broker = held(dec!(10), dec!(100), dec!(5));
+        let iis = Position {
+            blocked: true,
+            ..held(dec!(30), dec!(140), dec!(-2))
+        };
+
+        // Act
+        let merged = broker.merge(&iis);
+
+        // Assert
+        assert_eq!(merged.quantity, dec!(40));
+        assert_eq!(merged.average_buy_price.value, dec!(130));
+        assert_eq!(merged.daily_yield.value, dec!(3));
+        assert_eq!(merged.blocked_lots, dec!(2));
+        assert!(merged.blocked);
+        assert_eq!(merged.current_instrument_price.value, dec!(120));
+    }
+
+    #[test]
+    fn position_merge_of_zero_quantities_keeps_average_price() {
+        // Arrange
+        let short = held(dec!(-5), dec!(100), dec!(0));
+        let long = held(dec!(5), dec!(140), dec!(0));
+
+        // Act
+        let merged = short.merge(&long);
+
+        // Assert
+        assert_eq!(merged.quantity, dec!(0));
+        assert_eq!(merged.average_buy_price.value, dec!(100));
+    }
+
+    #[rstest]
+    #[case::both(Some(dec!(3)), Some(dec!(-1)), Some(dec!(2)))]
+    #[case::first(Some(dec!(3)), None, Some(dec!(3)))]
+    #[case::second(None, Some(dec!(-1)), Some(dec!(-1)))]
+    #[case::none(None, None, None)]
+    fn position_merge_adds_variation_margins(
+        #[case] first: Option<Decimal>,
+        #[case] second: Option<Decimal>,
+        #[case] expected: Option<Decimal>,
+    ) {
+        // Arrange
+        let margin = |m: Option<Decimal>| Position {
+            var_margin: m.map(|v| Money::from_value(v, Currency::RUB)),
+            ..held(dec!(1), dec!(100), dec!(0))
+        };
+
+        // Act
+        let merged = margin(first).merge(&margin(second));
+
+        // Assert
+        assert_eq!(merged.var_margin.map(|m| m.value), expected);
     }
 }

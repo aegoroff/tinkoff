@@ -146,8 +146,10 @@ Commands:
 Options:
   -t, --token <VALUE>      Tinkoff API v2 token. If not set, TINKOFF_TOKEN_V2 environment variable will be used
       --account <TYPE>     Account type: tinkoff (broker, default), iis, invest-box, invest-fund.
-                           Selects the only open account of this type
-      --account-id <ID>    Account ID (see the ac command); takes precedence over --account
+                           Selects the only open account of this type; all selects open
+                           broker, IIS and invest box accounts together
+      --account-id <ID>    Account IDs separated by commas (see the ac command);
+                           takes precedence over --account
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -182,6 +184,11 @@ tinkoff --account-id 2000000000 a
 
 # Portfolio of the individual investment account
 tinkoff --account iis a
+
+# Portfolio, risk or income of all accounts together: an instrument held on several
+# accounts is shown once (sale tax is calculated per account only)
+tinkoff --account all a
+tinkoff --account-id 2000000000,2000000001 r
 
 # Use custom token
 tinkoff -t "your_token" a

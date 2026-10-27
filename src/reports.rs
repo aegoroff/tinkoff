@@ -38,46 +38,98 @@ const INCOME_FORECAST_DAYS: u32 = 365;
 /// Maximum number of concurrent API requests when loading portfolio positions or calendars.
 pub const MAX_CONCURRENT_REQUESTS: usize = 10;
 
-/// How the account to work with is chosen.
+/// How the accounts to work with are chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccountSelector {
     /// The only open account of this type.
     Type(AccountType),
-    /// The account with this ID, whatever its type and status.
-    Id(String),
+    /// Accounts with these IDs, whatever their types and statuses.
+    Ids(Vec<String>),
+    /// All open accounts of [`INVESTMENT_ACCOUNTS`] types.
+    All,
 }
 
-/// Picks the account matching `selector`.
+impl AccountSelector {
+    /// Parses a CLI account type name or `all`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message listing the expected values for an unknown one.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        if value.eq_ignore_ascii_case("all") {
+            Ok(Self::All)
+        } else {
+            AccountType::parse(value).map(Self::Type)
+        }
+    }
+}
+
+/// Types of accounts holding securities that [`AccountSelector::All`] selects.
+const INVESTMENT_ACCOUNTS: [AccountType; 3] = [
+    AccountType::Tinkoff,
+    AccountType::TinkoffIis,
+    AccountType::InvestBox,
+];
+
+/// Picks the accounts matching `selector`.
 ///
 /// # Errors
 ///
-/// Returns an error listing available accounts if no account matches, or if several
-/// open accounts have the requested type and the choice would be ambiguous.
-pub fn select_account<'a>(
+/// Returns an error listing available accounts if an ID is unknown, no account matches,
+/// or several open accounts have the requested type and the choice would be ambiguous.
+pub fn select_accounts<'a>(
     accounts: &'a [Account],
     selector: &AccountSelector,
-) -> color_eyre::Result<&'a Account> {
-    let matching: Vec<&Account> = match selector {
-        AccountSelector::Id(id) => accounts.iter().filter(|a| &a.id == id).collect(),
-        AccountSelector::Type(account_type) => accounts
-            .iter()
-            .filter(|a| a.account_type == *account_type && a.status == AccountStatus::Open)
-            .collect(),
-    };
-    let wanted = match selector {
-        AccountSelector::Id(id) => format!("account with ID {id}"),
-        AccountSelector::Type(t) => format!("open {} account", t.name()),
-    };
-    match matching.as_slice() {
-        [account] => Ok(account),
-        [] => Err(eyre::eyre!(
-            "No {wanted}; available accounts: {}",
-            describe_accounts(accounts.iter())
-        )),
-        several => Err(eyre::eyre!(
-            "Several accounts match: {}; choose one with --account-id",
-            describe_accounts(several.iter().copied())
-        )),
+) -> color_eyre::Result<Vec<&'a Account>> {
+    let available = || describe_accounts(accounts.iter());
+    match selector {
+        AccountSelector::Ids(ids) => {
+            let missing = ids
+                .iter()
+                .filter(|id| !accounts.iter().any(|a| &a.id == *id))
+                .join(", ");
+            if !missing.is_empty() {
+                return Err(eyre::eyre!(
+                    "No account with ID {missing}; available accounts: {}",
+                    available()
+                ));
+            }
+            Ok(accounts.iter().filter(|a| ids.contains(&a.id)).collect())
+        }
+        AccountSelector::Type(account_type) => {
+            let matching: Vec<&Account> = accounts
+                .iter()
+                .filter(|a| a.account_type == *account_type && a.status == AccountStatus::Open)
+                .collect();
+            match matching.as_slice() {
+                [_] => Ok(matching),
+                [] => Err(eyre::eyre!(
+                    "No open {} account; available accounts: {}",
+                    account_type.name(),
+                    available()
+                )),
+                several => Err(eyre::eyre!(
+                    "Several accounts match: {}; choose one with --account-id or all \
+                     with --account all",
+                    describe_accounts(several.iter().copied())
+                )),
+            }
+        }
+        AccountSelector::All => {
+            let open: Vec<&Account> = accounts
+                .iter()
+                .filter(|a| {
+                    a.status == AccountStatus::Open && INVESTMENT_ACCOUNTS.contains(&a.account_type)
+                })
+                .collect();
+            if open.is_empty() {
+                return Err(eyre::eyre!(
+                    "No open investment accounts; available accounts: {}",
+                    available()
+                ));
+            }
+            Ok(open)
+        }
     }
 }
 
@@ -97,6 +149,8 @@ fn describe_accounts<'a>(accounts: impl Iterator<Item = &'a Account>) -> String 
 #[derive(Clone)]
 pub struct Holding {
     pub kind: InstrumentKind,
+    /// Accounts the instrument is held on
+    pub account_ids: Vec<String>,
     /// Loaded instrument or, when it failed to load, one named after the FIGI
     pub instrument: Instrument,
     pub figi: String,
@@ -120,29 +174,36 @@ struct SkippedPosition {
     reason: String,
 }
 
-/// Account portfolio with instruments of its positions.
+/// Portfolio of one or several accounts with instruments of its positions.
 pub struct AccountPortfolio {
-    pub account_id: String,
+    /// Positions of an instrument held on several accounts are merged into one holding
     pub holdings: Vec<Holding>,
     skipped_positions: Vec<SkippedPosition>,
 }
 
 impl AccountPortfolio {
-    /// Pairs positions with their instruments, falling back to FIGI for the ones not loaded;
-    /// positions of unsupported types or without valid prices are set aside.
+    /// Pairs positions of accounts with their instruments, falling back to FIGI for the
+    /// ones not loaded, and merges positions of the same instrument; positions of
+    /// unsupported types or without valid prices are set aside.
     fn new(
-        account_id: String,
-        positions: Vec<AccountPosition>,
+        positions: Vec<(String, AccountPosition)>,
         instruments: &HashMap<String, Instrument>,
     ) -> Self {
-        let mut holdings = Vec::new();
+        let mut holdings: Vec<Holding> = Vec::new();
         let mut skipped_positions = Vec::new();
-        for p in positions {
+        for (account_id, p) in positions {
             let instrument = instrument_or_figi(instruments, &p.figi);
             let kind = InstrumentKind::from_api(&p.instrument_type);
             match (kind, p.position) {
+                (Some(_), Ok(position))
+                    if let Some(held) = holdings.iter_mut().find(|h| h.figi == p.figi) =>
+                {
+                    held.position = held.position.merge(&position);
+                    held.account_ids.push(account_id);
+                }
                 (Some(kind), Ok(position)) => holdings.push(Holding {
                     kind,
+                    account_ids: vec![account_id],
                     instrument,
                     figi: p.figi,
                     instrument_uid: p.instrument_uid,
@@ -163,7 +224,6 @@ impl AccountPortfolio {
             }
         }
         Self {
-            account_id,
             holdings,
             skipped_positions,
         }
@@ -225,25 +285,48 @@ impl<A: InvestApi> Reports<A> {
         selector: &AccountSelector,
         kind: Option<InstrumentKind>,
     ) -> color_eyre::Result<AccountPortfolio> {
-        let account = self.get_account(selector).await?;
-        self.load_account_portfolio(&account, kind).await
+        let accounts = self.get_accounts_of(selector).await?;
+        self.load_accounts_portfolio(&accounts, kind).await
     }
 
-    async fn load_account_portfolio(
+    async fn load_accounts_portfolio(
         &self,
-        account: &Account,
+        accounts: &[Account],
         kind: Option<InstrumentKind>,
     ) -> color_eyre::Result<AccountPortfolio> {
-        let mut positions = self.api.portfolio_positions(&account.id).await?;
-        if let Some(kind) = kind {
-            positions.retain(|p| InstrumentKind::from_api(&p.instrument_type) == Some(kind));
+        let mut positions = Vec::new();
+        for account in accounts {
+            let account_positions = self.api.portfolio_positions(&account.id).await?;
+            positions.extend(
+                account_positions
+                    .into_iter()
+                    .filter(|p| {
+                        kind.is_none_or(|k| InstrumentKind::from_api(&p.instrument_type) == Some(k))
+                    })
+                    .map(|p| (account.id.clone(), p)),
+            );
         }
-        let instruments = self.get_instruments_for_positions(&positions).await;
-        Ok(AccountPortfolio::new(
-            account.id.clone(),
-            positions,
-            &instruments,
-        ))
+        let distinct = positions
+            .iter()
+            .map(|(_, p)| p)
+            .unique_by(|p| &p.figi)
+            .cloned()
+            .collect_vec();
+        let instruments = self.get_instruments_for_positions(&distinct).await;
+        Ok(AccountPortfolio::new(positions, &instruments))
+    }
+
+    /// All executed operations matching `filter` of the accounts, one after another.
+    async fn operations_of(
+        &self,
+        account_ids: &[String],
+        filter: OperationsFilter<'_>,
+    ) -> color_eyre::Result<Vec<Operation>> {
+        let mut operations = Vec::new();
+        for account_id in account_ids {
+            operations.extend(self.api.operations(account_id, filter).await?);
+        }
+        Ok(operations)
     }
 
     /// Looks up instruments of the given positions by FIGI concurrently;
@@ -430,13 +513,11 @@ impl<A: InvestApi> Reports<A> {
 
         let papers = self
             .parallel_for(&portfolio.holdings, progress.clone(), {
-                let account_id = portfolio.account_id.clone();
                 move |reports, holding: Holding| {
-                    let account_id = account_id.clone();
                     let fx = fx.clone();
                     async move {
                         reports
-                            .paper_for_position(&account_id, &holding, &fx, output_papers)
+                            .paper_for_position(&holding, &fx, output_papers)
                             .await
                     }
                 }
@@ -462,13 +543,12 @@ impl<A: InvestApi> Reports<A> {
     /// as they are shown in paper cards only and cost a request per bond.
     async fn paper_for_position(
         &self,
-        account_id: &str,
         holding: &Holding,
         fx: &RubConverter<A>,
         with_bond_details: bool,
     ) -> color_eyre::Result<LoadedPaper> {
         let mut paper = self
-            .create_paper_from_position(account_id, holding, fx)
+            .create_paper_from_position(holding, fx)
             .await
             .map_err(|e| holding.skipped(e))?;
         if with_bond_details && holding.kind == InstrumentKind::Bond {
@@ -487,25 +567,40 @@ impl<A: InvestApi> Reports<A> {
         })
     }
 
-    /// Gets the account chosen by `selector` (see [`select_account`]).
-    async fn get_account(&self, selector: &AccountSelector) -> color_eyre::Result<Account> {
+    /// Gets the accounts chosen by `selector` (see [`select_accounts`]).
+    async fn get_accounts_of(
+        &self,
+        selector: &AccountSelector,
+    ) -> color_eyre::Result<Vec<Account>> {
         let accounts = self.api.accounts().await?;
-        select_account(&accounts, selector).cloned()
+        Ok(select_accounts(&accounts, selector)?
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
-    /// Income and taxes of the account by year, converted to RUB at operation dates.
+    /// IDs of the accounts chosen by `selector`.
+    async fn get_account_ids(&self, selector: &AccountSelector) -> color_eyre::Result<Vec<String>> {
+        Ok(self
+            .get_accounts_of(selector)
+            .await?
+            .into_iter()
+            .map(|a| a.id)
+            .collect())
+    }
+
+    /// Income and taxes of the accounts by year, converted to RUB at operation dates.
     ///
     /// # Errors
     ///
-    /// Returns an error if the account, its operations or FX rates cannot be loaded.
+    /// Returns an error if the accounts, their operations or FX rates cannot be loaded.
     pub async fn get_tax_report(
         &self,
         selector: &AccountSelector,
     ) -> color_eyre::Result<TaxReport> {
-        let account = self.get_account(selector).await?;
+        let account_ids = self.get_account_ids(selector).await?;
         let operations = self
-            .api
-            .operations(&account.id, OperationsFilter::Kinds(&OperationKind::TAXED))
+            .operations_of(&account_ids, OperationsFilter::Kinds(&OperationKind::TAXED))
             .await?;
         let fx = self.load_fx_rates().await?;
 
@@ -529,7 +624,8 @@ impl<A: InvestApi> Reports<A> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the account, its portfolio, operations or FX rates cannot be
+    /// Returns an error if `selector` chooses several accounts, since lots are matched
+    /// within an account, if the account, its portfolio, operations or FX rates cannot be
     /// loaded, or there is no security with `ticker` in the portfolio.
     pub async fn get_sale_tax(
         &self,
@@ -537,9 +633,14 @@ impl<A: InvestApi> Reports<A> {
         ticker: Option<&str>,
         now: DateTime<Utc>,
     ) -> color_eyre::Result<(SaleTaxReport, Vec<eyre::Report>)> {
-        let account = self.get_account(selector).await?;
+        let accounts = self.get_accounts_of(selector).await?;
+        let [account] = accounts.as_slice() else {
+            return Err(eyre::eyre!(
+                "Sale tax is calculated per account; choose one with --account or --account-id"
+            ));
+        };
         let (portfolio, operations, fx) = tokio::join!(
-            self.load_account_portfolio(&account, None),
+            self.load_accounts_portfolio(std::slice::from_ref(account), None),
             self.api
                 .operations(&account.id, OperationsFilter::Kinds(&SALE_TAX_OPERATIONS)),
             self.load_fx_rates()
@@ -632,7 +733,6 @@ impl<A: InvestApi> Reports<A> {
     /// The paper has no additional profit kind; tag it with [`Paper::with_profit`].
     async fn create_paper_from_position(
         &self,
-        account_id: &str,
         holding: &Holding,
         fx: &RubConverter<A>,
     ) -> color_eyre::Result<Paper<NoneProfit>> {
@@ -645,8 +745,10 @@ impl<A: InvestApi> Reports<A> {
         }
 
         let executed_ops = self
-            .api
-            .operations(account_id, OperationsFilter::Instrument(&holding.figi))
+            .operations_of(
+                &holding.account_ids,
+                OperationsFilter::Instrument(&holding.figi),
+            )
             .await?;
 
         let totals = reduce(fx, &executed_ops).await?;
@@ -710,7 +812,7 @@ impl<A: InvestApi> Reports<A> {
         Ok((calendar, failures))
     }
 
-    /// History of operations with the instrument of `ticker` on the account, in RUB.
+    /// History of operations with the instrument of `ticker` on the accounts, in RUB.
     ///
     /// When the ticker matches several instruments with operations, the one of
     /// [`preferred_figi`] is taken. Instruments whose operations failed to load are
@@ -725,11 +827,11 @@ impl<A: InvestApi> Reports<A> {
         selector: &AccountSelector,
         ticker: &str,
     ) -> color_eyre::Result<History> {
-        let (account, instruments) = tokio::join!(
-            self.get_account(selector),
+        let (account_ids, instruments) = tokio::join!(
+            self.get_account_ids(selector),
             self.api.find_instruments(ticker)
         );
-        let account_id = account?.id;
+        let account_ids = account_ids?;
         let matching = instruments?
             .into_iter()
             .filter(|i| i.ticker.eq_ignore_ascii_case(ticker))
@@ -740,11 +842,13 @@ impl<A: InvestApi> Reports<A> {
                 &matching,
                 None,
                 move |reports, instrument: FoundInstrument| {
-                    let account_id = account_id.clone();
+                    let account_ids = account_ids.clone();
                     async move {
                         let operations = reports
-                            .api
-                            .operations(&account_id, OperationsFilter::Instrument(&instrument.figi))
+                            .operations_of(
+                                &account_ids,
+                                OperationsFilter::Instrument(&instrument.figi),
+                            )
                             .await;
                         (instrument, operations)
                     }
@@ -1349,10 +1453,14 @@ mod tests {
     struct FakeApi {
         accounts: Vec<Account>,
         positions: Vec<AccountPosition>,
+        /// Positions by account ID, served instead of `positions`.
+        account_positions: HashMap<String, Vec<AccountPosition>>,
         instruments: HashMap<String, Instrument>,
         found: Vec<FoundInstrument>,
         /// Operations by FIGI.
         operations: HashMap<String, Vec<Operation>>,
+        /// Operations by FIGI by account ID, served instead of `operations`.
+        account_operations: HashMap<String, HashMap<String, Vec<Operation>>>,
         dividends: HashMap<String, Vec<Dividend>>,
         bond_events: HashMap<String, Vec<BondEvent>>,
         /// Forecasts by instrument UID.
@@ -1399,9 +1507,13 @@ mod tests {
 
         fn portfolio_positions(
             &self,
-            _: &str,
+            account_id: &str,
         ) -> impl Future<Output = color_eyre::Result<Vec<AccountPosition>>> + Send {
-            ready(Ok(self.positions.clone()))
+            let positions = self
+                .account_positions
+                .get(account_id)
+                .unwrap_or(&self.positions);
+            ready(Ok(positions.clone()))
         }
 
         fn instrument(
@@ -1426,13 +1538,16 @@ mod tests {
 
         fn operations(
             &self,
-            _: &str,
+            account_id: &str,
             filter: OperationsFilter<'_>,
         ) -> impl Future<Output = color_eyre::Result<Vec<Operation>>> + Send {
+            let operations = self
+                .account_operations
+                .get(account_id)
+                .unwrap_or(&self.operations);
             ready(match filter {
-                OperationsFilter::Instrument(figi) => self.get(&self.operations, figi),
-                OperationsFilter::Kinds(kinds) => Ok(self
-                    .operations
+                OperationsFilter::Instrument(figi) => self.get(operations, figi),
+                OperationsFilter::Kinds(kinds) => Ok(operations
                     .values()
                     .flatten()
                     .filter(|op| kinds.contains(&op.kind))
@@ -1554,6 +1669,13 @@ mod tests {
         assert_eq!(totals.additional_profit.currency, Currency::RUB);
     }
 
+    fn on_account(positions: Vec<AccountPosition>) -> Vec<(String, AccountPosition)> {
+        positions
+            .into_iter()
+            .map(|p| ("account".to_string(), p))
+            .collect()
+    }
+
     fn portfolio_position(figi: &str, instrument_type: &str) -> AccountPosition {
         AccountPosition {
             figi: figi.to_string(),
@@ -1583,7 +1705,7 @@ mod tests {
         let instruments = HashMap::from([("FIGI1".to_string(), named("Sber", "SBER"))]);
 
         // Act
-        let portfolio = AccountPortfolio::new("account".to_string(), positions, &instruments);
+        let portfolio = AccountPortfolio::new(on_account(positions), &instruments);
 
         // Assert
         let holdings: Vec<_> = portfolio
@@ -1611,7 +1733,7 @@ mod tests {
         let instruments = HashMap::from([("OPT1".to_string(), named("Option", "OPTX"))]);
 
         // Act
-        let portfolio = AccountPortfolio::new("account".to_string(), positions, &instruments);
+        let portfolio = AccountPortfolio::new(on_account(positions), &instruments);
 
         // Assert
         assert_eq!(portfolio.holdings.len(), 1);
@@ -1631,7 +1753,7 @@ mod tests {
     fn account_portfolio_reports_skipped_positions_on_every_call() {
         // Arrange
         let positions = vec![portfolio_position("OPT1", "option")];
-        let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
+        let portfolio = AccountPortfolio::new(on_account(positions), &HashMap::new());
 
         // Act
         let first = portfolio.skipped();
@@ -1681,6 +1803,7 @@ mod tests {
         figis
             .iter()
             .map(|figi| Holding {
+                account_ids: vec!["account".to_string()],
                 kind: InstrumentKind::Share,
                 instrument: instrument_or_figi(&HashMap::new(), figi),
                 figi: (*figi).to_string(),
@@ -1758,7 +1881,7 @@ mod tests {
         ];
 
         // Act
-        let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
+        let portfolio = AccountPortfolio::new(on_account(positions), &HashMap::new());
 
         // Assert
         let figis: Vec<_> = portfolio.holdings.iter().map(|h| h.figi.as_str()).collect();
@@ -1788,7 +1911,7 @@ mod tests {
             unpriced("B1", "bond"),
             portfolio_position("OPT1", "option"),
         ];
-        let portfolio = AccountPortfolio::new("account".to_string(), positions, &HashMap::new());
+        let portfolio = AccountPortfolio::new(on_account(positions), &HashMap::new());
 
         // Act
         let skipped = portfolio.skipped_of(|k| k == covered);
@@ -1833,41 +1956,50 @@ mod tests {
         ]
     }
 
+    fn ids(ids: &[&str]) -> AccountSelector {
+        AccountSelector::Ids(ids.iter().map(ToString::to_string).collect())
+    }
+
     #[rstest]
-    #[case::only_open_of_type(AccountSelector::Type(AccountType::TinkoffIis), "I1")]
-    #[case::by_id(AccountSelector::Id("B2".to_string()), "B2")]
-    #[case::closed_by_id(AccountSelector::Id("I0".to_string()), "I0")]
-    fn select_account_picks_single_match(
+    #[case::only_open_of_type(AccountSelector::Type(AccountType::TinkoffIis), &["I1"])]
+    #[case::by_id(ids(&["B2"]), &["B2"])]
+    #[case::closed_by_id(ids(&["I0"]), &["I0"])]
+    #[case::several_ids(ids(&["I1", "B1", "I1"]), &["B1", "I1"])]
+    #[case::all_open_investment(AccountSelector::All, &["B1", "B2", "I1", "X1"])]
+    fn select_accounts_picks_matches(
         #[case] selector: AccountSelector,
-        #[case] expected_id: &str,
+        #[case] expected_ids: &[&str],
     ) {
         // Arrange
-        let accounts = accounts();
+        let mut accounts = accounts();
+        accounts.push(account("X1", AccountType::InvestBox, AccountStatus::Open));
+        accounts.push(account("D1", AccountType::Debit, AccountStatus::Open));
 
         // Act
-        let account = select_account(&accounts, &selector).unwrap();
+        let selected = select_accounts(&accounts, &selector).unwrap();
 
         // Assert
-        assert_eq!(account.id, expected_id);
+        let selected_ids: Vec<&str> = selected.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(selected_ids, expected_ids);
     }
 
     #[rstest]
     #[case::several_of_type(
         AccountSelector::Type(AccountType::Tinkoff),
         "Several accounts match: B1 (Account B1, tinkoff), B2 (Account B2, tinkoff); \
-         choose one with --account-id"
+         choose one with --account-id or all with --account all"
     )]
     #[case::no_open_of_type(
         AccountSelector::Type(AccountType::InvestBox),
         "No open invest-box account; available accounts: B1 (Account B1, tinkoff), \
          B2 (Account B2, tinkoff), I1 (Account I1, iis), I0 (Account I0, iis)"
     )]
-    #[case::unknown_id(
-        AccountSelector::Id("X".to_string()),
-        "No account with ID X; available accounts: B1 (Account B1, tinkoff), \
+    #[case::unknown_ids(
+        ids(&["X", "B1", "Y"]),
+        "No account with ID X, Y; available accounts: B1 (Account B1, tinkoff), \
          B2 (Account B2, tinkoff), I1 (Account I1, iis), I0 (Account I0, iis)"
     )]
-    fn select_account_rejects_ambiguous_or_missing(
+    fn select_accounts_rejects_ambiguous_or_missing(
         #[case] selector: AccountSelector,
         #[case] expected: &str,
     ) {
@@ -1875,26 +2007,41 @@ mod tests {
         let accounts = accounts();
 
         // Act
-        let error = select_account(&accounts, &selector).unwrap_err();
+        let error = select_accounts(&accounts, &selector).unwrap_err();
 
         // Assert
         assert_eq!(error.to_string(), expected);
     }
 
-    #[test]
-    fn select_account_without_accounts() {
+    #[rstest]
+    #[case::of_type(
+        AccountSelector::Type(AccountType::Tinkoff),
+        "No open tinkoff account; available accounts: none"
+    )]
+    #[case::all(
+        AccountSelector::All,
+        "No open investment accounts; available accounts: none"
+    )]
+    fn select_accounts_without_accounts(#[case] selector: AccountSelector, #[case] expected: &str) {
         // Arrange
         let accounts: Vec<Account> = vec![];
 
         // Act
-        let error =
-            select_account(&accounts, &AccountSelector::Type(AccountType::Tinkoff)).unwrap_err();
+        let error = select_accounts(&accounts, &selector).unwrap_err();
 
         // Assert
-        assert_eq!(
-            error.to_string(),
-            "No open tinkoff account; available accounts: none"
-        );
+        assert_eq!(error.to_string(), expected);
+    }
+
+    #[rstest]
+    #[case::all("ALL", AccountSelector::All)]
+    #[case::type_name("iis", AccountSelector::Type(AccountType::TinkoffIis))]
+    fn account_selector_parses_type_or_all(#[case] value: &str, #[case] expected: AccountSelector) {
+        // Act
+        let selector = AccountSelector::parse(value);
+
+        // Assert
+        assert_eq!(selector, Ok(expected));
     }
 
     #[rstest]
@@ -2241,7 +2388,7 @@ mod tests {
             .unwrap();
 
         // Assert
-        assert_eq!(portfolio.account_id, "ACC");
+        assert_eq!(portfolio.holdings[0].account_ids, ["ACC"]);
         assert_eq!(portfolio.holdings.len(), 1);
         assert_eq!(portfolio.holdings[0].kind, InstrumentKind::Share);
         assert_eq!(portfolio.holdings[0].instrument.ticker.as_str(), "SBER");
@@ -2849,5 +2996,126 @@ mod tests {
         // Assert
         assert!(!report.taxed);
         assert_eq!(report.tax().value, Decimal::ZERO);
+    }
+
+    fn two_accounts() -> Vec<Account> {
+        vec![
+            account("B", AccountType::Tinkoff, AccountStatus::Open),
+            account("I", AccountType::TinkoffIis, AccountStatus::Open),
+        ]
+    }
+
+    #[tokio::test]
+    async fn load_portfolio_merges_instrument_held_on_several_accounts() {
+        // Arrange
+        let reports = Reports::new(FakeApi {
+            accounts: two_accounts(),
+            account_positions: HashMap::from([
+                (
+                    "B".to_string(),
+                    vec![priced("F1", "share", 10, 100), priced("F2", "bond", 1, 900)],
+                ),
+                ("I".to_string(), vec![priced("F1", "share", 30, 140)]),
+            ]),
+            ..api()
+        });
+
+        // Act
+        let portfolio = reports
+            .load_portfolio(&AccountSelector::All, None)
+            .await
+            .unwrap();
+
+        // Assert
+        let figis: Vec<&str> = portfolio.holdings.iter().map(|h| h.figi.as_str()).collect();
+        assert_eq!(figis, ["F1", "F2"]);
+        let share = &portfolio.holdings[0];
+        assert_eq!(share.account_ids, ["B", "I"]);
+        assert_eq!(share.position.quantity, dec!(40));
+        assert_eq!(share.position.average_buy_price.value, dec!(130));
+    }
+
+    #[tokio::test]
+    async fn build_portfolio_counts_operations_of_every_account() {
+        // Arrange
+        let dividend = |payment: i64| {
+            HashMap::from([(
+                "F1".to_string(),
+                vec![operation(
+                    OperationKind::Dividend,
+                    Some(InstrumentKind::Share),
+                    rub(payment),
+                )],
+            )])
+        };
+        let reports = Reports::new(FakeApi {
+            accounts: two_accounts(),
+            positions: vec![priced("F1", "share", 10, 100)],
+            account_operations: HashMap::from([
+                ("B".to_string(), dividend(100)),
+                ("I".to_string(), dividend(50)),
+            ]),
+            ..api()
+        });
+        let portfolio = reports
+            .load_portfolio(&AccountSelector::All, None)
+            .await
+            .unwrap();
+
+        // Act
+        let (loaded, failures) = reports.build_portfolio(&portfolio, false, None).await;
+
+        // Assert
+        assert_eq!(failures.len(), 0);
+        assert_eq!(loaded.dividends().value, dec!(150));
+    }
+
+    #[tokio::test]
+    async fn tax_report_sums_accounts() {
+        // Arrange
+        let dividend = |id: &str, payment: i64| {
+            HashMap::from([(
+                "F1".to_string(),
+                vec![Operation {
+                    id: id.to_string(),
+                    ..operation(
+                        OperationKind::Dividend,
+                        Some(InstrumentKind::Share),
+                        rub(payment),
+                    )
+                }],
+            )])
+        };
+        let reports = Reports::new(FakeApi {
+            accounts: two_accounts(),
+            account_operations: HashMap::from([
+                ("B".to_string(), dividend("1", 100)),
+                ("I".to_string(), dividend("2", 50)),
+            ]),
+            ..api()
+        });
+
+        // Act
+        let report = reports.get_tax_report(&AccountSelector::All).await.unwrap();
+
+        // Assert
+        assert_eq!(report.total().dividends.value, dec!(150));
+    }
+
+    #[tokio::test]
+    async fn sale_tax_of_several_accounts_fails() {
+        // Arrange
+        let reports = Reports::new(FakeApi {
+            accounts: two_accounts(),
+            ..sale_tax_api()
+        });
+
+        // Act
+        let result = reports
+            .get_sale_tax(&AccountSelector::All, None, today())
+            .await;
+
+        // Assert
+        assert!(result.is_err());
     }
 }

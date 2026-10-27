@@ -8,7 +8,6 @@ use tinkoff::{
     client::TinkoffInvestment,
     domain::{
         InstrumentKind, Portfolio,
-        account::AccountType,
         calendar::CalendarKind,
         risk::{TARGET_ASSET_TYPES, TargetAllocation},
     },
@@ -32,14 +31,13 @@ impl AppConfig {
             })?
         };
 
-        let account = if let Some(id) = matches.get_one::<String>("account-id") {
-            AccountSelector::Id(id.clone())
+        let account = if let Some(ids) = matches.get_many::<String>("account-id") {
+            AccountSelector::Ids(ids.cloned().collect())
         } else {
-            let account_type = matches
-                .get_one::<AccountType>("account")
-                .copied()
-                .ok_or_else(|| eyre::eyre!("Account type is not set"))?;
-            AccountSelector::Type(account_type)
+            matches
+                .get_one::<AccountSelector>("account")
+                .cloned()
+                .ok_or_else(|| eyre::eyre!("Account type is not set"))?
         };
 
         Ok(Self { token, account })
@@ -328,16 +326,22 @@ fn build_cli() -> Command {
             arg!(--account <TYPE>)
                 .required(false)
                 .default_value("tinkoff")
-                .value_parser(AccountType::parse)
+                .value_parser(AccountSelector::parse)
                 .help(
                     "Account type: tinkoff (broker, default), iis, invest-box, invest-fund, \
-                     debit, saving, dfa. Selects the only open account of this type",
+                     debit, saving, dfa. Selects the only open account of this type; \
+                     all selects open broker, IIS and invest box accounts together",
                 ),
         )
         .arg(
             arg!(--"account-id" <ID>)
                 .required(false)
-                .help("Account ID (see the ac command); takes precedence over --account"),
+                .value_delimiter(',')
+                .action(ArgAction::Append)
+                .help(
+                    "Account IDs separated by commas (see the ac command); \
+                     takes precedence over --account",
+                ),
         )
         .subcommand(all_cmd())
         .subcommand(shares_cmd())
