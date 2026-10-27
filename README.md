@@ -1,3 +1,4 @@
+[![CI](https://github.com/aegoroff/tinkoff/actions/workflows/ci.yml/badge.svg)](https://github.com/aegoroff/tinkoff/actions/workflows/ci.yml)
 [![](https://tokei.rs/b1/github/aegoroff/tinkoff?category=code)](https://github.com/XAMPPRocky/tokei)
 
 # Tinkoff Investment Console Client
@@ -27,7 +28,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 
 ### Prerequisites
 
-1. Install Rust (1.70 or later)
+1. Install Rust (1.89 or later)
 2. Get your Tinkoff API v2 token from [Tinkoff Investment](https://www.tinkoff.ru/invest/)
 
 ### Build and Install
@@ -216,28 +217,38 @@ The application provides rich, formatted output including:
 
 ```
 src/
-├── main.rs              # CLI application entry point
-├── lib.rs               # Library exports and utility functions
-├── client.rs            # Tinkoff API client implementation
+├── main.rs              # CLI entry point, command handling
+├── lib.rs               # Library exports, API value conversions
+├── api.rs               # InvestApi trait: the seam between reports and the T-Invest API
+├── client.rs            # gRPC adapter of InvestApi: transport, retries, API → domain mapping
+├── reports.rs           # Reports: use cases, tested with an in-memory FakeApi
 ├── progress.rs          # Progress indicators
-├── ux.rs                # Formatting utilities
+├── ux.rs                # Table and number formatting
 └── domain/
+    ├── account.rs       # Accounts, their types and statuses
     ├── analytics.rs     # Analyst forecasts and fundamentals
+    ├── benchmark.rs     # Returns compared with market indices
     ├── bond.rs          # Bond events, yield to maturity and to offer
     ├── calendar.rs      # Dividend and bond payments calendars
-    ├── money.rs         # Money, Income types
-    ├── paper.rs         # Paper, Position, Profit types
-    ├── risk.rs          # Risk analysis
+    ├── fx.rs            # Conversion to RUB at daily rates
+    ├── history.rs       # Instrument operations history
+    ├── income.rs        # Passive income forecast and portfolio yield
+    ├── lots.rs          # FIFO tax lots, tax on sale and long-term holding exemption
+    ├── money.rs         # Money and Income
+    ├── operation.rs     # Account operations and their kinds
+    ├── paper.rs         # Paper, Position, Instrument, Profit kinds
+    ├── portfolio.rs     # Portfolio and Asset containers
+    ├── risk.rs          # Risk analysis, target allocation, rebalancing
+    ├── tax.rs           # Income and taxes withheld by year
     ├── xirr.rs          # Annual return of irregular cash flows
-    └── display/
-        ├── analytics.rs # Forecasts and fundamentals tables
-        ├── calendar.rs  # Calendar display formatting
-        └── risk.rs      # Risk display formatting
+    └── display/         # Display implementations for domain types
 ```
 
 ## Key Components
 
-- **`TinkoffInvestment`**: Main API client for Tinkoff Investment API
+- **`InvestApi`**: Data the reports need from the T-Invest API
+- **`TinkoffInvestment`**: gRPC implementation of `InvestApi` with retries
+- **`Reports`**: Use cases built on `InvestApi`
 - **`Portfolio`**: Container for all portfolio assets
 - **`Asset<P>`**: Generic container for different asset types
 - **`Paper<P>`**: Individual investment instrument representation
@@ -254,7 +265,9 @@ git clone https://github.com/aegoroff/tinkoff.git
 cd tinkoff
 cargo build --release
 
-# Run tests
+# Checks run by CI on every push and pull request
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings   # pedantic lints are enabled in Cargo.toml
 cargo test
 ```
 

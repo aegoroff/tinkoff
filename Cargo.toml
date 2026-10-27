@@ -5,6 +5,7 @@ repository = "https://github.com/aegoroff/tinkoff"
 homepage = "https://github.com/aegoroff/tinkoff"
 authors = ["egoroff <egoroff@gmail.com>"]
 edition = "2024"
+rust-version = "1.89"
 license = "MIT"
 version = "0.1.0"
 
@@ -39,3 +40,6 @@ panic = 'abort'
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

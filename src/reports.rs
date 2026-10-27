@@ -195,20 +195,21 @@ impl AccountPortfolio {
             let instrument = instrument_or_figi(instruments, &p.figi);
             let kind = InstrumentKind::from_api(&p.instrument_type);
             match (kind, p.position) {
-                (Some(_), Ok(position))
-                    if let Some(held) = holdings.iter_mut().find(|h| h.figi == p.figi) =>
-                {
-                    held.position = held.position.merge(&position);
-                    held.account_ids.push(account_id);
+                (Some(kind), Ok(position)) => {
+                    if let Some(held) = holdings.iter_mut().find(|h| h.figi == p.figi) {
+                        held.position = held.position.merge(&position);
+                        held.account_ids.push(account_id);
+                    } else {
+                        holdings.push(Holding {
+                            kind,
+                            account_ids: vec![account_id],
+                            instrument,
+                            figi: p.figi,
+                            instrument_uid: p.instrument_uid,
+                            position,
+                        });
+                    }
                 }
-                (Some(kind), Ok(position)) => holdings.push(Holding {
-                    kind,
-                    account_ids: vec![account_id],
-                    instrument,
-                    figi: p.figi,
-                    instrument_uid: p.instrument_uid,
-                    position,
-                }),
                 (Some(_), Err(reason)) => skipped_positions.push(SkippedPosition {
                     kind,
                     instrument,
