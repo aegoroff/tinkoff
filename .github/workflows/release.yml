@@ -6,12 +6,9 @@ on:
 name: Release
 
 env:
+  CARGO_TERM_COLOR: always
   RELEASE_BIN: tinkoff
   RELEASE_DIR: artifacts
-  GITHUB_REF: "${{ github.ref }}"
-  WINDOWS_TARGET: x86_64-pc-windows-msvc
-  MACOS_TARGET: x86_64-apple-darwin
-  LINUX_TARGET: x86_64-unknown-linux-musl
   RELEASER_VER: 0.11.1
 
 jobs:
@@ -20,17 +17,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build: [linux, macos, windows]
         include:
           - build: linux
             os: ubuntu-latest
-            rust: stable
+            target: x86_64-unknown-linux-musl
           - build: macos
             os: macos-latest
-            rust: stable
+            target: aarch64-apple-darwin
           - build: windows
             os: windows-latest
-            rust: stable
+            target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v7
@@ -39,14 +35,12 @@ jobs:
         id: get_version
         shell: bash
         run: |
-          echo "using version tag ${GITHUB_REF:11}"
-          echo ::set-output name=version::"${GITHUB_REF:11}"
+          echo "using version tag ${GITHUB_REF_NAME#v}"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust
-        if: matrix.rust
-        run: |
-          rustup update ${{ matrix.rust }} --no-self-update
-          rustup default ${{ matrix.rust }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Install musl-tools (Linux)
         if: matrix.build == 'linux'
@@ -54,68 +48,35 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install musl-tools -y
 
-      - name: Install p7zip (MacOS)
-        if: matrix.build == 'macos'
-        run: brew install p7zip
-
-      - name: Build (Linux)
-        if: matrix.build == 'linux'
-        run: |
-          rustup target add ${{ env.LINUX_TARGET }}
-          cargo build --release --target ${{ env.LINUX_TARGET }}
-
-      - name: Build (MacOS)
-        if: matrix.build == 'macos'
-        run: cargo build --release
-
-      - name: Build (Windows)
-        if: matrix.build == 'windows'
-        run: cargo build --release
+      - name: Build
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }}
         env:
-          RUSTFLAGS: -Ctarget-feature=+crt-static
+          RUSTFLAGS: ${{ matrix.build == 'windows' && '-Ctarget-feature=+crt-static' || '' }}
 
-      - name: Create artifact directory
+      - name: Create tarball
+        shell: bash
         run: |
-          mkdir ${{ env.RELEASE_DIR }}
-          mkdir dist
-
-      - name: Create tarball (Linux)
-        if: matrix.build == 'linux'
-        run: |
-          cp ./target/${{ env.LINUX_TARGET }}/release/${{ env.RELEASE_BIN }} ./dist/${{ env.RELEASE_BIN }}
-          cp ./LICENSE.txt ./dist/
-          7z a -ttar -so -an ./dist/* | 7z a -si ./${{ env.RELEASE_DIR }}/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.LINUX_TARGET }}.tar.gz
+          mkdir ${{ env.RELEASE_DIR }} dist
+          cp ./target/${{ matrix.target }}/release/${{ env.RELEASE_BIN }}${{ matrix.build == 'windows' && '.exe' || '' }} ./dist/
+          cp ./LICENSE ./README.md ./dist/
+          cd dist && tar -czf ../${{ env.RELEASE_DIR }}/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.version }}-${{ matrix.target }}.tar.gz *
 
       - name: Build Debian release (x86-64)
         if: matrix.build == 'linux'
-        working-directory: ./tinkoff
         run: |
-          cargo install cargo-deb
-          cargo deb --no-build --target ${{ env.LINUX_TARGET }}
-          cp ../target/${{ env.LINUX_TARGET }}/debian/${{ env.RELEASE_BIN }}_*.deb ../${{ env.RELEASE_DIR }}/
+          cargo install --locked cargo-deb
+          cargo deb --no-build --target ${{ matrix.target }}
+          cp ./target/${{ matrix.target }}/debian/${{ env.RELEASE_BIN }}_*.deb ./${{ env.RELEASE_DIR }}/
 
       - name: Build RPM release (x86-64)
         if: matrix.build == 'linux'
-        working-directory: ./tinkoff
         run: |
-          cargo install cargo-generate-rpm
-          cargo generate-rpm --target ${{ env.LINUX_TARGET }}
-          cp ./target/${{ env.LINUX_TARGET }}/generate-rpm/${{ env.RELEASE_BIN }}-*.rpm ../${{ env.RELEASE_DIR }}/
+          cargo install --locked cargo-generate-rpm
+          cargo generate-rpm --target ${{ matrix.target }}
+          cp ./target/${{ matrix.target }}/generate-rpm/${{ env.RELEASE_BIN }}-*.rpm ./${{ env.RELEASE_DIR }}/
 
-      - name: Create tarball (Windows)
-        if: matrix.build == 'windows'
-        shell: bash
-        run: |
-          mv ./target/release/${{ env.RELEASE_BIN }}.exe ./dist/${{ env.RELEASE_BIN }}.exe
-          7z a -ttar -so -an ./dist/* | 7z a -si ./${{ env.RELEASE_DIR }}/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.WINDOWS_TARGET }}.tar.gz
-
-      - name: Create tarball (MacOS)
-        if: matrix.build == 'macos'
-        run: |
-          mv ./target/release/${{ env.RELEASE_BIN }} ./dist/${{ env.RELEASE_BIN }}
-          7z a -ttar -so -an ./dist/* | 7z a -si ./${{ env.RELEASE_DIR }}/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.MACOS_TARGET }}.tar.gz
-
-      - name: Upload Zip
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.build }}
@@ -125,48 +86,26 @@ jobs:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Query version number
-        id: get_version
-        shell: bash
-        run: |
-          echo "using version tag ${GITHUB_REF:11}"
-          echo ::set-output name=version::"${GITHUB_REF:11}"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
 
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          release_name: ${{ steps.get_version.outputs.VERSION }}
-
-      - name: Download Linux tarball
-        uses: actions/download-artifact@v8
-        with:
-          name: linux
-          path: linux
-
-      - name: Download Windows tarball
-        uses: actions/download-artifact@v8
-        with:
-          name: windows
-          path: windows
-
-      - name: Download MacOS tarball
-        uses: actions/download-artifact@v8
-        with:
-          name: macos
-          path: macos
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes ./linux/* ./macos/* ./windows/*
 
       - name: Download Releaser
         run: |
-          curl -L  -o releaser.tar.gz https://github.com/aegoroff/releaser/releases/download/${{ env.RELEASER_VER }}/releaser-${{ env.RELEASER_VER }}-x86_64-unknown-linux-musl.tar.gz
+          curl -L -o releaser.tar.gz https://github.com/aegoroff/releaser/releases/download/${{ env.RELEASER_VER }}/releaser-${{ env.RELEASER_VER }}-x86_64-unknown-linux-musl.tar.gz
           tar -xf releaser.tar.gz
+
       - name: Create brew formula
-        run: ${{ github.workspace }}/releaser b -c ./tinkoff/ -b https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/ -l './linux/' -m './macos/' -u ${{ env.RELEASE_BIN }}.rb
+        run: ${{ github.workspace }}/releaser b -c ./ -b https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ -l './linux/' -m './macos/' -u ${{ env.RELEASE_BIN }}.rb
       - name: Publish brew formula
         uses: dmnemec/copy_file_to_another_repo_action@main
         env:
@@ -175,12 +114,12 @@ jobs:
           github_server: "github.com"
           source_file: ${{ env.RELEASE_BIN }}.rb
           destination_repo: "aegoroff/homebrew-tap"
-          user_email: "egoroff@email.com"
+          user_email: "egoroff@gmail.com"
           user_name: "aegoroff"
-          commit_message: "release: ${{ steps.get_version.outputs.VERSION }}"
+          commit_message: "release: ${{ github.ref_name }}"
 
       - name: Create scoop json
-        run: ${{ github.workspace }}/releaser s -c ./tinkoff/ -b https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/ -i './windows/' -e ${{ env.RELEASE_BIN }}.exe -u ${{ env.RELEASE_BIN }}.json
+        run: ${{ github.workspace }}/releaser s -c ./ -b https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ -i './windows/' -e ${{ env.RELEASE_BIN }}.exe -u ${{ env.RELEASE_BIN }}.json
       - name: Publish scoop json
         uses: dmnemec/copy_file_to_another_repo_action@main
         env:
@@ -189,36 +128,6 @@ jobs:
           github_server: "github.com"
           source_file: ${{ env.RELEASE_BIN }}.json
           destination_repo: "aegoroff/scoop-bucket"
-          user_email: "egoroff@email.com"
+          user_email: "egoroff@gmail.com"
           user_name: "aegoroff"
-          commit_message: "release: ${{ steps.get_version.outputs.VERSION }}"
-
-      - name: Release Linux tarball
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./linux/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.LINUX_TARGET }}.tar.gz
-          asset_content_type: application/gzip
-          asset_name: ${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.LINUX_TARGET }}.tar.gz
-
-      - name: Release Windows tarball
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./windows/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.WINDOWS_TARGET }}.tar.gz
-          asset_content_type: application/gzip
-          asset_name: ${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.WINDOWS_TARGET }}.tar.gz
-
-      - name: Release MacOS tarball
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./macos/${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.MACOS_TARGET }}.tar.gz
-          asset_content_type: application/gzip
-          asset_name: ${{ env.RELEASE_BIN }}-${{ steps.get_version.outputs.VERSION }}-${{ env.MACOS_TARGET }}.tar.gz
+          commit_message: "release: ${{ github.ref_name }}"

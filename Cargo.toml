@@ -33,6 +33,21 @@ mimalloc = "0.1.52"
 [dev-dependencies]
 rstest = "0.28.0"
 
+[package.metadata.deb]
+extended-description = "Console client of T-Invest API: portfolio, income, taxes, risk and bond screener"
+assets = [
+    ["target/release/tinkoff", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/tinkoff/", "644"],
+    ["LICENSE", "usr/share/doc/tinkoff/", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/tinkoff", dest = "/usr/bin/tinkoff", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/tinkoff/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/tinkoff/LICENSE", mode = "644", doc = true },
+]
+
 [profile.release]
 lto = true
 strip = true
