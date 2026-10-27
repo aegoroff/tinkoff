@@ -144,19 +144,19 @@ jobs:
           release_name: ${{ steps.get_version.outputs.VERSION }}
 
       - name: Download Linux tarball
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
         with:
           name: linux
           path: linux
 
       - name: Download Windows tarball
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
         with:
           name: windows
           path: windows
 
       - name: Download MacOS tarball
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
         with:
           name: macos
           path: macos
