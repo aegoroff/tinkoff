@@ -89,6 +89,8 @@ impl OperationState {
 #[derive(Clone, Debug)]
 pub struct Operation {
     pub id: String,
+    /// ID of the trade a broker fee is withheld for; empty for operations without one
+    pub parent_operation_id: String,
     pub kind: OperationKind,
     pub state: OperationState,
     pub date: DateTime<Utc>,

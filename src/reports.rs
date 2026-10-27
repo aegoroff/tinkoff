@@ -1340,15 +1340,27 @@ impl<A: InvestApi> Reports<A> {
 /// Totals of a paper's operations in RUB: income net of taxes, fees and cash flows.
 ///
 /// NKD paid or received on bond trades counts as coupon income.
-/// A trade commission is not part of its payment, so it is added to fees and cash flows.
+/// A trade commission is not part of its payment, so it is added to fees and cash flows;
+/// the broker fee operation withheld for the same trade is then left out.
 async fn reduce<S: DailyCloses>(
     fx: &RubConverter<S>,
     operations: &[Operation],
 ) -> color_eyre::Result<Totals> {
+    let charged_trades: HashSet<&str> = operations
+        .iter()
+        .filter(|op| trade_commission(op).is_some())
+        .map(|op| op.id.as_str())
+        .collect();
     let mut income = Vec::new();
     let mut fees = Vec::new();
     let mut cash_flows = Vec::new();
     for op in operations {
+        if op.kind.is_fee()
+            && !op.parent_operation_id.is_empty()
+            && charged_trades.contains(op.parent_operation_id.as_str())
+        {
+            continue;
+        }
         let at = op.date;
         if let Some(payment) = op.payment {
             if let Some(accrued_interest) = trade_accrued_interest(op) {
@@ -2384,6 +2396,7 @@ mod tests {
     ) -> Operation {
         Operation {
             id: String::new(),
+            parent_operation_id: String::new(),
             kind,
             state: OperationState::Executed,
             date: "2026-09-25T09:00:00Z".parse().unwrap(),
@@ -2475,6 +2488,30 @@ mod tests {
         assert!(totals.additional_profit.value.is_zero());
         let amounts: Vec<Decimal> = totals.cash_flows.iter().map(|f| f.amount).collect();
         assert_eq!(amounts, vec![dec!(285243.75), dec!(-142.62)]);
+    }
+
+    #[rstest]
+    #[case::counted_from_trade(Some(-3))]
+    #[case::trade_without_commission(None)]
+    #[tokio::test]
+    async fn reduce_counts_broker_fee_of_trade_once(#[case] trade_commission: Option<i64>) {
+        // Arrange: the API returns the fee both in the trade and as its own operation
+        let buy = Operation {
+            id: "BUY".to_string(),
+            commission: trade_commission.map(rub),
+            ..operation(OperationKind::Buy, Some(InstrumentKind::Share), rub(-1000))
+        };
+        let fee = Operation {
+            parent_operation_id: "BUY".to_string(),
+            ..operation(OperationKind::Fee, Some(InstrumentKind::Share), rub(-3))
+        };
+
+        // Act
+        let totals = reduce(&usd_at_90(), &[buy, fee]).await.unwrap();
+
+        // Assert
+        assert_eq!(totals.fees.value, dec!(-3));
+        assert_eq!(totals.cash_flows.len(), 2);
     }
 
     #[tokio::test]

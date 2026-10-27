@@ -268,7 +268,7 @@ impl From<PortfolioPosition> for AccountPosition {
 }
 
 /// Kinds of API operation types; types absent here are [`OperationKind::Other`].
-pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 39] = [
+pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 40] = [
     (OperationType::Buy, OperationKind::Buy),
     (OperationType::BuyCard, OperationKind::Buy),
     (OperationType::BuyMargin, OperationKind::Buy),
@@ -312,6 +312,8 @@ pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 39] = [
     ),
     (OperationType::Overnight, OperationKind::Overnight),
     (OperationType::BondRepayment, OperationKind::Repayment),
+    // Redemption at maturity closes the lots like a sale.
+    (OperationType::BondRepaymentFull, OperationKind::Sell),
     (OperationType::ServiceFee, OperationKind::Fee),
     (OperationType::MarginFee, OperationKind::Fee),
     (OperationType::BrokerFee, OperationKind::Fee),
@@ -356,6 +358,7 @@ impl From<OperationItem> for Operation {
             quantity_rest: op.quantity_rest,
             description: op.description,
             id: op.id,
+            parent_operation_id: op.parent_operation_id,
         }
     }
 }
@@ -434,6 +437,7 @@ mod tests {
     #[case::overnight(OperationType::Overnight, OperationKind::Overnight)]
     #[case::penalty(OperationType::OutputPenalty, OperationKind::Fee)]
     #[case::amortization(OperationType::BondRepayment, OperationKind::Repayment)]
+    #[case::maturity(OperationType::BondRepaymentFull, OperationKind::Sell)]
     #[case::input(OperationType::Input, OperationKind::Other)]
     fn operation_kind_of_api_type(#[case] api: OperationType, #[case] expected: OperationKind) {
         // Act
@@ -470,6 +474,7 @@ mod tests {
             accrued_int: Some(rub(20)),
             quantity: 1,
             description: "Bond purchase".to_string(),
+            parent_operation_id: "OP0".to_string(),
             ..Default::default()
         };
 
@@ -488,6 +493,7 @@ mod tests {
         assert_eq!(op.accrued_interest.map(|p| p.value), Some(dec!(20)));
         assert_eq!(op.quantity, 1);
         assert_eq!(op.description, "Bond purchase");
+        assert_eq!(op.parent_operation_id, "OP0");
     }
 
     #[test]
