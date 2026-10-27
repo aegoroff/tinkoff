@@ -3,6 +3,7 @@ mod benchmark;
 mod calendar;
 mod history;
 mod income;
+mod lots;
 mod portfolio;
 pub mod risk;
 mod tax;

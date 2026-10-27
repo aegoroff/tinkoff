@@ -76,6 +76,7 @@ const ANALYTICS_CMD: &str = "an";
 const INCOME_CMD: &str = "in";
 const TAXES_CMD: &str = "tx";
 const BENCHMARK_CMD: &str = "bm";
+const SALE_TAX_CMD: &str = "sl";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -112,6 +113,7 @@ fn run_subcommand<'a>(
         INCOME_CMD => Box::pin(income(config)),
         TAXES_CMD => Box::pin(taxes(config)),
         BENCHMARK_CMD => Box::pin(benchmark(config)),
+        SALE_TAX_CMD => Box::pin(sale_tax(config, matches)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -192,6 +194,24 @@ async fn taxes(config: &AppConfig) -> Result<()> {
     let reports = config.reports();
     let report = reports.get_tax_report(&config.account).await?;
     println!("{report}");
+    Ok(())
+}
+
+/// Prints tax due if portfolio securities were sold now,
+/// with lots of the security with the given ticker only.
+async fn sale_tax(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
+    let ticker = cmd.get_one::<String>("TICKER").map(String::as_str);
+    let (report, failures) = config
+        .reports()
+        .get_sale_tax(&config.account, ticker, chrono::Utc::now())
+        .await?;
+    if ticker.is_some() {
+        for position in &report.positions {
+            print!("{position}");
+        }
+    }
+    print!("{report}");
+    report_failures(&failures);
     Ok(())
 }
 
@@ -335,6 +355,7 @@ fn build_cli() -> Command {
         .subcommand(income_cmd())
         .subcommand(taxes_cmd())
         .subcommand(benchmark_cmd())
+        .subcommand(sale_tax_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -449,6 +470,17 @@ fn benchmark_cmd() -> Command {
     Command::new(BENCHMARK_CMD)
         .aliases(["benchmark", "compare"])
         .about("Compare returns of the portfolio with IMOEX, MCFTR, RGBI and RGBITR indices")
+}
+
+fn sale_tax_cmd() -> Command {
+    Command::new(SALE_TAX_CMD)
+        .aliases(["sell", "lots"])
+        .about("Estimate tax if portfolio securities were sold now, with LDV exemption")
+        .arg(
+            arg!([TICKER])
+                .help("Ticker of a portfolio security to show its lots")
+                .required(false),
+        )
 }
 
 fn risk_cmd() -> Command {

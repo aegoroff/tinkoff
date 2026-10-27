@@ -119,6 +119,7 @@ src/
     ├── fx.rs          # Conversion to RUB at daily rates behind the DailyCloses seam
     ├── risk.rs        # Risk analysis, target allocation, rebalancing
     ├── tax.rs         # Income and taxes withheld by year
+    ├── lots.rs        # FIFO tax lots, tax on sale and long-term holding exemption
     ├── xirr.rs        # XIRR solver on Decimal
     └── display/       # Display implementations for domain types
 ```
@@ -147,7 +148,7 @@ src/
 ## CLI Guidelines
 
 - Use `clap` for argument parsing
-- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`, `in`, `tx`, `bm`
+- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`, `in`, `tx`, `bm`, `sl`
 - Provide aliases for better UX
 - Token from `-t` flag or `TINKOFF_TOKEN_V2` environment variable
 

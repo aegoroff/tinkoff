@@ -9,6 +9,7 @@ pub mod display;
 pub mod fx;
 pub mod history;
 pub mod income;
+pub mod lots;
 pub mod money;
 pub mod operation;
 pub mod paper;

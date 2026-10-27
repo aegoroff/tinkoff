@@ -18,6 +18,8 @@ pub enum OperationKind {
     Overnight,
     /// Broker, exchange and other fees and penalties
     Fee,
+    /// Partial redemption of a bond nominal (amortization)
+    Repayment,
     Other,
 }
 
@@ -52,7 +54,12 @@ impl OperationKind {
             Self::DividendTax => Some(TaxOperationKind::DividendTax),
             Self::CouponTax => Some(TaxOperationKind::CouponTax),
             Self::OtherTax => Some(TaxOperationKind::OtherTax),
-            Self::Buy | Self::Sell | Self::Overnight | Self::Fee | Self::Other => None,
+            Self::Buy
+            | Self::Sell
+            | Self::Overnight
+            | Self::Fee
+            | Self::Repayment
+            | Self::Other => None,
         }
     }
 }
@@ -85,6 +92,8 @@ pub struct Operation {
     pub kind: OperationKind,
     pub state: OperationState,
     pub date: DateTime<Utc>,
+    /// FIGI of the instrument; empty for operations without one
+    pub figi: String,
     /// Kind of the instrument; `None` for operations without one or of an unsupported one
     pub instrument_kind: Option<InstrumentKind>,
     /// `None` when the API gave no amount or one of an unknown currency.
@@ -118,6 +127,7 @@ mod tests {
     #[case::fee(OperationKind::Fee, false, true)]
     #[case::buy(OperationKind::Buy, false, false)]
     #[case::sell(OperationKind::Sell, false, false)]
+    #[case::repayment(OperationKind::Repayment, false, false)]
     #[case::other(OperationKind::Other, false, false)]
     fn operation_kind_is_income_or_fee(
         #[case] kind: OperationKind,

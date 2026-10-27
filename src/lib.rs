@@ -230,7 +230,7 @@ impl From<PortfolioPosition> for AccountPosition {
 }
 
 /// Kinds of API operation types; types absent here are [`OperationKind::Other`].
-pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 38] = [
+pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 39] = [
     (OperationType::Buy, OperationKind::Buy),
     (OperationType::BuyCard, OperationKind::Buy),
     (OperationType::BuyMargin, OperationKind::Buy),
@@ -273,6 +273,7 @@ pub(crate) const OPERATION_KINDS: [(OperationType, OperationKind); 38] = [
         OperationKind::OtherTax,
     ),
     (OperationType::Overnight, OperationKind::Overnight),
+    (OperationType::BondRepayment, OperationKind::Repayment),
     (OperationType::ServiceFee, OperationKind::Fee),
     (OperationType::MarginFee, OperationKind::Fee),
     (OperationType::BrokerFee, OperationKind::Fee),
@@ -306,6 +307,7 @@ impl From<OperationItem> for Operation {
             kind: operation_kind(op.r#type),
             state,
             date: to_datetime_utc(op.date.as_ref()),
+            figi: op.figi,
             instrument_kind: InstrumentKind::from_api(&op.instrument_type),
             payment: to_money(op.payment.as_ref()),
             commission: to_money(op.commission.as_ref()),
@@ -372,6 +374,7 @@ mod tests {
     #[case::progressive_tax(OperationType::TaxProgressive, OperationKind::OtherTax)]
     #[case::overnight(OperationType::Overnight, OperationKind::Overnight)]
     #[case::penalty(OperationType::OutputPenalty, OperationKind::Fee)]
+    #[case::amortization(OperationType::BondRepayment, OperationKind::Repayment)]
     #[case::input(OperationType::Input, OperationKind::Other)]
     fn operation_kind_of_api_type(#[case] api: OperationType, #[case] expected: OperationKind) {
         // Act

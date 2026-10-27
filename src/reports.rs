@@ -23,6 +23,8 @@ use crate::{
         fx::{DailyCloses, RubConverter},
         history::{History, HistoryItem, HistoryPrice},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
+        lots::{LotBook, PositionSale, SaleTaxReport, Trade, TradeKind, YearIncome},
+        moscow_date,
         operation::{Operation, OperationKind},
         tax::{TaxOperation, TaxReport},
         xirr::CashFlow,
@@ -224,12 +226,24 @@ impl<A: InvestApi> Reports<A> {
         kind: Option<InstrumentKind>,
     ) -> color_eyre::Result<AccountPortfolio> {
         let account = self.get_account(selector).await?;
+        self.load_account_portfolio(&account, kind).await
+    }
+
+    async fn load_account_portfolio(
+        &self,
+        account: &Account,
+        kind: Option<InstrumentKind>,
+    ) -> color_eyre::Result<AccountPortfolio> {
         let mut positions = self.api.portfolio_positions(&account.id).await?;
         if let Some(kind) = kind {
             positions.retain(|p| InstrumentKind::from_api(&p.instrument_type) == Some(kind));
         }
         let instruments = self.get_instruments_for_positions(&positions).await;
-        Ok(AccountPortfolio::new(account.id, positions, &instruments))
+        Ok(AccountPortfolio::new(
+            account.id.clone(),
+            positions,
+            &instruments,
+        ))
     }
 
     /// Looks up instruments of the given positions by FIGI concurrently;
@@ -505,6 +519,96 @@ impl<A: InvestApi> Reports<A> {
             items.push(TaxOperation { date, kind, amount });
         }
         Ok(TaxReport::new(&items))
+    }
+
+    /// Tax due if shares, bonds and ETFs of the account were sold at `now`,
+    /// with their lots matched by FIFO in RUB at trade dates.
+    ///
+    /// With `ticker`, only the position of this ticker is priced. Positions the report
+    /// leaves out are returned alongside.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the account, its portfolio, operations or FX rates cannot be
+    /// loaded, or there is no security with `ticker` in the portfolio.
+    pub async fn get_sale_tax(
+        &self,
+        selector: &AccountSelector,
+        ticker: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> color_eyre::Result<(SaleTaxReport, Vec<eyre::Report>)> {
+        let account = self.get_account(selector).await?;
+        let (portfolio, operations, fx) = tokio::join!(
+            self.load_account_portfolio(&account, None),
+            self.api
+                .operations(&account.id, OperationsFilter::Kinds(&SALE_TAX_OPERATIONS)),
+            self.load_fx_rates()
+        );
+        let (portfolio, operations, fx) = (portfolio?, operations?, fx?);
+
+        let year = moscow_date(now).year();
+        let mut trades: HashMap<&str, Vec<Trade>> = HashMap::new();
+        let mut year_income = YearIncome::zero();
+        for op in operations.iter().unique_by(|op| &op.id) {
+            if matches!(op.kind, OperationKind::Dividend | OperationKind::Coupon) {
+                if let Some(payment) = op.payment.filter(|_| moscow_date(op.date).year() == year) {
+                    year_income.payments += fx.to_rub(payment, op.date).await?;
+                }
+            } else if op.instrument_kind.is_some_and(is_lot_kind)
+                && let Some(trade) = lot_trade(&fx, op).await?
+            {
+                trades.entry(op.figi.as_str()).or_default().push(trade);
+            }
+        }
+        let books: HashMap<&str, LotBook> = trades
+            .into_iter()
+            .map(|(figi, trades)| (figi, LotBook::new(trades)))
+            .collect();
+        year_income.securities = books
+            .values()
+            .flat_map(|b| &b.realized)
+            .filter(|r| moscow_date(r.date).year() == year)
+            .fold(Money::zero(Currency::RUB), |acc, r| acc + r.result);
+
+        let holdings = portfolio
+            .holdings
+            .iter()
+            .filter(|h| is_lot_kind(h.kind))
+            .filter(|h| ticker.is_none_or(|t| h.instrument.ticker.as_str().eq_ignore_ascii_case(t)))
+            .collect_vec();
+        if let (Some(ticker), []) = (ticker, holdings.as_slice()) {
+            return Err(eyre::eyre!(
+                "No share, bond or ETF {ticker} in the portfolio"
+            ));
+        }
+        let no_trades = LotBook::new([]);
+        let mut positions = holdings
+            .into_iter()
+            .map(|h| {
+                let price = h.position.current_instrument_price + h.position.accrued_interest;
+                PositionSale::new(
+                    h.instrument.name.clone(),
+                    h.instrument.ticker.as_str().to_string(),
+                    h.position.quantity,
+                    books.get(h.figi.as_str()).unwrap_or(&no_trades),
+                    price,
+                    moscow_date(now),
+                )
+            })
+            .collect_vec();
+        positions.sort_by(|a, b| a.ticker.cmp(&b.ticker));
+
+        let report = SaleTaxReport {
+            positions,
+            year_income,
+            taxed: account.account_type != AccountType::TinkoffIis,
+        };
+        let failures = if ticker.is_some() {
+            Vec::new()
+        } else {
+            portfolio.skipped_of(is_lot_kind)
+        };
+        Ok((report, failures))
     }
 
     /// Creates a paper from a portfolio position with prices and operation totals in RUB.
@@ -1010,6 +1114,58 @@ fn trade_commission(op: &Operation) -> Option<Money> {
     }
     let commission = op.commission?;
     (!commission.value.is_zero()).then_some(commission)
+}
+
+/// Operations the sale tax report needs: trades and income of the year.
+const SALE_TAX_OPERATIONS: [OperationKind; 5] = [
+    OperationKind::Buy,
+    OperationKind::Sell,
+    OperationKind::Repayment,
+    OperationKind::Dividend,
+    OperationKind::Coupon,
+];
+
+/// Kinds of instruments that are sold by lots and taxed on sale.
+fn is_lot_kind(kind: InstrumentKind) -> bool {
+    matches!(
+        kind,
+        InstrumentKind::Share | InstrumentKind::Bond | InstrumentKind::Etf
+    )
+}
+
+/// Trade in RUB of a buy, sell or repayment operation with a payment;
+/// `None` for other operations and trades of no units.
+async fn lot_trade<S: DailyCloses>(
+    fx: &RubConverter<S>,
+    op: &Operation,
+) -> color_eyre::Result<Option<Trade>> {
+    let Some(payment) = op.payment else {
+        return Ok(None);
+    };
+    let payment = fx.to_rub(payment, op.date).await?;
+    let commission = match trade_commission(op) {
+        Some(commission) => fx.to_rub(commission, op.date).await?,
+        None => Money::zero(Currency::RUB),
+    };
+    let (kind, amount) = match op.kind {
+        OperationKind::Buy => (
+            TradeKind::Buy,
+            Money::zero(Currency::RUB) - payment - commission,
+        ),
+        OperationKind::Sell => (TradeKind::Sell, payment + commission),
+        OperationKind::Repayment => (TradeKind::Repayment, payment),
+        _ => return Ok(None),
+    };
+    let quantity = Decimal::from(op.quantity - op.quantity_rest);
+    if kind != TradeKind::Repayment && quantity <= Decimal::ZERO {
+        return Ok(None);
+    }
+    Ok(Some(Trade {
+        date: op.date,
+        kind,
+        quantity,
+        amount,
+    }))
 }
 
 /// Accrued coupon interest (NKD) paid on a bond buy (negative) or received on a sell (positive).
@@ -1865,6 +2021,7 @@ mod tests {
             kind,
             state: OperationState::Executed,
             date: "2026-09-25T09:00:00Z".parse().unwrap(),
+            figi: String::new(),
             instrument_kind,
             payment: Some(payment),
             commission: None,
@@ -2496,5 +2653,142 @@ mod tests {
                 "Index RGBITR skipped"
             ]
         );
+    }
+
+    /// Executed trade of `figi` on Moscow `date` in RUB.
+    fn lot_operation(
+        figi: &str,
+        kind: OperationKind,
+        date: &str,
+        quantity: i64,
+        payment: i64,
+    ) -> Operation {
+        Operation {
+            id: format!("{figi}-{date}-{kind:?}"),
+            figi: figi.to_string(),
+            date: format!("{date}T09:00:00Z").parse().unwrap(),
+            quantity,
+            ..operation(kind, Some(InstrumentKind::Share), rub(payment))
+        }
+    }
+
+    fn sale_tax_api() -> FakeApi {
+        let commission = |op: Operation, value: i64| Operation {
+            commission: Some(rub(value)),
+            ..op
+        };
+        let dividend = |date: &str, payment: Money| Operation {
+            payment: Some(payment),
+            ..lot_operation("F1", OperationKind::Dividend, date, 0, 0)
+        };
+        let currency_buy = Operation {
+            instrument_kind: Some(InstrumentKind::Currency),
+            ..lot_operation("USD", OperationKind::Buy, "2026-01-15", 100, -9000)
+        };
+        FakeApi {
+            positions: vec![
+                priced("F1", "share", 15, 300),
+                priced("F2", "bond", 3, 1000),
+            ],
+            instruments: HashMap::from([
+                ("F1".to_string(), named("Sber", "SBER")),
+                ("F2".to_string(), named("OFZ", "SU26238")),
+            ]),
+            operations: HashMap::from([
+                (
+                    "F1".to_string(),
+                    vec![
+                        commission(
+                            lot_operation("F1", OperationKind::Buy, "2020-01-10", 10, -1000),
+                            -10,
+                        ),
+                        lot_operation("F1", OperationKind::Buy, "2026-02-01", 10, -2000),
+                        commission(
+                            lot_operation("F1", OperationKind::Sell, "2026-03-01", 5, 1500),
+                            -5,
+                        ),
+                        dividend("2026-07-01", usd(1)),
+                        dividend("2025-07-01", rub(1000)),
+                    ],
+                ),
+                ("USD".to_string(), vec![currency_buy]),
+            ]),
+            ..api()
+        }
+    }
+
+    fn today() -> DateTime<Utc> {
+        "2026-10-27T09:00:00Z".parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn sale_tax_matches_lots_by_fifo_and_counts_year_income() {
+        // Arrange
+        let reports = Reports::new(sale_tax_api());
+
+        // Act
+        let (report, failures) = reports
+            .get_sale_tax(&broker(), None, today())
+            .await
+            .unwrap();
+
+        // Assert
+        assert_eq!(failures.len(), 0);
+        let tickers: Vec<&str> = report.positions.iter().map(|p| p.ticker.as_str()).collect();
+        assert_eq!(tickers, ["SBER", "SU26238"]);
+        assert_eq!(report.unknown().count(), 1);
+        assert_eq!(report.year_income.securities.value, dec!(990));
+        assert_eq!(report.year_income.payments.value, dec!(90));
+        assert_eq!(report.cost().value, dec!(2505));
+        assert_eq!(report.result().value, dec!(1995));
+        assert_eq!(report.ldv_exemption().value, dec!(995));
+        assert_eq!(report.tax().value, dec!(130));
+    }
+
+    #[tokio::test]
+    async fn sale_tax_of_ticker_prices_its_position_only() {
+        // Arrange
+        let reports = Reports::new(sale_tax_api());
+
+        // Act
+        let (report, _) = reports
+            .get_sale_tax(&broker(), Some("sber"), today())
+            .await
+            .unwrap();
+
+        // Assert
+        let tickers: Vec<&str> = report.positions.iter().map(|p| p.ticker.as_str()).collect();
+        assert_eq!(tickers, ["SBER"]);
+        assert_eq!(report.positions[0].lots().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn sale_tax_of_ticker_not_in_portfolio_fails() {
+        // Arrange
+        let reports = Reports::new(sale_tax_api());
+
+        // Act
+        let result = reports.get_sale_tax(&broker(), Some("GAZP"), today()).await;
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn sale_tax_of_iis_is_not_taxed() {
+        // Arrange
+        let api = FakeApi {
+            accounts: vec![account("IIS", AccountType::TinkoffIis, AccountStatus::Open)],
+            ..sale_tax_api()
+        };
+        let reports = Reports::new(api);
+        let iis = AccountSelector::Type(AccountType::TinkoffIis);
+
+        // Act
+        let (report, _) = reports.get_sale_tax(&iis, None, today()).await.unwrap();
+
+        // Assert
+        assert!(!report.taxed);
+        assert_eq!(report.tax().value, Decimal::ZERO);
     }
 }
