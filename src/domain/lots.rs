@@ -186,6 +186,18 @@ impl LotSale {
     pub fn result(&self) -> Money {
         self.value - self.cost
     }
+
+    /// The first `quantity` units of the lot, with cost and value in proportion.
+    #[must_use]
+    pub fn part(&self, quantity: Decimal) -> Self {
+        let share = quantity / self.quantity;
+        Self {
+            quantity,
+            cost: self.cost * share,
+            value: self.value * share,
+            ..*self
+        }
+    }
 }
 
 /// Day after the third anniversary of a buy, since a lot must be held over three years;
@@ -363,6 +375,7 @@ pub enum Basis {
 /// Portfolio position priced as if it were sold now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PositionSale {
+    pub figi: String,
     pub name: String,
     pub ticker: String,
     pub quantity: Decimal,
@@ -374,6 +387,7 @@ impl PositionSale {
     /// the basis is unknown when they do not add up to `quantity`.
     #[must_use]
     pub fn new(
+        figi: String,
         name: String,
         ticker: String,
         quantity: Decimal,
@@ -393,6 +407,7 @@ impl PositionSale {
             Basis::Unknown { in_lots }
         };
         Self {
+            figi,
             name,
             ticker,
             quantity,
@@ -853,6 +868,7 @@ mod tests {
 
     fn position(trades: &[Trade], quantity: i64, price: i64) -> PositionSale {
         PositionSale::new(
+            "FIGI".to_string(),
             "Sber".to_string(),
             "SBER".to_string(),
             Decimal::from(quantity),

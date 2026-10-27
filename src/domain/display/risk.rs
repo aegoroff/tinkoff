@@ -372,6 +372,15 @@ fn create_position_table(concentration: &PositionConcentration) -> Table {
 }
 
 /// Creates the rebalancing recommendations table
+/// Action colored green to buy, red to sell and grey to hold.
+pub(super) fn action_cell(action: RebalanceAction) -> Cell {
+    match action {
+        RebalanceAction::Buy => Cell::new("BUY").fg(comfy_table::Color::DarkGreen),
+        RebalanceAction::Sell => Cell::new("SELL").fg(comfy_table::Color::DarkRed),
+        RebalanceAction::Hold => Cell::new("HOLD").fg(comfy_table::Color::DarkGrey),
+    }
+}
+
 fn create_rebalancing_table(analysis: &RebalancingAnalysis) -> Table {
     let mut table = ux::new_table();
 
@@ -426,18 +435,7 @@ fn create_rebalancing_table(analysis: &RebalancingAnalysis) -> Table {
 
     // Add rows for each recommendation
     for rec in &analysis.recommendations {
-        let action_str = match &rec.action {
-            RebalanceAction::Buy => "BUY",
-            RebalanceAction::Sell => "SELL",
-            RebalanceAction::Hold => "HOLD",
-        };
-
-        let mut action_cell = Cell::new(action_str);
-        match &rec.action {
-            RebalanceAction::Buy => action_cell = action_cell.fg(comfy_table::Color::DarkGreen),
-            RebalanceAction::Sell => action_cell = action_cell.fg(comfy_table::Color::DarkRed),
-            RebalanceAction::Hold => action_cell = action_cell.fg(comfy_table::Color::DarkGrey),
-        }
+        let action_cell = action_cell(rec.action);
 
         let deviation_str = format!(
             "{}{}%",

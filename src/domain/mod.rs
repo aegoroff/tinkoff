@@ -16,6 +16,7 @@ pub mod paper;
 pub mod portfolio;
 pub mod risk;
 pub mod tax;
+pub mod trades;
 pub mod xirr;
 
 pub use calendar::{

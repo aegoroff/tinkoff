@@ -139,6 +139,8 @@ pub struct Instrument {
     pub asset_uid: Option<String>,
     /// Economic sector code, e.g. `financial`; `None` when unknown or not applicable
     pub sector: Option<String>,
+    /// Units traded in one lot
+    pub lot: Decimal,
 }
 
 /// Instrument found by its ticker or name.

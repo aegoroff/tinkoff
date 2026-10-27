@@ -269,7 +269,11 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     use tinkoff::domain::risk::{RebalancingAnalysis, RiskAnalysis};
 
     let reports = config.reports();
-    let (container, failures) = load_papers(config, &reports, None, false).await?;
+    let portfolio = reports.load_portfolio(&config.account, None).await?;
+    let progress = Arc::new(Progresser::new(portfolio.holdings.len() as u64));
+    let (container, failures) = reports
+        .build_portfolio(&portfolio, false, Some(progress))
+        .await;
 
     let risk_analysis = RiskAnalysis::analyze(&container);
     println!("{risk_analysis}");
@@ -277,6 +281,15 @@ async fn risk(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
     if let Some(target) = cmd.get_one::<TargetAllocation>("target") {
         let rebalancing = RebalancingAnalysis::analyze(&risk_analysis.asset_allocation, target);
         println!("{rebalancing}");
+        let plan = reports
+            .get_trade_plan(
+                &config.account,
+                &portfolio,
+                &rebalancing,
+                chrono::Utc::now(),
+            )
+            .await?;
+        print!("{plan}");
     }
     report_failures(&failures);
 

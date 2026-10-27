@@ -23,10 +23,15 @@ use crate::{
         fx::{DailyCloses, RubConverter},
         history::{History, HistoryItem, HistoryPrice},
         income::{DividendRecord, IncomeForecast, IncomeItem, IncomeKind, expected_dividends},
-        lots::{LotBook, PositionSale, SaleTaxReport, SecuritySales, Trade, TradeKind, YearIncome},
+        lots::{
+            LotBook, LotSale, PositionSale, SaleTaxReport, SecuritySales, Trade, TradeKind,
+            YearIncome,
+        },
         moscow_date,
         operation::{Operation, OperationKind},
+        risk::RebalancingAnalysis,
         tax::{TaxOperation, TaxOperationKind, TaxReport},
+        trades::{SaleTaxation, Tradable, TradePlan},
         xirr::CashFlow,
     },
     progress::Progress,
@@ -640,13 +645,75 @@ impl<A: InvestApi> Reports<A> {
                 "Sale tax is calculated per account; choose one with --account or --account-id"
             ));
         };
-        let (portfolio, operations, fx) = tokio::join!(
-            self.load_accounts_portfolio(std::slice::from_ref(account), None),
+        let portfolio = self
+            .load_accounts_portfolio(std::slice::from_ref(account), None)
+            .await?;
+        self.sale_tax_of(account, &portfolio, ticker, now).await
+    }
+
+    /// Orders in whole lots carrying out `analysis` for `portfolio` of the accounts chosen
+    /// by `selector`. Sells of a single taxed account take the lots adding the least tax
+    /// at `now` first; with several accounts their tax is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the accounts, their operations or FX rates cannot be loaded.
+    pub async fn get_trade_plan(
+        &self,
+        selector: &AccountSelector,
+        portfolio: &AccountPortfolio,
+        analysis: &RebalancingAnalysis,
+        now: DateTime<Utc>,
+    ) -> color_eyre::Result<TradePlan> {
+        let accounts = self.get_accounts_of(selector).await?;
+        let (taxation, mut tax_lots) = match accounts.as_slice() {
+            [account] => {
+                let (report, _) = self.sale_tax_of(account, portfolio, None, now).await?;
+                let tax_lots: HashMap<String, Vec<LotSale>> = report
+                    .known()
+                    .map(|p| (p.figi.clone(), p.lots().to_vec()))
+                    .collect();
+                let taxation = if report.taxed {
+                    SaleTaxation::Taxed(report.year_income)
+                } else {
+                    SaleTaxation::Untaxed
+                };
+                (taxation, tax_lots)
+            }
+            _ => (SaleTaxation::Unknown, HashMap::new()),
+        };
+        let tradables = portfolio
+            .holdings
+            .iter()
+            .map(|h| Tradable {
+                kind: h.kind,
+                ticker: h.instrument.ticker.as_str().to_string(),
+                name: h.instrument.name.clone(),
+                lot: h.instrument.lot,
+                price: h.position.current_instrument_price + h.position.accrued_interest,
+                quantity: h.position.quantity,
+                blocked_lots: h.position.blocked_lots,
+                tax_lots: tax_lots.remove(&h.figi),
+            })
+            .collect_vec();
+        Ok(TradePlan::new(analysis, &tradables, &taxation))
+    }
+
+    /// Tax due if shares, bonds and ETFs of `portfolio` of `account` were sold at `now`;
+    /// see [`Self::get_sale_tax`].
+    async fn sale_tax_of(
+        &self,
+        account: &Account,
+        portfolio: &AccountPortfolio,
+        ticker: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> color_eyre::Result<(SaleTaxReport, Vec<eyre::Report>)> {
+        let (operations, fx) = tokio::join!(
             self.api
                 .operations(&account.id, OperationsFilter::Kinds(&SALE_TAX_OPERATIONS)),
             self.load_fx_rates()
         );
-        let (portfolio, operations, fx) = (portfolio?, operations?, fx?);
+        let (operations, fx) = (operations?, fx?);
 
         let year = moscow_date(now).year();
         let mut trades: HashMap<&str, Vec<Trade>> = HashMap::new();
@@ -705,6 +772,7 @@ impl<A: InvestApi> Reports<A> {
             .map(|h| {
                 let price = h.position.current_instrument_price + h.position.accrued_interest;
                 PositionSale::new(
+                    h.figi.clone(),
                     h.instrument.name.clone(),
                     h.instrument.ticker.as_str().to_string(),
                     h.position.quantity,
@@ -1404,6 +1472,7 @@ fn instrument_or_figi(instruments: &HashMap<String, Instrument>, figi: &str) -> 
             currency: None,
             asset_uid: None,
             sector: None,
+            lot: Decimal::ONE,
         })
 }
 
@@ -1693,6 +1762,7 @@ mod tests {
             currency: Some(Currency::RUB),
             asset_uid: None,
             sector: None,
+            lot: Decimal::ONE,
         }
     }
 
@@ -1776,6 +1846,7 @@ mod tests {
                 currency: Some(Currency::RUB),
                 asset_uid: None,
                 sector: None,
+                lot: Decimal::ONE,
             },
         )]);
 
@@ -1850,6 +1921,7 @@ mod tests {
             currency: Some(Currency::RUB),
             asset_uid: None,
             sector: None,
+            lot: Decimal::ONE,
         };
 
         // Act
@@ -3118,5 +3190,81 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    fn sell_shares(value: i64) -> RebalancingAnalysis {
+        use crate::domain::risk::{RebalanceAction, RebalanceRecommendation};
+
+        RebalancingAnalysis {
+            total_value: rub(10_000),
+            recommendations: vec![RebalanceRecommendation {
+                asset_type: "Shares",
+                kind: InstrumentKind::Share,
+                current_percentage: dec!(50),
+                target_percentage: dec!(40),
+                deviation: dec!(10),
+                action: RebalanceAction::Sell,
+                rebalance_value: rub(value),
+            }],
+            max_deviation: dec!(10),
+            total_rebalance_value: rub(value),
+            priority_score: dec!(50),
+        }
+    }
+
+    #[tokio::test]
+    async fn trade_plan_of_one_account_sells_exempt_lots_tax_free() {
+        // Arrange: the earliest SBER lot of 2020 is exempt by LDV
+        let reports = Reports::new(sale_tax_api());
+        let portfolio = reports.load_portfolio(&broker(), None).await.unwrap();
+
+        // Act
+        let plan = reports
+            .get_trade_plan(&broker(), &portfolio, &sell_shares(600), today())
+            .await
+            .unwrap();
+
+        // Assert
+        let orders = &plan.assets[0].orders;
+        assert_eq!(orders.len(), 1);
+        assert_eq!(
+            (orders[0].ticker.as_str(), orders[0].lots),
+            ("SBER", dec!(2))
+        );
+        assert_eq!(plan.tax.map(|t| t.value), Some(Decimal::ZERO));
+    }
+
+    #[tokio::test]
+    async fn trade_plan_of_several_accounts_has_unknown_tax() {
+        // Arrange
+        let reports = Reports::new(FakeApi {
+            accounts: two_accounts(),
+            account_positions: HashMap::from([
+                ("B".to_string(), vec![priced("F1", "share", 10, 100)]),
+                ("I".to_string(), vec![priced("F1", "share", 5, 100)]),
+            ]),
+            instruments: HashMap::from([("F1".to_string(), named("Sber", "SBER"))]),
+            ..api()
+        });
+        let portfolio = reports
+            .load_portfolio(&AccountSelector::All, None)
+            .await
+            .unwrap();
+
+        // Act
+        let plan = reports
+            .get_trade_plan(
+                &AccountSelector::All,
+                &portfolio,
+                &sell_shares(1250),
+                today(),
+            )
+            .await
+            .unwrap();
+
+        // Assert
+        assert_eq!(plan.assets[0].orders[0].lots, dec!(12));
+        assert_eq!(plan.assets[0].left.value, dec!(50));
+        assert_eq!(plan.tax, None);
     }
 }

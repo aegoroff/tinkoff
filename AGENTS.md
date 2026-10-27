@@ -120,6 +120,7 @@ src/
     ├── risk.rs        # Risk analysis, target allocation, rebalancing
     ├── tax.rs         # Income and taxes withheld by year
     ├── lots.rs        # FIFO tax lots, tax on sale and long-term holding exemption
+    ├── trades.rs      # Rebalancing orders in whole lots, the least taxed sells first
     ├── xirr.rs        # XIRR solver on Decimal
     └── display/       # Display implementations for domain types
 ```

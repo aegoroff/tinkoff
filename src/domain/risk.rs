@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
-use super::paper::Ticker;
+use super::paper::{InstrumentKind, Ticker};
 use super::portfolio::Portfolio;
 use crate::domain::LoadedPaper;
 
@@ -273,6 +273,8 @@ impl FromStr for TargetAllocation {
 pub struct RebalanceRecommendation {
     /// Asset type name
     pub asset_type: &'static str,
+    /// Kind of the instruments of the asset type
+    pub kind: InstrumentKind,
     /// Current percentage in portfolio
     pub current_percentage: Decimal,
     /// Target percentage
@@ -286,7 +288,7 @@ pub struct RebalanceRecommendation {
 }
 
 /// Action to take for rebalancing
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebalanceAction {
     /// Buy to increase position
     Buy,
@@ -326,22 +328,39 @@ impl RebalancingAnalysis {
         let mut total_buy = dec!(0);
 
         let assets = [
-            ("Bonds", asset_allocation.bonds.percentage, target.bonds),
-            ("Shares", asset_allocation.shares.percentage, target.shares),
-            ("ETFs", asset_allocation.etfs.percentage, target.etfs),
+            (
+                "Bonds",
+                InstrumentKind::Bond,
+                asset_allocation.bonds.percentage,
+                target.bonds,
+            ),
+            (
+                "Shares",
+                InstrumentKind::Share,
+                asset_allocation.shares.percentage,
+                target.shares,
+            ),
+            (
+                "ETFs",
+                InstrumentKind::Etf,
+                asset_allocation.etfs.percentage,
+                target.etfs,
+            ),
             (
                 "Currencies",
+                InstrumentKind::Currency,
                 asset_allocation.currencies.percentage,
                 target.currencies,
             ),
             (
                 "Futures",
+                InstrumentKind::Future,
                 asset_allocation.futures.percentage,
                 target.futures,
             ),
         ];
 
-        for (asset_type, current_pct, target_pct) in assets {
+        for (asset_type, kind, current_pct, target_pct) in assets {
             // Rounded as displayed, so the action always matches the shown deviation.
             let deviation = (current_pct - target_pct).round_dp(DEVIATION_DECIMAL_PLACES);
             let abs_deviation = deviation.abs();
@@ -377,6 +396,7 @@ impl RebalancingAnalysis {
 
             recommendations.push(RebalanceRecommendation {
                 asset_type,
+                kind,
                 current_percentage: current_pct,
                 target_percentage: target_pct,
                 deviation,

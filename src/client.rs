@@ -746,6 +746,7 @@ fn instrument(
     asset_uid: String,
     exposure: &str,
     trading: &str,
+    lot: i32,
 ) -> Instrument {
     let parse = |code: &str| Currency::from_code(&code.to_ascii_uppercase());
     Instrument {
@@ -754,6 +755,7 @@ fn instrument(
         ticker: Ticker::new(ticker),
         asset_uid: Some(asset_uid).filter(|uid| !uid.is_empty()),
         sector: None,
+        lot: Decimal::from(lot.max(1)),
     }
 }
 
@@ -763,20 +765,41 @@ fn sector(code: &str) -> Option<String> {
 }
 
 fn from_api_instrument(i: ApiInstrument) -> Instrument {
-    instrument(i.name, i.ticker, i.asset_uid, &i.currency, &i.currency)
+    instrument(
+        i.name,
+        i.ticker,
+        i.asset_uid,
+        &i.currency,
+        &i.currency,
+        i.lot,
+    )
 }
 
 fn from_api_share(s: ApiShare) -> Instrument {
     Instrument {
         sector: sector(&s.sector),
-        ..instrument(s.name, s.ticker, s.asset_uid, &s.currency, &s.currency)
+        ..instrument(
+            s.name,
+            s.ticker,
+            s.asset_uid,
+            &s.currency,
+            &s.currency,
+            s.lot,
+        )
     }
 }
 
 fn from_api_etf(e: ApiEtf) -> Instrument {
     Instrument {
         sector: sector(&e.sector),
-        ..instrument(e.name, e.ticker, e.asset_uid, &e.currency, &e.currency)
+        ..instrument(
+            e.name,
+            e.ticker,
+            e.asset_uid,
+            &e.currency,
+            &e.currency,
+            e.lot,
+        )
     }
 }
 
@@ -784,7 +807,14 @@ fn from_api_etf(e: ApiEtf) -> Instrument {
 fn from_api_future(f: ApiFuture) -> Instrument {
     Instrument {
         sector: sector(&f.sector),
-        ..instrument(f.name, f.ticker, String::new(), &f.currency, &f.currency)
+        ..instrument(
+            f.name,
+            f.ticker,
+            String::new(),
+            &f.currency,
+            &f.currency,
+            f.lot,
+        )
     }
 }
 
@@ -793,7 +823,7 @@ fn from_api_bond(b: ApiBond) -> Instrument {
     let nominal = b.nominal.map(|n| n.currency).unwrap_or_default();
     Instrument {
         sector: sector(&b.sector),
-        ..instrument(b.name, b.ticker, b.asset_uid, &nominal, &b.currency)
+        ..instrument(b.name, b.ticker, b.asset_uid, &nominal, &b.currency, b.lot)
     }
 }
 
@@ -805,6 +835,7 @@ fn from_api_currency(c: ApiCurrency) -> Instrument {
         c.asset_uid,
         &c.iso_currency_name,
         &c.currency,
+        c.lot,
     )
 }
 

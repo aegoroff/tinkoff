@@ -19,7 +19,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 🧮 **Tax on Sale**: FIFO lots with the tax due if positions were sold now, the long-term holding exemption (LDV) and when lots become exempt, this year's sales and tax left to withhold, loss harvesting candidates
 - 🏁 **Benchmarks**: Returns compared with the same payments invested into IMOEX, MCFTR, RGBI and RGBITR indices
 - 🔭 **Share Analytics**: Analyst consensus forecasts and fundamentals (P/E, P/B, EV/EBITDA, ROE, dividend yield) of portfolio shares
-- 🎯 **Risk Analysis**: Portfolio risk metrics, currency and sector allocation, rebalancing recommendations
+- 🎯 **Risk Analysis**: Portfolio risk metrics, currency and sector allocation, rebalancing recommendations with orders in whole lots that sell the least taxed lots first
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
 - ⚡ **High Performance**: Optimized with MiMalloc for Linux systems
 - 🔒 **Secure**: Uses Tinkoff API v2 with token authentication
@@ -211,7 +211,7 @@ The application provides rich, formatted output including:
 - **Dividend Calendar**: Upcoming dividend payments for portfolio instruments
 - **Bond Payments Calendar**: Coupons, amortizations and maturities within `--days` (365 by default); offers are not included as they are not guaranteed payments
 - **Share Analytics**: Consensus recommendation, 12 months target price, upside and target range of investment houses; P/E, P/B, EV/EBITDA, Net debt/EBITDA, ROE, 12 months dividend yield and beta (`n/a` when not provided)
-- **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations to the target set with `--target`: a preset (`conservative`, `balanced`) or percents (asset types: bonds, shares, etfs, currencies, futures; omitted ones are 0%, the sum must be 100%)
+- **Risk Analysis**: Asset allocation, risk metrics, and rebalancing recommendations to the target set with `--target`: a preset (`conservative`, `balanced`) or percents (asset types: bonds, shares, etfs, currencies, futures; omitted ones are 0%, the sum must be 100%). Recommendations come with orders in whole lots: buys split an asset type by the current values of its instruments, sells take losses, lots exempt by LDV and the smallest gains first, and the tax on the sells is estimated for a single account
 
 ## Project Structure
 
@@ -234,6 +234,7 @@ src/
     ├── history.rs       # Instrument operations history
     ├── income.rs        # Passive income forecast and portfolio yield
     ├── lots.rs          # FIFO tax lots, tax on sale and long-term holding exemption
+    ├── trades.rs        # Rebalancing orders in whole lots, the least taxed sells first
     ├── money.rs         # Money and Income
     ├── operation.rs     # Account operations and their kinds
     ├── paper.rs         # Paper, Position, Instrument, Profit kinds
