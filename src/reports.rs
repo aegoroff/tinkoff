@@ -1,5 +1,5 @@
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Utc};
-use color_eyre::eyre::{self, WrapErr};
+use color_eyre::eyre;
 use iso_currency::Currency;
 use itertools::Itertools;
 use rust_decimal::Decimal;
@@ -1089,34 +1089,25 @@ impl<A: InvestApi> Reports<A> {
             None => Err(eyre::eyre!("Index not found")),
         });
 
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
-        let mut set = JoinSet::new();
-        for (index, uid) in uids.into_iter().enumerate() {
-            let Some(uid) = uid else {
-                continue;
-            };
-            for year in since_year..=Utc::now().year() {
-                let permit = semaphore
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .wrap_err("Failed to acquire semaphore")?;
-                let api = self.api.clone();
-                let uid = uid.clone();
-                set.spawn(async move {
-                    let _permit = permit;
-                    (index, api.daily_closes(&uid, year).await)
-                });
-            }
-        }
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok((index, closes)) => {
-                    if let Some(prices) = loaded.get_mut(index) {
-                        add_index_closes(prices, closes);
-                    }
-                }
-                Err(e) => eprintln!("Task panicked or cancelled: {e}"),
+        let requests = uids
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, uid)| Some((index, uid?)))
+            .cartesian_product(since_year..=Utc::now().year())
+            .map(|((index, uid), year)| (index, uid, year))
+            .collect_vec();
+        let closes = self
+            .parallel_for(
+                &requests,
+                None,
+                |reports, (index, uid, year): (usize, String, i32)| async move {
+                    (index, reports.api.daily_closes(&uid, year).await)
+                },
+            )
+            .await;
+        for (index, closes) in closes {
+            if let Some(prices) = loaded.get_mut(index) {
+                add_index_closes(prices, closes);
             }
         }
         Ok(index_histories(loaded))

@@ -457,17 +457,10 @@ impl AssetAllocation {
         let total_value =
             bonds_value + shares_value + etfs_value + currencies_value + futures_value;
 
-        let calc_item = |name: &'static str, value: Money| -> AllocationItem {
-            let percentage = if total_value.value.is_zero() {
-                dec!(0)
-            } else {
-                (value.value / total_value.value) * dec!(100)
-            };
-            AllocationItem {
-                name,
-                value,
-                percentage,
-            }
+        let calc_item = |name: &'static str, value: Money| AllocationItem {
+            name,
+            value,
+            percentage: percentage_of(value.value, total_value.value),
         };
 
         Self {
@@ -495,18 +488,11 @@ impl CurrencyAllocation {
 
         let mut allocations: Vec<CurrencyItem> = currency_map
             .into_iter()
-            .map(|(currency, value)| {
-                let percentage = if total_value.is_zero() {
-                    dec!(0)
-                } else {
-                    (value / total_value) * dec!(100)
-                };
-                CurrencyItem {
-                    currency,
-                    // Paper values are converted to RUB, the currency is only their exposure.
-                    value: Money::from_value(value, Currency::RUB),
-                    percentage,
-                }
+            .map(|(currency, value)| CurrencyItem {
+                currency,
+                // Paper values are converted to RUB, the currency is only their exposure.
+                value: Money::from_value(value, Currency::RUB),
+                percentage: percentage_of(value, total_value),
             })
             .collect();
 
@@ -608,19 +594,12 @@ impl PositionConcentration {
         // Calculate percentages and create PositionItem list
         let mut items: Vec<PositionItem> = position_values
             .iter()
-            .map(|(name, ticker, instrument_type, value)| {
-                let percentage = if total_value.is_zero() {
-                    dec!(0)
-                } else {
-                    (*value / total_value) * dec!(100)
-                };
-                PositionItem {
-                    name: name.clone(),
-                    ticker: (*ticker).clone(),
-                    instrument_type,
-                    value: Money::from_value(*value, Currency::RUB),
-                    percentage,
-                }
+            .map(|(name, ticker, instrument_type, value)| PositionItem {
+                name: name.clone(),
+                ticker: (*ticker).clone(),
+                instrument_type,
+                value: Money::from_value(*value, Currency::RUB),
+                percentage: percentage_of(*value, total_value),
             })
             .collect();
 
