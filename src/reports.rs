@@ -1539,8 +1539,8 @@ impl CalendarPeriod {
 
     /// Whether a payment on `date` falls into the period; payments due today are included.
     fn contains(&self, date: DateTime<Utc>) -> bool {
-        let day = date.date_naive();
-        day >= self.from.date_naive() && day <= self.until.date_naive()
+        let day = moscow_date(date);
+        day >= moscow_date(self.from) && day <= moscow_date(self.until)
     }
 }
 
@@ -2225,13 +2225,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case::yesterday("2026-09-25T23:59:59Z", false)]
-    #[case::earlier_today("2026-09-26T00:00:00Z", true)]
-    #[case::later_today("2026-09-26T23:00:00Z", true)]
-    #[case::tomorrow("2026-09-27T00:00:00Z", true)]
-    #[case::last_day("2026-10-06T23:00:00Z", true)]
-    #[case::after_last_day("2026-10-07T00:00:00Z", false)]
-    fn calendar_period_contains_whole_days(#[case] date: &str, #[case] expected: bool) {
+    #[case::yesterday("2026-09-25T20:59:59Z", false)]
+    #[case::moscow_midnight("2026-09-25T21:00:00Z", true)]
+    #[case::date_of_today("2026-09-26T00:00:00Z", true)]
+    #[case::later_today("2026-09-26T20:00:00Z", true)]
+    #[case::tomorrow("2026-09-26T21:00:00Z", true)]
+    #[case::last_day("2026-10-06T20:00:00Z", true)]
+    #[case::after_last_day("2026-10-06T21:00:00Z", false)]
+    fn calendar_period_contains_whole_moscow_days(#[case] date: &str, #[case] expected: bool) {
         // Arrange
         let from: DateTime<Utc> = "2026-09-26T12:00:00Z".parse().unwrap();
         let period = CalendarPeriod::days_ahead(from, 10);

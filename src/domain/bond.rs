@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::{Decimal, MathematicalOps};
 
 use super::money::Money;
+use super::moscow_date;
 use super::paper::BondInfo;
 use super::xirr::{CashFlow, pow_years, xirr, years_between};
 
@@ -74,10 +75,10 @@ pub fn mark_amortizations(events: &mut [BondEvent]) {
 /// to maturity otherwise.
 #[must_use]
 pub fn bond_info(events: &[BondEvent], dirty_price: Decimal, now: DateTime<Utc>) -> BondInfo {
-    let today = now.date_naive();
+    let today = moscow_date(now);
     let future: Vec<&BondEvent> = events
         .iter()
-        .filter(|e| e.date.date_naive() > today)
+        .filter(|e| moscow_date(e.date) > today)
         .collect();
     let maturity_date = future
         .iter()

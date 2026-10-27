@@ -2,7 +2,6 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use color_eyre::eyre::{self, WrapErr};
 use iso_currency::Currency;
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use t_invest_sdk::{
@@ -473,8 +472,7 @@ impl TinkoffInvestment {
         let mut instruments = self
             .client(InstrumentsServiceClient::with_interceptor)
             .await?;
-        let today = Utc::now()
-            .date_naive()
+        let today = moscow_date(Utc::now())
             .and_hms_opt(0, 0, 0)
             .map(|d| d.and_utc())
             .ok_or_else(|| eyre::eyre!("Invalid current date"))?;
@@ -559,7 +557,7 @@ impl TinkoffInvestment {
             .into_iter()
             .filter_map(|c| {
                 let currency = Currency::from_code(&c.iso_currency_name.to_ascii_uppercase())?;
-                let nominal = c.nominal.as_ref().map_or(Decimal::ONE, money_value_amount);
+                let nominal = to_money(c.nominal.as_ref()).map_or(Decimal::ONE, |m| m.value);
                 Some(FxCandidate {
                     currency,
                     instrument_id: if c.uid.is_empty() { c.figi } else { c.uid },
@@ -911,10 +909,6 @@ fn from_api_currency(c: ApiCurrency) -> Instrument {
         &c.currency,
         c.lot,
     )
-}
-
-fn money_value_amount(mv: &t_invest_sdk::api::MoneyValue) -> Decimal {
-    Decimal::from(mv.units) + Decimal::from(mv.nano) / dec!(1_000_000_000)
 }
 
 /// Converts an API bond event; conversions and events without a date are skipped.

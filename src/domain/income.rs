@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use super::money::Money;
+use super::moscow_date;
 
 /// Kind of an expected income payment
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,8 +50,8 @@ pub fn expected_dividends(
     from: DateTime<Utc>,
     until: DateTime<Utc>,
 ) -> Vec<IncomeItem> {
-    let (start, end) = (from.date_naive(), until.date_naive());
-    let contains = |date: DateTime<Utc>| (start..=end).contains(&date.date_naive());
+    let (start, end) = (moscow_date(from), moscow_date(until));
+    let contains = |date: DateTime<Utc>| (start..=end).contains(&moscow_date(date));
     let item = |date, kind, record: &DividendRecord| IncomeItem {
         date,
         kind,
@@ -64,12 +65,10 @@ pub fn expected_dividends(
         .map(|r| item(r.date, IncomeKind::Dividend, r))
         .collect();
 
-    let year_before = from
-        .checked_sub_months(Months::new(12))
-        .map(|d| d.date_naive());
+    let year_before = from.checked_sub_months(Months::new(12)).map(moscow_date);
     let paid_last_year = known
         .clone()
-        .filter(|r| year_before.is_some_and(|y| (y..start).contains(&r.date.date_naive())))
+        .filter(|r| year_before.is_some_and(|y| (y..start).contains(&moscow_date(r.date))))
         .count();
     let latest = if paid_last_year >= MONTHLY_PAYMENTS_A_YEAR {
         known.clone().max_by_key(|r| r.date)
@@ -78,7 +77,7 @@ pub fn expected_dividends(
     };
 
     let mut repeated: Vec<IncomeItem> = known
-        .filter(|r| r.date.date_naive() < start)
+        .filter(|r| moscow_date(r.date) < start)
         .filter_map(|r| {
             let date = r.date.checked_add_months(Months::new(12))?;
             contains(date).then(|| item(date, IncomeKind::EstimatedDividend, latest.unwrap_or(r)))
@@ -150,8 +149,8 @@ impl IncomeForecast {
         items: &[IncomeItem],
         portfolio_value: Money,
     ) -> Self {
-        let first = month_start(from.date_naive());
-        let last = month_start(until.date_naive());
+        let first = month_start(moscow_date(from));
+        let last = month_start(moscow_date(until));
         let mut months: Vec<MonthIncome> =
             std::iter::successors(first, |m| m.checked_add_months(Months::new(1)))
                 .take_while(|m| last.is_some_and(|last| *m <= last))
@@ -162,7 +161,8 @@ impl IncomeForecast {
                 })
                 .collect();
         for item in items {
-            let (year, month) = (item.date.year(), item.date.month());
+            let date = moscow_date(item.date);
+            let (year, month) = (date.year(), date.month());
             if let Some(m) = months
                 .iter_mut()
                 .find(|m| m.year == year && m.month == month)

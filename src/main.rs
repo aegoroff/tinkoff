@@ -1,4 +1,4 @@
-use std::{env, future::Future, pin::Pin, str::FromStr};
+use std::{env, str::FromStr};
 
 use iso_currency::Currency;
 use rust_decimal::Decimal;
@@ -95,10 +95,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_subcommand<'a>(
-    config: &'a AppConfig,
-    (name, matches): (&'a str, &'a ArgMatches),
-) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+async fn run_subcommand(config: &AppConfig, (name, matches): (&str, &ArgMatches)) -> Result<()> {
     match name {
         ALL_CMD => {
             let cards = if matches.get_flag("aggregate") {
@@ -106,46 +103,26 @@ fn run_subcommand<'a>(
             } else {
                 PaperCards::Show
             };
-            Box::pin(positions(config, None, cards))
+            positions(config, None, cards).await
         }
-        SHARES_CMD => Box::pin(positions(
-            config,
-            Some(InstrumentKind::Share),
-            PaperCards::Show,
-        )),
-        BONDS_CMD => Box::pin(positions(
-            config,
-            Some(InstrumentKind::Bond),
-            PaperCards::Show,
-        )),
-        ETFS_CMD => Box::pin(positions(
-            config,
-            Some(InstrumentKind::Etf),
-            PaperCards::Show,
-        )),
-        CURR_CMD => Box::pin(positions(
-            config,
-            Some(InstrumentKind::Currency),
-            PaperCards::Show,
-        )),
-        FUTURES_CMD => Box::pin(positions(
-            config,
-            Some(InstrumentKind::Future),
-            PaperCards::Show,
-        )),
-        HISTORY_CMD => Box::pin(history(config, matches)),
-        DIVIDENDS_CMD => Box::pin(calendar(config, matches, CalendarKind::Dividends)),
-        COUPONS_CMD => Box::pin(calendar(config, matches, CalendarKind::Coupons)),
-        COMBINED_CMD => Box::pin(calendar(config, matches, CalendarKind::Combined)),
-        RISK_CMD => Box::pin(risk(config, matches)),
-        ACCOUNTS_CMD => Box::pin(accounts(config)),
-        ANALYTICS_CMD => Box::pin(analytics(config, matches)),
-        INCOME_CMD => Box::pin(income(config)),
-        TAXES_CMD => Box::pin(taxes(config)),
-        BENCHMARK_CMD => Box::pin(benchmark(config)),
-        SALE_TAX_CMD => Box::pin(sale_tax(config, matches)),
-        BOND_SCREENER_CMD => Box::pin(bond_screener(config, matches)),
-        _ => Box::pin(async { Ok(()) }),
+        SHARES_CMD => positions(config, Some(InstrumentKind::Share), PaperCards::Show).await,
+        BONDS_CMD => positions(config, Some(InstrumentKind::Bond), PaperCards::Show).await,
+        ETFS_CMD => positions(config, Some(InstrumentKind::Etf), PaperCards::Show).await,
+        CURR_CMD => positions(config, Some(InstrumentKind::Currency), PaperCards::Show).await,
+        FUTURES_CMD => positions(config, Some(InstrumentKind::Future), PaperCards::Show).await,
+        HISTORY_CMD => history(config, matches).await,
+        DIVIDENDS_CMD => calendar(config, matches, CalendarKind::Dividends).await,
+        COUPONS_CMD => calendar(config, matches, CalendarKind::Coupons).await,
+        COMBINED_CMD => calendar(config, matches, CalendarKind::Combined).await,
+        RISK_CMD => risk(config, matches).await,
+        ACCOUNTS_CMD => accounts(config).await,
+        ANALYTICS_CMD => analytics(config, matches).await,
+        INCOME_CMD => income(config).await,
+        TAXES_CMD => taxes(config).await,
+        BENCHMARK_CMD => benchmark(config).await,
+        SALE_TAX_CMD => sale_tax(config, matches).await,
+        BOND_SCREENER_CMD => bond_screener(config, matches).await,
+        _ => Ok(()),
     }
 }
 
