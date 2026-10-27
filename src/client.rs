@@ -12,10 +12,11 @@ use t_invest_sdk::{
         Dividend as ApiDividend, Etf as ApiEtf, FindInstrumentRequest, Future as ApiFuture,
         GetAccountsRequest, GetAccountsResponse, GetAssetFundamentalsRequest, GetBondEventsRequest,
         GetCandlesRequest, GetDividendsRequest, GetForecastRequest, GetForecastResponse,
-        GetOperationsByCursorRequest, GetOperationsByCursorResponse, HistoricCandle,
-        IndicativeResponse, IndicativesRequest, Instrument as ApiInstrument, InstrumentIdType,
-        InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType, InstrumentsRequest,
-        OperationItem, OperationState, PortfolioPosition, PortfolioRequest, Quotation,
+        GetMarketValuesRequest, GetOperationsByCursorRequest, GetOperationsByCursorResponse,
+        HistoricCandle, IndicativeResponse, IndicativesRequest, Instrument as ApiInstrument,
+        InstrumentIdType, InstrumentRequest, InstrumentShort, InstrumentStatus, InstrumentType,
+        InstrumentsRequest, MarketValue, MarketValueInstrument, MarketValueType, OperationItem,
+        OperationState, PortfolioPosition, PortfolioRequest, Quotation,
         Recommendation as ApiRecommendation, Share as ApiShare,
         get_asset_fundamentals_response::StatisticResponse, get_bond_events_request::EventType,
         get_bond_events_response::BondEvent as ApiBondEvent,
@@ -49,6 +50,7 @@ use crate::{
         fx::{DailyCloses, DailyPrices, FxCandidate},
         moscow_date,
         operation::{Operation, OperationKind},
+        screener::{BondQuote, ListedBond},
     },
     to_decimal, to_metric, to_money, to_optional_datetime_utc,
 };
@@ -58,6 +60,9 @@ const BOND_EVENTS_HORIZON_DAYS: i64 = 50 * 365;
 
 /// Most assets accepted by a single fundamentals request.
 const MAX_FUNDAMENTALS_ASSETS: usize = 100;
+
+/// Instruments requested per market values request.
+const MAX_MARKET_VALUES_INSTRUMENTS: usize = 100;
 
 /// Operations requested per page, the maximum the API allows.
 const OPERATIONS_PAGE_SIZE: i32 = 1000;
@@ -499,6 +504,42 @@ impl TinkoffInvestment {
         Ok(events)
     }
 
+    /// Bonds tradable through the API.
+    async fn get_bonds(&self) -> color_eyre::Result<Vec<ApiBond>> {
+        let mut instruments = self
+            .client(InstrumentsServiceClient::with_interceptor)
+            .await?;
+        let response = instruments
+            .bonds(InstrumentsRequest {
+                instrument_status: Some(InstrumentStatus::Base as i32),
+                instrument_exchange: None,
+            })
+            .await
+            .wrap_err("Failed to get bonds")?;
+        Ok(response.into_inner().instruments)
+    }
+
+    /// Last prices and yields of instruments.
+    async fn get_market_values(
+        &self,
+        instrument_ids: Vec<String>,
+    ) -> color_eyre::Result<Vec<MarketValueInstrument>> {
+        let mut market = self
+            .client(MarketDataServiceClient::with_interceptor)
+            .await?;
+        let response = market
+            .get_market_values(GetMarketValuesRequest {
+                instrument_id: instrument_ids,
+                values: vec![
+                    MarketValueType::InstrumentValueLastPrice as i32,
+                    MarketValueType::InstrumentValueYield as i32,
+                ],
+            })
+            .await
+            .wrap_err("Failed to get market values")?;
+        Ok(response.into_inner().instruments)
+    }
+
     /// Currency instruments from the Currencies catalog.
     async fn get_fx_candidates(&self) -> color_eyre::Result<Vec<FxCandidate>> {
         let mut instruments = self
@@ -616,6 +657,39 @@ impl InvestApi for TinkoffInvestment {
         let indices = with_retry(|| self.get_indicatives()).await?;
         Ok(indices.into_iter().map(MarketIndex::from).collect())
     }
+
+    async fn bonds(&self) -> color_eyre::Result<Vec<ListedBond>> {
+        let bonds = with_retry(|| self.get_bonds()).await?;
+        Ok(bonds.into_iter().map(ListedBond::from).collect())
+    }
+
+    /// Requested in batches of [`MAX_MARKET_VALUES_INSTRUMENTS`].
+    async fn bond_quotes(&self, uids: &[String]) -> color_eyre::Result<HashMap<String, BondQuote>> {
+        let mut quotes = HashMap::new();
+        for chunk in uids.chunks(MAX_MARKET_VALUES_INSTRUMENTS) {
+            let instruments = with_retry(|| self.get_market_values(chunk.to_vec())).await?;
+            quotes.extend(
+                instruments
+                    .into_iter()
+                    .map(|i| (i.instrument_uid, bond_quote(&i.values))),
+            );
+        }
+        Ok(quotes)
+    }
+}
+
+/// Quote of the last price and yield market values; values the API gave not are `None`.
+fn bond_quote(values: &[MarketValue]) -> BondQuote {
+    let mut quote = BondQuote::default();
+    for value in values {
+        let amount = value.value.as_ref().map(|v| to_decimal(Some(v)));
+        match value.r#type.and_then(|t| MarketValueType::try_from(t).ok()) {
+            Some(MarketValueType::InstrumentValueLastPrice) => quote.price_percent = amount,
+            Some(MarketValueType::InstrumentValueYield) => quote.exchange_yield = amount,
+            _ => {}
+        }
+    }
+    quote
 }
 
 impl DailyCloses for TinkoffInvestment {

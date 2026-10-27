@@ -13,6 +13,7 @@ use crate::domain::{
     calendar::Dividend,
     fx::{DailyCloses, FxCandidate},
     operation::{Operation, OperationKind},
+    screener::{BondQuote, ListedBond},
 };
 
 /// Which executed operations of an account to get.
@@ -82,4 +83,13 @@ pub trait InvestApi: DailyCloses + Clone + Send + Sync + 'static {
 
     /// Market indices with their tickers and UIDs.
     fn indices(&self) -> impl Future<Output = Result<Vec<MarketIndex>>> + Send;
+
+    /// Bonds the market lists for trading.
+    fn bonds(&self) -> impl Future<Output = Result<Vec<ListedBond>>> + Send;
+
+    /// Quotes of bonds by their UIDs; bonds without one are absent from the result.
+    fn bond_quotes(
+        &self,
+        uids: &[String],
+    ) -> impl Future<Output = Result<HashMap<String, BondQuote>>> + Send;
 }

@@ -3,7 +3,7 @@ use color_eyre::eyre::{self, WrapErr};
 use iso_currency::Currency;
 use itertools::Itertools;
 use rust_decimal::Decimal;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -30,6 +30,7 @@ use crate::{
         moscow_date,
         operation::{Operation, OperationKind},
         risk::RebalancingAnalysis,
+        screener::{BondScreen, ListedBond, ScreenedBond, ScreenerCriteria, next_coupon},
         tax::{TaxOperation, TaxOperationKind, TaxReport},
         trades::{SaleTaxation, Tradable, TradePlan},
         xirr::CashFlow,
@@ -649,6 +650,95 @@ impl<A: InvestApi> Reports<A> {
             .load_accounts_portfolio(std::slice::from_ref(account), None)
             .await?;
         self.sale_tax_of(account, &portfolio, ticker, now).await
+    }
+
+    /// Bonds of the market meeting `criteria` that the accounts chosen by `selector` do not
+    /// hold, with yields and duration at `now`, the highest yield first.
+    ///
+    /// Bonds whose events failed to load or are paid in another currency than their nominal
+    /// are left out and reported alongside.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the accounts, their positions, bonds or quotes cannot be loaded.
+    pub async fn screen_bonds(
+        &self,
+        selector: &AccountSelector,
+        criteria: &ScreenerCriteria,
+        now: DateTime<Utc>,
+    ) -> color_eyre::Result<(BondScreen, Vec<eyre::Report>)> {
+        let mut held = HashSet::new();
+        for account in self.get_accounts_of(selector).await? {
+            let positions = self.api.portfolio_positions(&account.id).await?;
+            held.extend(positions.into_iter().map(|p| p.figi));
+        }
+        let listed = self
+            .api
+            .bonds()
+            .await?
+            .into_iter()
+            .filter(|b| !held.contains(&b.figi) && criteria.admits(b, now))
+            .collect_vec();
+        let uids = listed.iter().map(|b| b.uid.clone()).collect_vec();
+        let mut quotes = self.api.bond_quotes(&uids).await?;
+        let listed_count = listed.len();
+        let with_quotes = listed
+            .into_iter()
+            .map(|b| {
+                let quote = quotes.remove(&b.uid).unwrap_or_default();
+                (b, quote)
+            })
+            .collect();
+        let shortlist = criteria.shortlist(with_quotes);
+        let checked = shortlist.len();
+
+        let loaded = self
+            .parallel_for(
+                &shortlist,
+                None,
+                |reports, (bond, price): (ListedBond, Decimal)| async move {
+                    let events = reports.api.bond_events(&bond.figi).await;
+                    (bond, price, events)
+                },
+            )
+            .await;
+        let mut screened = Vec::new();
+        let mut failures = Vec::new();
+        for (bond, price, events) in loaded {
+            let skipped = |e: eyre::Report| {
+                e.wrap_err(format!("Bond {} ({}) skipped", bond.name, bond.ticker))
+            };
+            let (events, dirty_price) = match (events, bond.dirty_price(price)) {
+                (Ok(events), Some(dirty_price)) => (events, dirty_price),
+                (Err(e), _) => {
+                    failures.push(skipped(e));
+                    continue;
+                }
+                (Ok(_), None) => continue,
+            };
+            if events
+                .iter()
+                .any(|e| !e.per_bond.value.is_zero() && e.per_bond.currency != dirty_price.currency)
+            {
+                failures.push(skipped(eyre::eyre!(
+                    "Payments are not in the nominal currency"
+                )));
+                continue;
+            }
+            let info = bond_info(&events, dirty_price.value, now);
+            screened.push(ScreenedBond {
+                bond,
+                price_percent: price,
+                info,
+                next_coupon: next_coupon(&events, now),
+            });
+        }
+        let screen = BondScreen {
+            bonds: criteria.rank(screened),
+            listed: listed_count,
+            checked,
+        };
+        Ok((screen, failures))
     }
 
     /// Orders in whole lots carrying out `analysis` for `portfolio` of the accounts chosen
@@ -1516,6 +1606,7 @@ mod tests {
         bond::BondEvent,
         fx::{DailyPrices, FxCandidate},
         operation::OperationState,
+        screener::{BondQuote, BondRisk},
     };
 
     /// In-memory T-Invest API serving fixed data.
@@ -1539,6 +1630,9 @@ mod tests {
         /// Close of every day of any year.
         close: Decimal,
         indices: Vec<MarketIndex>,
+        bonds: Vec<ListedBond>,
+        /// Bond quotes by UID.
+        quotes: HashMap<String, BondQuote>,
         /// FIGIs and instrument UIDs whose requests fail.
         failing: Vec<String>,
     }
@@ -1672,6 +1766,20 @@ mod tests {
 
         fn indices(&self) -> impl Future<Output = color_eyre::Result<Vec<MarketIndex>>> + Send {
             ready(Ok(self.indices.clone()))
+        }
+
+        fn bonds(&self) -> impl Future<Output = color_eyre::Result<Vec<ListedBond>>> + Send {
+            ready(Ok(self.bonds.clone()))
+        }
+
+        fn bond_quotes(
+            &self,
+            uids: &[String],
+        ) -> impl Future<Output = color_eyre::Result<HashMap<String, BondQuote>>> + Send {
+            ready(Ok(uids
+                .iter()
+                .filter_map(|uid| Some((uid.clone(), *self.quotes.get(uid)?)))
+                .collect()))
         }
     }
 
@@ -3266,5 +3374,121 @@ mod tests {
         assert_eq!(plan.assets[0].orders[0].lots, dec!(12));
         assert_eq!(plan.assets[0].left.value, dec!(50));
         assert_eq!(plan.tax, None);
+    }
+
+    fn listed(figi: &str) -> ListedBond {
+        ListedBond {
+            figi: figi.to_string(),
+            uid: format!("uid-{figi}"),
+            ticker: figi.to_string(),
+            name: format!("Bond {figi}"),
+            sector: "government".to_string(),
+            nominal: Some(rub(1000)),
+            accrued_interest: Some(rub(0)),
+            maturity: Some("2027-10-27T00:00:00Z".parse().unwrap()),
+            offer: None,
+            coupons_per_year: 2,
+            features: Vec::new(),
+            risk: Some(BondRisk::Low),
+            buyable: true,
+        }
+    }
+
+    /// A coupon of 50 in half a year and the nominal of 1 000 in a year.
+    fn bullet_events() -> Vec<BondEvent> {
+        vec![
+            coupon("2027-04-27T00:00:00Z".parse().unwrap(), 50),
+            BondEvent {
+                kind: BondEventKind::Maturity,
+                ..coupon("2027-10-27T00:00:00Z".parse().unwrap(), 1000)
+            },
+        ]
+    }
+
+    fn screener_api() -> FakeApi {
+        let quote = |price: Decimal| BondQuote {
+            price_percent: Some(price),
+            exchange_yield: None,
+        };
+        let figis = ["CHEAP", "DEAR", "HELD", "FAIL", "UNQUOTED"];
+        FakeApi {
+            positions: vec![priced("HELD", "bond", 1, 1000)],
+            bonds: figis.iter().map(|f| listed(f)).collect(),
+            quotes: HashMap::from([
+                ("uid-CHEAP".to_string(), quote(dec!(95))),
+                ("uid-DEAR".to_string(), quote(dec!(99))),
+                ("uid-HELD".to_string(), quote(dec!(90))),
+                ("uid-FAIL".to_string(), quote(dec!(90))),
+            ]),
+            bond_events: figis
+                .iter()
+                .map(|f| (f.to_string(), bullet_events()))
+                .collect(),
+            failing: vec!["FAIL".to_string()],
+            ..api()
+        }
+    }
+
+    fn screener_criteria() -> ScreenerCriteria {
+        ScreenerCriteria {
+            currency: Currency::RUB,
+            min_yield: None,
+            max_yield: None,
+            min_years: None,
+            max_years: None,
+            max_duration: None,
+            max_risk: BondRisk::Moderate,
+            qualified: false,
+            sectors: Vec::new(),
+            limit: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn screen_bonds_ranks_bonds_not_held_by_own_yield() {
+        // Arrange
+        let reports = Reports::new(screener_api());
+
+        // Act
+        let (screen, failures) = reports
+            .screen_bonds(&broker(), &screener_criteria(), today())
+            .await
+            .unwrap();
+
+        // Assert
+        let tickers: Vec<&str> = screen
+            .bonds
+            .iter()
+            .map(|b| b.bond.ticker.as_str())
+            .collect();
+        assert_eq!(tickers, ["CHEAP", "DEAR"]);
+        assert_eq!(screen.listed, 4);
+        assert_eq!(screen.checked, 3);
+        assert!(screen.bonds[0].info.ytm > screen.bonds[1].info.ytm);
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn screen_bonds_keeps_yields_within_bounds() {
+        // Arrange: 95% gives about 11% to maturity, 99% about 6.5%
+        let reports = Reports::new(screener_api());
+        let criteria = ScreenerCriteria {
+            min_yield: Some(dec!(10)),
+            ..screener_criteria()
+        };
+
+        // Act
+        let (screen, _) = reports
+            .screen_bonds(&broker(), &criteria, today())
+            .await
+            .unwrap();
+
+        // Assert
+        let tickers: Vec<&str> = screen
+            .bonds
+            .iter()
+            .map(|b| b.bond.ticker.as_str())
+            .collect();
+        assert_eq!(tickers, ["CHEAP"]);
     }
 }

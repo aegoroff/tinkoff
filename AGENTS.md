@@ -118,6 +118,7 @@ src/
     ├── income.rs      # Passive income forecast and portfolio yield
     ├── fx.rs          # Conversion to RUB at daily rates behind the DailyCloses seam
     ├── risk.rs        # Risk analysis, target allocation, rebalancing
+    ├── screener.rs    # Bond screener: market bonds by yield to worst, horizon and risk
     ├── tax.rs         # Income and taxes withheld by year
     ├── lots.rs        # FIFO tax lots, tax on sale and long-term holding exemption
     ├── trades.rs      # Rebalancing orders in whole lots, the least taxed sells first
@@ -149,7 +150,7 @@ src/
 ## CLI Guidelines
 
 - Use `clap` for argument parsing
-- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`, `in`, `tx`, `bm`, `sl`
+- Short commands: `a`, `s`, `b`, `e`, `c`, `f`, `hi`, `d`, `p`, `j`, `r`, `ac`, `an`, `in`, `tx`, `bm`, `sl`, `bs`
 - Provide aliases for better UX
 - Token from `-t` flag or `TINKOFF_TOKEN_V2` environment variable
 

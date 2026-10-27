@@ -1,5 +1,8 @@
 use std::{env, future::Future, pin::Pin, str::FromStr};
 
+use iso_currency::Currency;
+use rust_decimal::Decimal;
+
 use clap::{Arg, ArgAction, ArgMatches, Command, command};
 use color_eyre::eyre::{self, Context, Result};
 use std::sync::Arc;
@@ -10,6 +13,7 @@ use tinkoff::{
         InstrumentKind, Portfolio,
         calendar::CalendarKind,
         risk::{TARGET_ASSET_TYPES, TargetAllocation},
+        screener::{BondRisk, ScreenerCriteria},
     },
     progress::Progresser,
     reports::{AccountSelector, Reports},
@@ -75,6 +79,7 @@ const INCOME_CMD: &str = "in";
 const TAXES_CMD: &str = "tx";
 const BENCHMARK_CMD: &str = "bm";
 const SALE_TAX_CMD: &str = "sl";
+const BOND_SCREENER_CMD: &str = "bs";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -112,6 +117,7 @@ fn run_subcommand<'a>(
         TAXES_CMD => Box::pin(taxes(config)),
         BENCHMARK_CMD => Box::pin(benchmark(config)),
         SALE_TAX_CMD => Box::pin(sale_tax(config, matches)),
+        BOND_SCREENER_CMD => Box::pin(bond_screener(config, matches)),
         _ => Box::pin(async { Ok(()) }),
     }
 }
@@ -209,6 +215,43 @@ async fn sale_tax(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
         }
     }
     print!("{report}");
+    report_failures(&failures);
+    Ok(())
+}
+
+/// Prints bonds of the market meeting the criteria that the accounts do not hold.
+async fn bond_screener(config: &AppConfig, cmd: &ArgMatches) -> Result<()> {
+    let decimal = |name: &str| cmd.get_one::<Decimal>(name).copied();
+    let criteria = ScreenerCriteria {
+        currency: cmd
+            .get_one::<Currency>("currency")
+            .copied()
+            .ok_or_else(|| eyre::eyre!("Currency is not set"))?,
+        min_yield: decimal("min-yield"),
+        max_yield: decimal("max-yield"),
+        min_years: decimal("min-years"),
+        max_years: decimal("max-years"),
+        max_duration: decimal("max-duration"),
+        max_risk: cmd
+            .get_one::<BondRisk>("risk")
+            .copied()
+            .ok_or_else(|| eyre::eyre!("Risk level is not set"))?,
+        qualified: cmd.get_flag("qual"),
+        sectors: cmd
+            .get_many::<String>("sector")
+            .map(|values| values.map(|v| v.to_lowercase()).collect())
+            .unwrap_or_default(),
+        limit: cmd
+            .get_one::<u16>("limit")
+            .copied()
+            .map(usize::from)
+            .ok_or_else(|| eyre::eyre!("Limit is not set"))?,
+    };
+    let (screen, failures) = config
+        .reports()
+        .screen_bonds(&config.account, &criteria, chrono::Utc::now())
+        .await?;
+    print!("{screen}");
     report_failures(&failures);
     Ok(())
 }
@@ -373,6 +416,7 @@ fn build_cli() -> Command {
         .subcommand(taxes_cmd())
         .subcommand(benchmark_cmd())
         .subcommand(sale_tax_cmd())
+        .subcommand(bond_screener_cmd())
 }
 
 fn all_cmd() -> Command {
@@ -497,6 +541,75 @@ fn sale_tax_cmd() -> Command {
             arg!([TICKER])
                 .help("Ticker of a portfolio security to show its lots")
                 .required(false),
+        )
+}
+
+/// Optional decimal argument.
+fn decimal_arg(arg: Arg, help: &'static str) -> Arg {
+    arg.required(false)
+        .value_parser(Decimal::from_str)
+        .help(help)
+}
+
+fn bond_screener_cmd() -> Command {
+    Command::new(BOND_SCREENER_CMD)
+        .aliases(["screener", "bond-screener"])
+        .about("Find bonds not in the portfolio by yield, years to offer or maturity, duration and risk")
+        .arg(decimal_arg(
+            arg!(--"min-yield" <PCT>),
+            "Lowest yield, in percent",
+        ))
+        .arg(decimal_arg(
+            arg!(--"max-yield" <PCT>),
+            "Highest yield, in percent",
+        ))
+        .arg(decimal_arg(
+            arg!(--"min-years" <YEARS>),
+            "Fewest years to the next offer or maturity",
+        ))
+        .arg(decimal_arg(
+            arg!(--"max-years" <YEARS>),
+            "Most years to the next offer or maturity",
+        ))
+        .arg(decimal_arg(
+            arg!(--"max-duration" <YEARS>),
+            "Longest duration, in years",
+        ))
+        .arg(
+            arg!(--risk <LEVEL>)
+                .required(false)
+                .default_value("moderate")
+                .value_parser(BondRisk::parse)
+                .help("Highest broker's risk level: low, moderate or high (also bonds without one)"),
+        )
+        .arg(
+            arg!(--currency <CODE>)
+                .required(false)
+                .default_value("rub")
+                .value_parser(|v: &str| {
+                    Currency::from_code(&v.to_ascii_uppercase())
+                        .ok_or_else(|| format!("unknown currency '{v}'"))
+                })
+                .help("Nominal currency"),
+        )
+        .arg(
+            arg!(--qual)
+                .required(false)
+                .action(ArgAction::SetTrue)
+                .help("Include bonds for qualified investors only"),
+        )
+        .arg(
+            arg!(--sector <SECTORS>)
+                .required(false)
+                .value_delimiter(',')
+                .help("Issuer's sectors, e.g. government for OFZ or government,municipal"),
+        )
+        .arg(
+            arg!(--limit <N>)
+                .required(false)
+                .default_value("20")
+                .value_parser(value_parser!(u16).range(1..=100))
+                .help("Bonds to show"),
         )
 }
 

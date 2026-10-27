@@ -19,6 +19,7 @@ A fast and feature-rich console client for Tinkoff Investment API that provides 
 - 🧮 **Tax on Sale**: FIFO lots with the tax due if positions were sold now, the long-term holding exemption (LDV) and when lots become exempt, this year's sales and tax left to withhold, loss harvesting candidates
 - 🏁 **Benchmarks**: Returns compared with the same payments invested into IMOEX, MCFTR, RGBI and RGBITR indices
 - 🔭 **Share Analytics**: Analyst consensus forecasts and fundamentals (P/E, P/B, EV/EBITDA, ROE, dividend yield) of portfolio shares
+- 🔎 **Bond Screener**: Market bonds not in the portfolio by yield to worst, years to offer or maturity, duration and risk level
 - 🎯 **Risk Analysis**: Portfolio risk metrics, currency and sector allocation, rebalancing recommendations with orders in whole lots that sell the least taxed lots first
 - 🎨 **Beautiful Tables**: Clean, formatted output with color-coded information
 - ⚡ **High Performance**: Optimized with MiMalloc for Linux systems
@@ -96,6 +97,12 @@ tinkoff in
 # Income and taxes withheld by year
 tinkoff tx
 
+# Bonds not in the portfolio yielding 15-30% within 3 years, low risk only
+tinkoff bs --min-yield 15 --max-yield 30 --max-years 3 --risk low
+
+# OFZ only: government bonds of the lowest risk
+tinkoff bs --sector government --risk low
+
 # Tax if portfolio securities were sold now, or lots of one of them
 tinkoff sl
 tinkoff sl <TICKER>
@@ -141,6 +148,7 @@ Commands:
   in    Forecast passive income for a year: coupons, dividends and current yield
   tx    Get income and taxes withheld by year
   sl    Estimate tax if portfolio securities were sold now, with LDV exemption
+  bs    Find bonds not in the portfolio by yield, years to offer or maturity, duration and risk
   bm    Compare returns of the portfolio with IMOEX, MCFTR, RGBI and RGBITR indices
   help  Print this message or the help of the given subcommand(s)
 
@@ -240,6 +248,7 @@ src/
     ├── paper.rs         # Paper, Position, Instrument, Profit kinds
     ├── portfolio.rs     # Portfolio and Asset containers
     ├── risk.rs          # Risk analysis, target allocation, rebalancing
+    ├── screener.rs      # Bond screener: market bonds by yield to worst, horizon and risk
     ├── tax.rs           # Income and taxes withheld by year
     ├── xirr.rs          # Annual return of irregular cash flows
     └── display/         # Display implementations for domain types

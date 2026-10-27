@@ -6,5 +6,6 @@ mod income;
 mod lots;
 mod portfolio;
 pub mod risk;
+mod screener;
 mod tax;
 mod trades;

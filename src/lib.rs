@@ -6,6 +6,7 @@ use domain::{
     benchmark::MarketIndex,
     calendar::Dividend,
     operation::{Operation, OperationKind, OperationState},
+    screener::{BondFeature, BondRisk, ListedBond},
 };
 use iso_currency::Currency;
 use prost_types::Timestamp;
@@ -13,8 +14,9 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use t_invest_sdk::api::{
     Account as ApiAccount, AccountStatus as ApiAccountStatus, AccountType as ApiAccountType,
-    Dividend as ApiDividend, IndicativeResponse, InstrumentShort, MoneyValue, OperationItem,
-    OperationState as ApiOperationState, OperationType, PortfolioPosition, Quotation,
+    Bond as ApiBond, Dividend as ApiDividend, IndicativeResponse, InstrumentShort, MoneyValue,
+    OperationItem, OperationState as ApiOperationState, OperationType, PortfolioPosition,
+    Quotation, RiskLevel as ApiRiskLevel,
 };
 
 pub mod api;
@@ -100,6 +102,41 @@ pub fn to_datetime_utc(opt_timespamp: Option<&Timestamp>) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(dt.seconds, 0).unwrap_or_default()
     } else {
         DateTime::<Utc>::default()
+    }
+}
+
+impl From<ApiBond> for ListedBond {
+    fn from(bond: ApiBond) -> Self {
+        let risk = match bond.risk_level() {
+            ApiRiskLevel::Low => Some(BondRisk::Low),
+            ApiRiskLevel::Moderate => Some(BondRisk::Moderate),
+            ApiRiskLevel::High => Some(BondRisk::High),
+            ApiRiskLevel::Unspecified => None,
+        };
+        Self {
+            nominal: to_money(bond.nominal.as_ref()),
+            accrued_interest: to_money(bond.aci_value.as_ref()),
+            maturity: to_optional_datetime_utc(bond.maturity_date.as_ref()),
+            offer: to_optional_datetime_utc(bond.call_date.as_ref()),
+            coupons_per_year: bond.coupon_quantity_per_year,
+            features: [
+                (bond.floating_coupon_flag, BondFeature::Floating),
+                (bond.perpetual_flag, BondFeature::Perpetual),
+                (bond.subordinated_flag, BondFeature::Subordinated),
+                (bond.amortization_flag, BondFeature::Amortization),
+                (bond.for_qual_investor_flag, BondFeature::ForQualified),
+            ]
+            .into_iter()
+            .filter_map(|(set, feature)| set.then_some(feature))
+            .collect(),
+            risk,
+            buyable: bond.buy_available_flag && bond.api_trade_available_flag,
+            figi: bond.figi,
+            uid: bond.uid,
+            ticker: bond.ticker,
+            name: bond.name,
+            sector: bond.sector,
+        }
     }
 }
 
@@ -915,5 +952,45 @@ mod tests {
 
         // Assert
         assert_eq!(r.unwrap().value.to_string(), String::from("-0.10"));
+    }
+
+    #[test]
+    fn listed_bond_from_api_bond() {
+        // Arrange
+        let bond = ApiBond {
+            figi: "FIGI".to_string(),
+            ticker: "SU26238RMFS4".to_string(),
+            sector: "government".to_string(),
+            nominal: Some(MoneyValue {
+                currency: "rub".to_string(),
+                units: 1000,
+                nano: 0,
+            }),
+            maturity_date: Some(Timestamp {
+                seconds: 1_800_000_000,
+                nanos: 0,
+            }),
+            call_date: Some(Timestamp {
+                seconds: 0,
+                nanos: 0,
+            }),
+            risk_level: ApiRiskLevel::Moderate as i32,
+            buy_available_flag: true,
+            api_trade_available_flag: false,
+            amortization_flag: true,
+            ..Default::default()
+        };
+
+        // Act
+        let listed = ListedBond::from(bond);
+
+        // Assert
+        assert_eq!(listed.nominal.map(|n| n.value), Some(dec!(1000)));
+        assert!(listed.maturity.is_some());
+        assert_eq!(listed.offer, None);
+        assert_eq!(listed.risk, Some(BondRisk::Moderate));
+        assert!(!listed.buyable);
+        assert_eq!(listed.features, [BondFeature::Amortization]);
+        assert_eq!(listed.sector, "government");
     }
 }
