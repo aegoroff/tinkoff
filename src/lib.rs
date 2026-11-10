@@ -152,6 +152,10 @@ impl From<ApiAccountType> for AccountType {
             ApiAccountType::Saving => Self::Saving,
             ApiAccountType::Dfa => Self::Dfa,
             ApiAccountType::Unspecified => Self::Unspecified,
+            ApiAccountType::SharedSaving => Self::SharedSaving,
+            ApiAccountType::Deposit => Self::Deposit,
+            ApiAccountType::Oms => Self::Oms,
+            ApiAccountType::OfpDeposit => Self::OfpDeposit,
         }
     }
 }
@@ -691,6 +695,33 @@ mod tests {
 
         // Assert
         assert!(position.accrued_interest.value.is_zero());
+    }
+
+    #[rstest]
+    #[case(ApiAccountType::Unspecified, AccountType::Unspecified)]
+    #[case(ApiAccountType::Tinkoff, AccountType::Tinkoff)]
+    #[case(ApiAccountType::TinkoffIis, AccountType::TinkoffIis)]
+    #[case(ApiAccountType::InvestBox, AccountType::InvestBox)]
+    #[case(ApiAccountType::InvestFund, AccountType::InvestFund)]
+    #[case(ApiAccountType::Debit, AccountType::Debit)]
+    #[case(ApiAccountType::Saving, AccountType::Saving)]
+    #[case(ApiAccountType::Dfa, AccountType::Dfa)]
+    #[case(ApiAccountType::SharedSaving, AccountType::SharedSaving)]
+    #[case(ApiAccountType::Deposit, AccountType::Deposit)]
+    #[case(ApiAccountType::Oms, AccountType::Oms)]
+    #[case(ApiAccountType::OfpDeposit, AccountType::OfpDeposit)]
+    fn account_type_from_api(#[case] api_type: ApiAccountType, #[case] expected: AccountType) {
+        // Arrange
+        let account = ApiAccount {
+            r#type: api_type as i32,
+            ..Default::default()
+        };
+
+        // Act
+        let account = Account::from(account);
+
+        // Assert
+        assert_eq!(account.account_type, expected);
     }
 
     #[rstest]

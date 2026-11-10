@@ -154,7 +154,8 @@ Commands:
 
 Options:
   -t, --token <VALUE>      Tinkoff API v2 token. If not set, TINKOFF_TOKEN_V2 environment variable will be used
-      --account <TYPE>     Account type: tinkoff (broker, default), iis, invest-box, invest-fund.
+      --account <TYPE>     Account type: tinkoff (broker, default), iis, invest-box, invest-fund,
+                           debit, saving, dfa, shared-saving, deposit, oms, ofp-deposit.
                            Selects the only open account of this type; all selects open
                            broker, IIS and invest box accounts together
       --account-id <ID>    Account IDs separated by commas (see the ac command);

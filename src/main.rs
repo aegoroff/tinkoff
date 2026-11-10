@@ -389,7 +389,8 @@ fn build_cli() -> Command {
                 .value_parser(AccountSelector::parse)
                 .help(
                     "Account type: tinkoff (broker, default), iis, invest-box, invest-fund, \
-                     debit, saving, dfa. Selects the only open account of this type; \
+                     debit, saving, dfa, shared-saving, deposit, oms, ofp-deposit. \
+                     Selects the only open account of this type; \
                      all selects open broker, IIS and invest box accounts together",
                 ),
         )

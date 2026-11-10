@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 
-const ACCOUNT_TYPE_HELP: &str =
-    "tinkoff (broker, default), iis, invest-box, invest-fund, debit, saving, dfa";
+const ACCOUNT_TYPE_HELP: &str = "tinkoff (broker, default), iis, invest-box, invest-fund, debit, saving, dfa, shared-saving, deposit, oms, ofp-deposit";
 
 /// Type of a brokerage account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +15,14 @@ pub enum AccountType {
     Saving,
     /// Digital financial assets account
     Dfa,
+    /// Shared savings account
+    SharedSaving,
+    /// Deposit account
+    Deposit,
+    /// Unallocated metal account
+    Oms,
+    /// OFP deposit account
+    OfpDeposit,
     Unspecified,
 }
 
@@ -26,7 +33,7 @@ impl AccountType {
     ///
     /// Returns an error if `value` is not a known account type name.
     pub fn parse(value: &str) -> Result<Self, String> {
-        let names: [(&[&str], Self); 7] = [
+        let names: [(&[&str], Self); 11] = [
             (&["tinkoff", "broker"], Self::Tinkoff),
             (&["iis", "tinkoff-iis"], Self::TinkoffIis),
             (&["invest-box", "investbox"], Self::InvestBox),
@@ -34,6 +41,10 @@ impl AccountType {
             (&["debit"], Self::Debit),
             (&["saving"], Self::Saving),
             (&["dfa"], Self::Dfa),
+            (&["shared-saving"], Self::SharedSaving),
+            (&["deposit"], Self::Deposit),
+            (&["oms"], Self::Oms),
+            (&["ofp-deposit"], Self::OfpDeposit),
         ];
         names
             .into_iter()
@@ -55,6 +66,10 @@ impl AccountType {
             Self::Debit => "debit",
             Self::Saving => "saving",
             Self::Dfa => "dfa",
+            Self::SharedSaving => "shared-saving",
+            Self::Deposit => "deposit",
+            Self::Oms => "oms",
+            Self::OfpDeposit => "ofp-deposit",
             Self::Unspecified => "unspecified",
         }
     }
@@ -121,6 +136,10 @@ mod tests {
     #[case(AccountType::Debit)]
     #[case(AccountType::Saving)]
     #[case(AccountType::Dfa)]
+    #[case(AccountType::SharedSaving)]
+    #[case(AccountType::Deposit)]
+    #[case(AccountType::Oms)]
+    #[case(AccountType::OfpDeposit)]
     fn account_type_name_round_trips(#[case] account_type: AccountType) {
         // Arrange
         let name = account_type.name();
