@@ -162,8 +162,10 @@ pub struct Holding {
     pub figi: String,
     pub instrument_uid: String,
     pub position: Position,
-    /// Units available across accounts after exchange blocks and active orders.
+    /// Units across accounts without an exchange block, including active order reserves.
     pub tradable_quantity: Decimal,
+    /// Lots reserved by active orders on accounts without an exchange block.
+    pub tradable_blocked_lots: Decimal,
 }
 
 impl Holding {
@@ -207,12 +209,17 @@ impl AccountPortfolio {
                     let tradable_quantity = if position.blocked {
                         Decimal::ZERO
                     } else {
-                        (position.quantity - position.blocked_lots * instrument.lot)
-                            .max(Decimal::ZERO)
+                        position.quantity.max(Decimal::ZERO)
+                    };
+                    let tradable_blocked_lots = if position.blocked {
+                        Decimal::ZERO
+                    } else {
+                        position.blocked_lots
                     };
                     if let Some(held) = holdings.iter_mut().find(|h| h.figi == p.figi) {
                         held.position = held.position.merge(&position);
                         held.tradable_quantity += tradable_quantity;
+                        held.tradable_blocked_lots += tradable_blocked_lots;
                         held.account_ids.push(account_id);
                     } else {
                         holdings.push(Holding {
@@ -223,6 +230,7 @@ impl AccountPortfolio {
                             instrument_uid: p.instrument_uid,
                             position,
                             tradable_quantity,
+                            tradable_blocked_lots,
                         });
                     }
                 }
@@ -789,7 +797,7 @@ impl<A: InvestApi> Reports<A> {
                 lot: h.instrument.lot,
                 price: h.position.current_instrument_price + h.position.accrued_interest,
                 quantity: h.tradable_quantity,
-                blocked_lots: Decimal::ZERO,
+                blocked_lots: h.tradable_blocked_lots,
                 tax_lots: tax_lots.remove(&h.figi),
             })
             .collect_vec();
@@ -2000,6 +2008,7 @@ mod tests {
                 instrument_uid: String::new(),
                 position: position_in(Currency::RUB),
                 tradable_quantity: Decimal::ONE,
+                tradable_blocked_lots: Decimal::ZERO,
             })
             .collect()
     }
@@ -3462,9 +3471,10 @@ mod tests {
 
         // Assert
         assert_eq!(portfolio.holdings[0].position.quantity, dec!(40));
+        assert_eq!(portfolio.holdings[0].tradable_quantity, dec!(30));
         assert_eq!(
-            portfolio.holdings[0].tradable_quantity,
-            Decimal::from(expected_units)
+            portfolio.holdings[0].tradable_blocked_lots,
+            Decimal::from(reserved_lots)
         );
         assert_eq!(
             plan.assets[0].orders[0].units,
@@ -3493,6 +3503,67 @@ mod tests {
         assert!(output.contains("F1"));
         assert!(output.contains("Tax on sales this year"));
         assert!(output.contains("Left to withhold"));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::buy_with_reservation(crate::domain::risk::RebalanceAction::Buy, 9, 10_000, 20, 40)]
+    #[case::buy_fully_reserved(crate::domain::risk::RebalanceAction::Buy, 10, 10_000, 20, 40)]
+    #[case::sell_with_reservation(crate::domain::risk::RebalanceAction::Sell, 9, 3000, 10, 0)]
+    #[case::sell_fully_reserved(crate::domain::risk::RebalanceAction::Sell, 10, 10_000, 0, 100)]
+    #[tokio::test]
+    async fn trade_plan_reservations_limit_sales_without_changing_position_weights(
+        #[case] action: crate::domain::risk::RebalanceAction,
+        #[case] reserved_lots: i64,
+        #[case] amount: i64,
+        #[case] sber_units: i64,
+        #[case] gazp_units: i64,
+    ) -> color_eyre::Result<()> {
+        // Arrange
+        let mut sber = priced("SBER", "share", 100, 300);
+        sber.position
+            .as_mut()
+            .map_err(|e| eyre::eyre!("{e}"))?
+            .blocked_lots = Decimal::from(reserved_lots);
+        let reports = Reports::new(FakeApi {
+            accounts: vec![account("I", AccountType::TinkoffIis, AccountStatus::Open)],
+            positions: vec![sber, priced("GAZP", "share", 100, 100)],
+            instruments: ["SBER", "GAZP"]
+                .map(|ticker| {
+                    (
+                        ticker.to_string(),
+                        Instrument {
+                            lot: dec!(10),
+                            ..named(ticker, ticker)
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
+            ..api()
+        });
+        let selector = AccountSelector::Type(AccountType::TinkoffIis);
+        let portfolio = reports.load_portfolio(&selector, None).await?;
+        let mut analysis = sell_shares(amount);
+        analysis.recommendations[0].action = action;
+
+        // Act
+        let plan = reports
+            .get_trade_plan(&selector, &portfolio, &analysis, today())
+            .await?;
+
+        // Assert
+        let units_of = |ticker: &str| -> Decimal {
+            plan.assets[0]
+                .orders
+                .iter()
+                .filter(|o| o.ticker == ticker)
+                .map(|o| o.units)
+                .sum()
+        };
+        assert_eq!(units_of("SBER"), Decimal::from(sber_units));
+        assert_eq!(units_of("GAZP"), Decimal::from(gazp_units));
+        assert_eq!(plan.assets[0].left.value, Decimal::ZERO);
         Ok(())
     }
 
