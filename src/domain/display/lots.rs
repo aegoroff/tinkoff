@@ -146,9 +146,10 @@ fn create_summary_table(report: &SaleTaxReport) -> Table {
 impl Display for SaleTaxReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.positions.is_empty() {
-            return writeln!(f, "No shares, bonds or ETFs");
+            writeln!(f, "No shares, bonds or ETFs")?;
+        } else {
+            writeln!(f, "\n{}", create_positions_table(self))?;
         }
-        writeln!(f, "\n{}", create_positions_table(self))?;
         if !self.year_income.sales.is_empty() {
             writeln!(f, "\n{}", create_sales_table(self))?;
         }

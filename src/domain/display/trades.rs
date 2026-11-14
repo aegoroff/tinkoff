@@ -41,7 +41,7 @@ impl Display for TradePlan {
                 let what = if asset.by_amount() {
                     format!("{} by amount", asset.asset_type)
                 } else {
-                    format!("{} left, less than a lot", asset.asset_type)
+                    format!("{} left unallocated", asset.asset_type)
                 };
                 table.add_row([
                     action_cell(asset.action),

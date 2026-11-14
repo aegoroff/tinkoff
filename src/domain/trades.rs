@@ -45,34 +45,41 @@ impl Tradable {
         ((self.quantity / self.lot).floor() - self.blocked_lots).max(Decimal::ZERO)
     }
 
-    /// Parts of tax lots the first `lots` lots sold take, the earliest first.
-    fn sold_tax_lots(&self, lots: Decimal) -> Option<Vec<LotSale>> {
+    /// Parts of tax lots taken by `lots` lots after `sold` lots, the earliest first.
+    fn sold_tax_lots(&self, sold: Decimal, lots: Decimal) -> Option<Vec<LotSale>> {
+        let mut skip = sold * self.lot;
         let mut left = lots * self.lot;
-        let mut sold = Vec::new();
+        let mut taken = Vec::new();
         for lot in self.tax_lots.as_ref()? {
             if left <= Decimal::ZERO {
                 break;
             }
-            let quantity = left.min(lot.quantity);
-            sold.push(lot.part(quantity));
+            let skipped = skip.min(lot.quantity);
+            skip -= skipped;
+            let quantity = left.min(lot.quantity - skipped);
+            if quantity.is_zero() {
+                continue;
+            }
+            taken.push(lot.part(quantity));
             left -= quantity;
         }
-        Some(sold)
+        left.is_zero().then_some(taken)
     }
 
-    /// Taxable result per ruble of the next lot sold after `sold` lots;
-    /// `None` when the cost is unknown. Exempt tax lots add no taxable result.
-    fn tax_rate(&self, sold: Decimal) -> Option<Decimal> {
-        let taxable = |lots: Vec<LotSale>| -> Decimal {
-            lots.iter()
-                .filter(|l| !l.ldv)
-                .map(|l| l.result().value)
-                .sum()
-        };
-        let before = taxable(self.sold_tax_lots(sold)?);
-        let after = taxable(self.sold_tax_lots(sold + Decimal::ONE)?);
+    /// Added tax per ruble of the next lot, then its result per ruble to prefer losses
+    /// when neither sale adds tax yet. Includes the year's shared LDV limit.
+    fn tax_rate(
+        &self,
+        sold: Decimal,
+        year: &YearIncome,
+        already_sold: &[LotSale],
+    ) -> Option<(Decimal, Decimal)> {
+        let next = self.sold_tax_lots(sold, Decimal::ONE)?;
+        let result: Decimal = next.iter().map(|l| l.result().value).sum();
+        let combined: Vec<LotSale> = already_sold.iter().chain(&next).copied().collect();
+        let tax = year.sale_tax(&combined) - year.sale_tax(already_sold);
         let lot_price = self.lot_price().value;
-        (!lot_price.is_zero()).then(|| (after - before) / lot_price)
+        (!lot_price.is_zero()).then(|| (tax.value / lot_price, result / lot_price))
     }
 }
 
@@ -105,8 +112,7 @@ pub struct AssetOrders {
     /// Amount to buy or sell
     pub target: Money,
     pub orders: Vec<Order>,
-    /// Part of the target the orders do not carry out: less than a lot, or all of it
-    /// for an asset type without instruments or not traded by lots
+    /// Part of the target left unallocated due to lot rounding or unavailable instruments
     pub left: Money,
 }
 
@@ -127,6 +133,14 @@ pub struct TradePlan {
     pub tax: Option<Money>,
 }
 
+/// A sell recommendation fulfilled with known tax lots and a completeness flag.
+struct SelectedSales {
+    counts: Vec<Decimal>,
+    left: Money,
+    known_lots: Vec<LotSale>,
+    complete: bool,
+}
+
 impl TradePlan {
     /// Turns buy and sell recommendations of `analysis` into orders of `tradables`.
     #[must_use]
@@ -135,35 +149,50 @@ impl TradePlan {
         tradables: &[Tradable],
         taxation: &SaleTaxation,
     ) -> Self {
-        let mut sold_tax_lots = Some(Vec::new());
+        let of_kind = |kind| {
+            if traded_by_lots(kind) {
+                tradables
+                    .iter()
+                    .filter(|t| t.kind == kind && t.quantity > Decimal::ZERO)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
+        let mut first_known = Vec::new();
+        let first_sales: Vec<_> = analysis
+            .recommendations
+            .iter()
+            .filter(|r| r.action == RebalanceAction::Sell)
+            .map(|r| {
+                let sales = sell_lots(&of_kind(r.kind), r.rebalance_value, taxation, &first_known);
+                first_known.extend_from_slice(&sales.known_lots);
+                (r.kind, sales.known_lots)
+            })
+            .collect();
+        let mut sold_tax_lots = Vec::new();
+        let mut complete = true;
         let assets = analysis
             .recommendations
             .iter()
             .filter(|r| r.action != RebalanceAction::Hold)
             .map(|r| {
-                let of_kind: Vec<&Tradable> = if traded_by_lots(r.kind) {
-                    tradables
-                        .iter()
-                        .filter(|t| t.kind == r.kind && t.quantity > Decimal::ZERO)
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let of_kind = of_kind(r.kind);
                 let (counts, left) = match r.action {
-                    RebalanceAction::Sell => sell_lots(&of_kind, r.rebalance_value, taxation),
+                    RebalanceAction::Sell => {
+                        // Every type sees the other types' first-pass sales, including later ones.
+                        let other_sales: Vec<_> = first_sales
+                            .iter()
+                            .filter(|(kind, _)| *kind != r.kind)
+                            .flat_map(|(_, lots)| lots.iter().copied())
+                            .collect();
+                        let sales = sell_lots(&of_kind, r.rebalance_value, taxation, &other_sales);
+                        sold_tax_lots.extend(sales.known_lots);
+                        complete &= sales.complete;
+                        (sales.counts, sales.left)
+                    }
                     _ => buy_lots(&of_kind, r.rebalance_value),
                 };
-                if r.action == RebalanceAction::Sell {
-                    for (t, lots) in of_kind.iter().zip(&counts) {
-                        if lots.is_zero() {
-                            continue;
-                        }
-                        match (&mut sold_tax_lots, t.sold_tax_lots(*lots)) {
-                            (Some(all), Some(sold)) => all.extend(sold),
-                            _ => sold_tax_lots = None,
-                        }
-                    }
-                }
                 AssetOrders {
                     asset_type: r.asset_type,
                     action: r.action,
@@ -174,7 +203,7 @@ impl TradePlan {
             })
             .collect();
         let tax = match taxation {
-            SaleTaxation::Taxed(year) => sold_tax_lots.map(|lots| year.sale_tax(&lots)),
+            SaleTaxation::Taxed(year) => complete.then(|| year.sale_tax(&sold_tax_lots)),
             SaleTaxation::Untaxed => Some(rub(Decimal::ZERO)),
             SaleTaxation::Unknown => None,
         };
@@ -216,28 +245,38 @@ fn buy_lots(tradables: &[&Tradable], amount: Money) -> (Vec<Decimal>, Money) {
         fractions.push((i, ideal - counts[i]));
     }
     fractions.sort_by_key(|(_, fraction)| Reverse(*fraction));
-    for (i, _) in fractions {
-        let lot_price = tradables[i].lot_price().value;
-        if lot_price <= left {
-            counts[i] += Decimal::ONE;
-            left -= lot_price;
+    loop {
+        let mut bought = false;
+        for &(i, _) in &fractions {
+            let lot_price = tradables[i].lot_price().value;
+            if lot_price <= left {
+                counts[i] += Decimal::ONE;
+                left -= lot_price;
+                bought = true;
+            }
+        }
+        if !bought {
+            break;
         }
     }
     (counts, rub(left))
 }
 
 /// Lots of `tradables` to sell for no more than `amount`, one at a time: the lot that adds
-/// the least taxable result per ruble first, lots of unknown cost last, the biggest
+/// the least tax per ruble first, lots of unknown cost last, the biggest
 /// position first among equal ones. Returns lots of every tradable and the money left.
 fn sell_lots(
     tradables: &[&Tradable],
     amount: Money,
     taxation: &SaleTaxation,
-) -> (Vec<Decimal>, Money) {
-    let taxed = matches!(taxation, SaleTaxation::Taxed(_));
+    context: &[LotSale],
+) -> SelectedSales {
     let mut counts = vec![Decimal::ZERO; tradables.len()];
     let mut left = amount.value;
+    let mut known_lots = Vec::new();
+    let mut complete = true;
     loop {
+        let already_sold: Vec<_> = context.iter().chain(&known_lots).copied().collect();
         let next = tradables
             .iter()
             .enumerate()
@@ -246,10 +285,9 @@ fn sell_lots(
                 counts[*i] < t.free_lots() && lot_price > Decimal::ZERO && lot_price <= left
             })
             .min_by_key(|(i, t)| {
-                let rate = if taxed {
-                    t.tax_rate(counts[*i])
-                } else {
-                    Some(Decimal::ZERO)
+                let rate = match taxation {
+                    SaleTaxation::Taxed(year) => t.tax_rate(counts[*i], year, &already_sold),
+                    _ => Some((Decimal::ZERO, Decimal::ZERO)),
                 };
                 let remaining = t.value().value - counts[*i] * t.lot_price().value;
                 (rate.is_none(), rate.unwrap_or_default(), Reverse(remaining))
@@ -257,10 +295,19 @@ fn sell_lots(
         let Some((i, t)) = next else {
             break;
         };
+        match t.sold_tax_lots(counts[i], Decimal::ONE) {
+            Some(sold) => known_lots.extend(sold),
+            None => complete = false,
+        }
         counts[i] += Decimal::ONE;
         left -= t.lot_price().value;
     }
-    (counts, rub(left))
+    SelectedSales {
+        counts,
+        left: rub(left),
+        known_lots,
+        complete,
+    }
 }
 
 /// Orders of the tradables with lots to trade, the biggest amount first.
@@ -364,13 +411,12 @@ mod tests {
         // Act
         let plan = TradePlan::new(&analysis, &tradables, &SaleTaxation::Untaxed);
 
-        // Assert: ideal SBER 2.5 lots and GAZP 2.5 lots; 2 000 left is not enough
-        // for a SBER lot of 3 000 but buys one more GAZP lot
+        // Assert: the 2 000 left cannot buy SBER but buys two more GAZP lots.
         assert_eq!(
             lots_of(&plan),
-            [("SBER".to_string(), dec!(2)), ("GAZP".to_string(), dec!(3))]
+            [("SBER".to_string(), dec!(2)), ("GAZP".to_string(), dec!(4))]
         );
-        assert_eq!(plan.assets[0].left.value, dec!(1000));
+        assert_eq!(plan.assets[0].left.value, Decimal::ZERO);
         assert_eq!(plan.assets[0].orders[0].units, dec!(20));
         assert_eq!(plan.assets[0].orders[0].amount.value, dec!(6000));
     }
@@ -390,6 +436,99 @@ mod tests {
     }
 
     #[test]
+    fn buy_spends_remainder_while_another_lot_is_affordable() {
+        // Arrange
+        let tradables = [
+            tradable(InstrumentKind::Share, "DEAR", 1, 1000, 1),
+            tradable(InstrumentKind::Share, "CHEAP", 1, 1, 1),
+        ];
+        let analysis = analysis(&[(InstrumentKind::Share, RebalanceAction::Buy, 999)]);
+
+        // Act
+        let plan = TradePlan::new(&analysis, &tradables, &SaleTaxation::Untaxed);
+
+        // Assert
+        assert_eq!(lots_of(&plan), [("CHEAP".to_string(), dec!(999))]);
+        assert_eq!(plan.assets[0].left.value, Decimal::ZERO);
+    }
+
+    #[test]
+    fn sell_accounts_for_ldv_limit_when_choosing_the_least_taxed_lot() {
+        // Arrange
+        let tradables = [
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2022-01-10", 1, 1_000_000, 20_000_000)]),
+                ..tradable(InstrumentKind::Share, "LDV", 1, 20_000_000, 1)
+            },
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2025-01-10", 1, 19_000_000, 20_000_000)]),
+                ..tradable(InstrumentKind::Share, "RECENT", 1, 20_000_000, 1)
+            },
+        ];
+        let analysis = analysis(&[(InstrumentKind::Share, RebalanceAction::Sell, 20_000_000)]);
+
+        // Act
+        let plan = TradePlan::new(
+            &analysis,
+            &tradables,
+            &SaleTaxation::Taxed(YearIncome::zero()),
+        );
+
+        // Assert
+        assert_eq!(lots_of(&plan), [("RECENT".to_string(), Decimal::ONE)]);
+        assert_eq!(plan.tax, Some(rub(dec!(130_000))));
+    }
+
+    #[rstest::rstest]
+    #[case::earlier_sales_this_year(false)]
+    #[case::earlier_sales_in_plan(true)]
+    fn sell_shares_ldv_limit_with_other_sales(#[case] in_plan: bool) {
+        // Arrange
+        let previous = tax_lot("2022-01-10", 1, 1_000_000, 12_000_000);
+        let mut tradables = vec![
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2022-01-10", 1, 1_000_000, 3_000_000)]),
+                ..tradable(InstrumentKind::Share, "LDV", 1, 3_000_000, 1)
+            },
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2025-01-10", 1, 2_500_000, 3_000_000)]),
+                ..tradable(InstrumentKind::Share, "RECENT", 1, 3_000_000, 1)
+            },
+        ];
+        let mut year = YearIncome::zero();
+        let mut recommendations = Vec::new();
+        if in_plan {
+            tradables.push(Tradable {
+                tax_lots: Some(vec![previous]),
+                ..tradable(InstrumentKind::Bond, "PREVIOUS", 1, 12_000_000, 1)
+            });
+            recommendations.push((InstrumentKind::Bond, RebalanceAction::Sell, 12_000_000));
+        } else {
+            year.sales.push(SecuritySales {
+                ticker: "PREVIOUS".to_string(),
+                lots: vec![previous],
+                complete: true,
+            });
+        }
+        recommendations.push((InstrumentKind::Share, RebalanceAction::Sell, 3_000_000));
+        let analysis = analysis(&recommendations);
+
+        // Act
+        let plan = TradePlan::new(&analysis, &tradables, &SaleTaxation::Taxed(year));
+
+        // Assert
+        let shares = plan
+            .assets
+            .iter()
+            .find(|a| a.target.value == dec!(3_000_000));
+        let ticker = shares
+            .and_then(|a| a.orders.first())
+            .map(|o| o.ticker.as_str());
+        assert_eq!(ticker, Some("RECENT"));
+        assert_eq!(plan.tax, Some(rub(dec!(65_000))));
+    }
+
+    #[test]
     fn currencies_are_rebalanced_by_amount() {
         // Arrange
         let tradables = [tradable(InstrumentKind::Currency, "USD", 1, 90, 1000)];
@@ -400,6 +539,89 @@ mod tests {
 
         // Assert
         assert!(plan.assets[0].by_amount());
+    }
+
+    #[rstest::rstest]
+    #[case::shares_before_etfs(false)]
+    #[case::etfs_before_shares(true)]
+    fn sell_accounts_for_ldv_consumed_by_later_asset_types(#[case] etfs_first: bool) {
+        // Arrange
+        let tradables = [
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2022-01-10", 1, 1_000_000, 6_000_000)]),
+                ..tradable(InstrumentKind::Share, "LDV_SHARE", 1, 6_000_000, 1)
+            },
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2025-01-10", 1, 5_500_000, 6_000_000)]),
+                ..tradable(InstrumentKind::Share, "RECENT", 1, 6_000_000, 1)
+            },
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2022-01-10", 1, 1_000_000, 21_000_000)]),
+                ..tradable(InstrumentKind::Etf, "ETF", 1, 21_000_000, 1)
+            },
+        ];
+        let mut recommendations = [
+            (InstrumentKind::Share, RebalanceAction::Sell, 6_000_000),
+            (InstrumentKind::Etf, RebalanceAction::Sell, 21_000_000),
+        ];
+        if etfs_first {
+            recommendations.reverse();
+        }
+
+        // Act
+        let plan = TradePlan::new(
+            &analysis(&recommendations),
+            &tradables,
+            &SaleTaxation::Taxed(YearIncome::zero()),
+        );
+
+        // Assert
+        let mut tickers = lots_of(&plan);
+        tickers.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            tickers,
+            [
+                ("ETF".to_string(), dec!(1)),
+                ("RECENT".to_string(), dec!(1))
+            ]
+        );
+        assert_eq!(plan.tax, Some(rub(dec!(1_227_000))));
+    }
+
+    #[test]
+    fn unknown_basis_preserves_known_sales_for_later_choices() {
+        // Arrange
+        let tradables = [
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2022-01-10", 1, 1_000_000, 13_000_000)]),
+                ..tradable(InstrumentKind::Bond, "KNOWN", 1, 13_000_000, 1)
+            },
+            tradable(InstrumentKind::Bond, "UNKNOWN", 1, 20_000_000, 1),
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2022-01-10", 1, 1_000_000, 2_000_000)]),
+                ..tradable(InstrumentKind::Share, "LDV", 1, 2_000_000, 1)
+            },
+            Tradable {
+                tax_lots: Some(vec![tax_lot("2025-01-10", 1, 1_500_000, 2_000_000)]),
+                ..tradable(InstrumentKind::Share, "RECENT", 1, 2_000_000, 1)
+            },
+        ];
+        let analysis = analysis(&[
+            (InstrumentKind::Bond, RebalanceAction::Sell, 33_000_000),
+            (InstrumentKind::Share, RebalanceAction::Sell, 2_000_000),
+        ]);
+
+        // Act
+        let plan = TradePlan::new(
+            &analysis,
+            &tradables,
+            &SaleTaxation::Taxed(YearIncome::zero()),
+        );
+
+        // Assert
+        assert_eq!(plan.assets[0].orders.len(), 2);
+        assert_eq!(plan.assets[1].orders[0].ticker, "RECENT");
+        assert_eq!(plan.tax, None);
     }
 
     #[test]

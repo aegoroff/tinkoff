@@ -162,6 +162,8 @@ pub struct Holding {
     pub figi: String,
     pub instrument_uid: String,
     pub position: Position,
+    /// Units available across accounts after exchange blocks and active orders.
+    pub tradable_quantity: Decimal,
 }
 
 impl Holding {
@@ -202,8 +204,15 @@ impl AccountPortfolio {
             let kind = InstrumentKind::from_api(&p.instrument_type);
             match (kind, p.position) {
                 (Some(kind), Ok(position)) => {
+                    let tradable_quantity = if position.blocked {
+                        Decimal::ZERO
+                    } else {
+                        (position.quantity - position.blocked_lots * instrument.lot)
+                            .max(Decimal::ZERO)
+                    };
                     if let Some(held) = holdings.iter_mut().find(|h| h.figi == p.figi) {
                         held.position = held.position.merge(&position);
+                        held.tradable_quantity += tradable_quantity;
                         held.account_ids.push(account_id);
                     } else {
                         holdings.push(Holding {
@@ -213,6 +222,7 @@ impl AccountPortfolio {
                             figi: p.figi,
                             instrument_uid: p.instrument_uid,
                             position,
+                            tradable_quantity,
                         });
                     }
                 }
@@ -771,14 +781,15 @@ impl<A: InvestApi> Reports<A> {
         let tradables = portfolio
             .holdings
             .iter()
+            .filter(|h| h.tradable_quantity > Decimal::ZERO)
             .map(|h| Tradable {
                 kind: h.kind,
                 ticker: h.instrument.ticker.as_str().to_string(),
                 name: h.instrument.name.clone(),
                 lot: h.instrument.lot,
                 price: h.position.current_instrument_price + h.position.accrued_interest,
-                quantity: h.position.quantity,
-                blocked_lots: h.position.blocked_lots,
+                quantity: h.tradable_quantity,
+                blocked_lots: Decimal::ZERO,
                 tax_lots: tax_lots.remove(&h.figi),
             })
             .collect_vec();
@@ -1988,6 +1999,7 @@ mod tests {
                 figi: (*figi).to_string(),
                 instrument_uid: String::new(),
                 position: position_in(Currency::RUB),
+                tradable_quantity: Decimal::ONE,
             })
             .collect()
     }
@@ -3371,6 +3383,117 @@ mod tests {
             ("SBER", dec!(2))
         );
         assert_eq!(plan.tax.map(|t| t.value), Some(Decimal::ZERO));
+    }
+
+    #[rstest]
+    #[case::buy(crate::domain::risk::RebalanceAction::Buy)]
+    #[case::sell(crate::domain::risk::RebalanceAction::Sell)]
+    #[tokio::test]
+    async fn trade_plan_excludes_exchange_blocked_positions(
+        #[case] action: crate::domain::risk::RebalanceAction,
+    ) -> color_eyre::Result<()> {
+        // Arrange
+        let mut api = sale_tax_api();
+        for holding in &mut api.positions {
+            let position = holding.position.as_mut().map_err(|e| eyre::eyre!("{e}"))?;
+            position.blocked = true;
+            position.blocked_lots = Decimal::ZERO;
+        }
+        let reports = Reports::new(api);
+        let portfolio = reports.load_portfolio(&broker(), None).await?;
+        let mut analysis = sell_shares(600);
+        analysis.recommendations[0].action = action;
+
+        // Act
+        let plan = reports
+            .get_trade_plan(&broker(), &portfolio, &analysis, today())
+            .await?;
+
+        // Assert
+        assert_eq!(plan.assets[0].orders, Vec::new());
+        assert_eq!(plan.assets[0].left.value, dec!(600));
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::free_units(0, 30)]
+    #[case::active_order_on_free_account(1, 20)]
+    #[tokio::test]
+    async fn trade_plan_keeps_free_units_when_another_account_is_blocked(
+        #[case] reserved_lots: i64,
+        #[case] expected_units: i64,
+    ) -> color_eyre::Result<()> {
+        // Arrange
+        let mut blocked = priced("F1", "share", 10, 100);
+        let position = blocked.position.as_mut().map_err(|e| eyre::eyre!("{e}"))?;
+        position.blocked = true;
+        position.blocked_lots = Decimal::ONE;
+        let mut free = priced("F1", "share", 30, 100);
+        free.position
+            .as_mut()
+            .map_err(|e| eyre::eyre!("{e}"))?
+            .blocked_lots = Decimal::from(reserved_lots);
+        let reports = Reports::new(FakeApi {
+            accounts: two_accounts(),
+            account_positions: HashMap::from([
+                ("B".to_string(), vec![blocked]),
+                ("I".to_string(), vec![free]),
+            ]),
+            instruments: HashMap::from([(
+                "F1".to_string(),
+                Instrument {
+                    lot: dec!(10),
+                    ..named("Sber", "SBER")
+                },
+            )]),
+            ..api()
+        });
+        let portfolio = reports.load_portfolio(&AccountSelector::All, None).await?;
+
+        // Act
+        let plan = reports
+            .get_trade_plan(
+                &AccountSelector::All,
+                &portfolio,
+                &sell_shares(4000),
+                today(),
+            )
+            .await?;
+
+        // Assert
+        assert_eq!(portfolio.holdings[0].position.quantity, dec!(40));
+        assert_eq!(
+            portfolio.holdings[0].tradable_quantity,
+            Decimal::from(expected_units)
+        );
+        assert_eq!(
+            plan.assets[0].orders[0].units,
+            Decimal::from(expected_units)
+        );
+        assert_eq!(plan.tax, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sale_tax_shows_year_sales_after_all_positions_are_closed() -> color_eyre::Result<()> {
+        // Arrange
+        let reports = Reports::new(FakeApi {
+            positions: Vec::new(),
+            ..sale_tax_api()
+        });
+
+        // Act
+        let (report, _) = reports.get_sale_tax(&broker(), None, today()).await?;
+        let output = report.to_string();
+
+        // Assert
+        assert_eq!(report.positions, Vec::new());
+        assert_eq!(report.year_income.securities().value, dec!(990));
+        assert!(output.contains("Sales This Year"));
+        assert!(output.contains("F1"));
+        assert!(output.contains("Tax on sales this year"));
+        assert!(output.contains("Left to withhold"));
+        Ok(())
     }
 
     #[tokio::test]

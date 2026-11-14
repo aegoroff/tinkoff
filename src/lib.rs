@@ -94,13 +94,17 @@ pub fn to_metric(value: f64) -> Option<Decimal> {
 pub fn to_optional_datetime_utc(timestamp: Option<&Timestamp>) -> Option<DateTime<Utc>> {
     timestamp
         .filter(|t| t.seconds != 0)
-        .and_then(|t| DateTime::<Utc>::from_timestamp(t.seconds, 0))
+        .and_then(|t| DateTime::<Utc>::from_timestamp(t.seconds, u32::try_from(t.nanos).ok()?))
 }
 
 #[must_use]
 pub fn to_datetime_utc(timestamp: Option<&Timestamp>) -> DateTime<Utc> {
     if let Some(dt) = timestamp {
-        DateTime::<Utc>::from_timestamp(dt.seconds, 0).unwrap_or_default()
+        let nanos = u32::try_from(dt.nanos)
+            .ok()
+            .filter(|nanos| *nanos < 1_000_000_000)
+            .unwrap_or_default();
+        DateTime::<Utc>::from_timestamp(dt.seconds, nanos).unwrap_or_default()
     } else {
         DateTime::<Utc>::default()
     }
@@ -820,6 +824,12 @@ mod tests {
         Some(Timestamp { seconds: 1_790_000_000, nanos: 0 }),
         DateTime::<Utc>::from_timestamp(1_790_000_000, 0)
     )]
+    #[case::nanoseconds(
+        Some(Timestamp { seconds: 1_790_000_000, nanos: 123_456_789 }),
+        DateTime::<Utc>::from_timestamp(1_790_000_000, 123_456_789)
+    )]
+    #[case::negative_nanos(Some(Timestamp { seconds: 1, nanos: -1 }), None)]
+    #[case::invalid_nanos(Some(Timestamp { seconds: 1, nanos: 2_000_000_000 }), None)]
     fn to_optional_datetime_utc_cases(
         #[case] timestamp: Option<Timestamp>,
         #[case] expected: Option<DateTime<Utc>>,
@@ -831,6 +841,54 @@ mod tests {
 
         // Assert
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn fifo_preserves_order_of_api_trades_within_a_second() {
+        use crate::domain::lots::{LotBook, Trade, TradeKind};
+
+        // Arrange
+        let trade = |kind, nanos, amount| Trade {
+            date: to_datetime_utc(Some(&Timestamp {
+                seconds: 1_790_000_000,
+                nanos,
+            })),
+            kind,
+            quantity: Decimal::ONE,
+            amount: Money::from_value(Decimal::from(amount), Currency::RUB),
+        };
+        let trades = [
+            trade(TradeKind::Sell, 900, 150),
+            trade(TradeKind::Buy, 200, 200),
+            trade(TradeKind::Buy, 100, 100),
+        ];
+
+        // Act
+        let book = LotBook::new(trades);
+
+        // Assert
+        assert!(book.complete);
+        assert_eq!(book.realized[0].lots[0].cost.value, dec!(100));
+        assert_eq!(book.lots[0].cost.value, dec!(200));
+    }
+
+    #[rstest]
+    #[case::negative(-1)]
+    #[case::one_second(1_000_000_000)]
+    #[case::overflow(i32::MAX)]
+    fn invalid_nanoseconds_keep_operation_seconds(#[case] nanos: i32) {
+        // Arrange
+        let timestamp = Timestamp {
+            seconds: 1_790_000_000,
+            nanos,
+        };
+
+        // Act
+        let date = to_datetime_utc(Some(&timestamp));
+
+        // Assert
+        assert_eq!(date.timestamp(), timestamp.seconds);
+        assert_eq!(date.timestamp_subsec_nanos(), 0);
     }
 
     #[rstest::rstest]
