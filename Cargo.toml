@@ -30,7 +30,7 @@ tonic = { version = "0.14.9", features = ["tls-ring"] }
 mimalloc = "0.1.52"
 
 [dev-dependencies]
-rstest = "0.28.0"
+rstest = "0.29.0"
 
 [package.metadata.deb]
 extended-description = "Console client of T-Invest API: portfolio, income, taxes, risk and bond screener"
